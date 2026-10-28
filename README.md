@@ -4,9 +4,10 @@ Demo quan sát người học bằng camera, nhận diện tư thế ngồi theo
 bằng YOLO11n-pose, cảnh báo bằng LED/buzzer/rung, hiển thị trạng thái trên
 dashboard web trong mạng LAN và lưu thống kê vào SQLite.
 
-> **Trạng thái hiện tại: mốc M0.** Đã có khung repo, cấu hình, CLI, logging,
-> nguồn camera hai đường (Pi Camera + USB) và phần cứng giả lập.
-> Phần suy luận tư thế, phân loại, lưu trữ và web **chưa** được triển khai.
+> **Trạng thái hiện tại: mốc M1.** Đã có khung repo, cấu hình, CLI, logging,
+> nguồn camera hai đường (Pi Camera + USB), phần cứng giả lập, và **suy luận
+> pose + vẽ 17 keypoint/xương lên khung hình trực tiếp**.
+> Phần phân loại tư thế, lưu trữ và web **chưa** được triển khai.
 > Đặc tả kỹ thuật đầy đủ nằm ở [`docs/SPEC_V2.md`](docs/SPEC_V2.md).
 
 ---
@@ -129,12 +130,48 @@ python -m posture_monitor run                 # tự phát hiện GPIO
 python -m posture_monitor --help
 ```
 
-Các lệnh theo spec: `run | calibrate | replay | benchmark`. Ở mốc M0 chỉ `run`
+Các lệnh theo spec: `run | calibrate | replay | benchmark`. Ở mốc M1 chỉ `run`
 được triển khai; ba lệnh còn lại in "chưa triển khai" và thoát với mã 0.
 
 `run` sẽ: nạp `config.yaml` → khởi tạo phần cứng (giả lập nếu `--no-gpio`) →
-mở camera → in bảng trạng thái khởi động. **Không có camera vẫn chạy được**:
-chương trình ghi log lý do cụ thể và in `Camera: KHÔNG MỞ ĐƯỢC`.
+mở camera → nạp model pose → mở cửa sổ xem trước. Mỗi khung hình được suy
+luận rồi vẽ 17 keypoint (chấm đỏ) và xương (nét xanh) lên trên.
+
+**Cách thoát:** bấm `q` (hoặc `Q`, hoặc `Esc`) khi cửa sổ đang được chọn, hoặc
+bấm nút `X` của cửa sổ. Thoát bằng `Ctrl+C` cũng được (mã thoát `130`).
+
+**Không có camera vẫn chạy được**: chương trình ghi log lý do cụ thể và thoát
+với mã `1` — mốc M1 cần camera để suy luận pose.
+
+### Kiểm chứng trên máy không có màn hình
+
+Cờ `--save-overlay` lưu **một** khung đã vẽ ra file ảnh rồi thoát, không mở
+cửa sổ:
+
+```bash
+python -m posture_monitor run --no-gpio --save-overlay frame.jpg
+```
+
+Chương trình in đường dẫn file đã lưu và số người phát hiện được:
+
+```
+Đã lưu khung đã vẽ: /duong/dan/frame.jpg
+persons=1
+```
+
+`persons=0` nghĩa là **không có ai trong khung ở thời điểm chụp** — trạng thái
+hợp lệ, không phải lỗi.
+
+### Nạp model và rơi cấp backend
+
+Theo `model.format` trong `config.yaml` (mặc định `ncnn`), thứ tự là NCNN →
+ONNX → PyTorch. Thiếu thư mục `*_ncnn_model` thì chương trình tự export một lần
+với `imgsz` đã cấu hình; export lỗi (ví dụ thiếu `pnnx`) thì ghi WARNING rồi
+rơi xuống backend kế tiếp, **không crash**. Chỉ khi không nạp được backend nào
+mới báo lỗi và thoát với mã `2`.
+
+Trọng số `yolo11n-pose.pt` và thư mục `yolo11n-pose_ncnn_model/` nằm trong
+`.gitignore` — **không commit** chúng.
 
 ---
 
@@ -271,7 +308,7 @@ Khi có camera, chạy lại `python scripts/camera_probe.py` để xác nhận.
 
 ---
 
-## Cấu trúc repo (M0)
+## Cấu trúc repo (M1)
 
 ```
 .
@@ -286,17 +323,21 @@ Khi có camera, chạy lại `python scripts/camera_probe.py` để xác nhận.
 │   ├── config.py              # đọc + kiểm tra config.yaml
 │   ├── logging_setup.py       # logging dùng chung
 │   ├── capture.py             # OpenCVSource, PiCameraSource, FileSource, probe
+│   ├── pose.py                # nạp model + detect() → PoseResult (hợp đồng M2)
+│   ├── overlay.py             # vẽ 17 keypoint + xương theo kp_conf_min
 │   └── hardware/
 │       ├── base.py            # giao diện Hardware
 │       ├── gpio_mock.py       # MockFactory của gpiozero (chỉ log)
 │       └── gpio_real.py       # LED/buzzer/rung thật
 └── tests/
     ├── test_capture.py
-    └── test_config.py
+    ├── test_config.py
+    ├── test_pose.py
+    └── test_overlay.py
 ```
 
-Các module của M1 trở đi (`pose.py`, `features.py`, `classifier.py`,
-`state.py`, `alerts.py`, `sensors.py`, `storage.py`, `web/`) chưa có.
+Các module của M2 trở đi (`features.py`, `classifier.py`, `state.py`,
+`alerts.py`, `sensors.py`, `storage.py`, `web/`) chưa có.
 
 ---
 
