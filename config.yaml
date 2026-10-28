@@ -17,6 +17,16 @@ camera:
   width: 640
   height: 480
   view: front            # front | side
+  # Điều khiển PTZ qua ONVIF (tuỳ chọn, tắt mặc định). Bật xong thì dashboard
+  # có nút xoay camera; route POST /api/ptz gọi xuống đây.
+  onvif:
+    enabled: false
+    host: ""             # ví dụ "192.168.1.50"; để trống khi chưa dùng
+    port: 80
+    user: "admin"
+    # Mật khẩu KHÔNG nằm trong file này (file được commit). Đặt biến môi trường
+    # POSTURE_ONVIF_PASSWORD trước khi chạy; enabled: true mà thiếu biến này
+    # thì chương trình báo lỗi cấu hình ngay lúc nạp.
 
 model:
   name: yolo11n-pose     # dự phòng: yolov8n-pose

@@ -27,6 +27,11 @@ import yaml
 #: ``config.local.yaml``). Có giá trị khác rỗng thì thắng cấu hình file.
 CAMERA_SOURCE_ENV = "POSTURE_CAMERA_SOURCE"
 
+#: Biến môi trường chứa mật khẩu ONVIF của camera IP. Mật khẩu **không** được
+#: nằm trong ``config.yaml`` (file đó được commit); ``config.yaml`` chỉ có
+#: ``camera.onvif.enabled/host/port/user``.
+ONVIF_PASSWORD_ENV = "POSTURE_ONVIF_PASSWORD"
+
 #: Giá trị hợp lệ cho các trường có danh sách đóng.
 VIEWS = ("front", "side")
 MODEL_FORMATS = ("ncnn", "onnx", "pt")
@@ -43,11 +48,27 @@ class ConfigError(ValueError):
 
 
 @dataclass
+class OnvifConfig:
+    """Điều khiển PTZ qua ONVIF (tuỳ chọn, mặc định tắt).
+
+    **Không có trường mật khẩu.** Mật khẩu đọc từ biến môi trường
+    :data:`ONVIF_PASSWORD_ENV` qua :func:`onvif_password`, nên ``repr`` của
+    cấu hình, log và ``config.yaml`` (file được commit) không bao giờ chứa nó.
+    """
+
+    enabled: bool = False
+    host: str = ""
+    port: int = 80
+    user: str = "admin"
+
+
+@dataclass
 class CameraConfig:
     source: str = "usb:0"
     width: int = 640
     height: int = 480
     view: str = "front"
+    onvif: OnvifConfig = field(default_factory=OnvifConfig)
 
 
 @dataclass
@@ -265,6 +286,41 @@ def _normalize_env_source(override: str) -> str:
     return text
 
 
+def _parse_onvif(raw: Any) -> OnvifConfig:
+    """Nạp mục ``camera.onvif`` (tuỳ chọn; thiếu mục = tắt).
+
+    Mật khẩu **không** đọc từ YAML. Khi ``enabled: true`` mà biến môi trường
+    :data:`ONVIF_PASSWORD_ENV` chưa được đặt, báo lỗi ngay lúc nạp cấu hình
+    thay vì để route ``/api/ptz`` hỏng lần đầu có người bấm nút. Thông điệp
+    chỉ nêu **tên biến môi trường**, không bao giờ chứa giá trị mật khẩu, và
+    mọi chỗ chèn ``host`` đều đi qua :func:`redact_camera_source`.
+    """
+    data = _as_dict(raw, "camera.onvif")
+    cfg = OnvifConfig(
+        enabled=_get_bool(data, "enabled", OnvifConfig.enabled, "camera.onvif"),
+        host=_get_str(data, "host", OnvifConfig.host, "camera.onvif"),
+        port=_get_int(data, "port", OnvifConfig.port, "camera.onvif"),
+        user=_get_str(data, "user", OnvifConfig.user, "camera.onvif"),
+    )
+    if not 0 < cfg.port < 65536:
+        raise ConfigError("'camera.onvif.port' phải nằm trong khoảng 1..65535.")
+    if cfg.enabled:
+        safe_host = redact_camera_source(cfg.host)
+        if not cfg.host.strip():
+            raise ConfigError(
+                "'camera.onvif.enabled' là true nhưng 'camera.onvif.host' "
+                "đang trống. Điền địa chỉ camera IP (ví dụ 192.168.1.50)."
+            )
+        if not onvif_password():
+            raise ConfigError(
+                "'camera.onvif.enabled' là true nhưng chưa có mật khẩu ONVIF "
+                f"cho camera {safe_host!r}. Đặt biến môi trường "
+                f"{ONVIF_PASSWORD_ENV} (mật khẩu không được ghi vào "
+                "config.yaml)."
+            )
+    return cfg
+
+
 def _parse_camera(raw: Any) -> CameraConfig:
     data = _as_dict(raw, "camera")
     cfg = CameraConfig(
@@ -272,6 +328,7 @@ def _parse_camera(raw: Any) -> CameraConfig:
         width=_get_int(data, "width", CameraConfig.width, "camera"),
         height=_get_int(data, "height", CameraConfig.height, "camera"),
         view=_get_choice(data, "view", CameraConfig.view, VIEWS, "camera"),
+        onvif=_parse_onvif(data.get("onvif")),
     )
     # Nguồn ảnh có thể ghi đè bằng biến môi trường để đặt URL camera IP kèm
     # mật khẩu mà không phải ghi mật khẩu vào bất kỳ file cấu hình nào.
@@ -533,6 +590,16 @@ def redact_camera_source(source: object) -> str:
         return f"{match.group('scheme')}{hidden}@"
 
     return _URL_USERINFO.sub(_hide, text)
+
+
+def onvif_password() -> str:
+    """Mật khẩu ONVIF, đọc từ biến môi trường :data:`ONVIF_PASSWORD_ENV`.
+
+    Đọc tại thời điểm gọi (không cache vào dataclass) để mật khẩu không bao
+    giờ nằm trong ``repr(config)``, log hay file cấu hình được commit. Trả
+    chuỗi rỗng khi biến chưa được đặt.
+    """
+    return os.environ.get(ONVIF_PASSWORD_ENV, "").strip()
 
 
 def parse_camera_source(source: str) -> tuple[str, int | str | None]:
