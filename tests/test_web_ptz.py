@@ -196,6 +196,17 @@ def test_ptz_khi_onvif_tat_tra_503_tieng_viet():
     assert "host" in payload["message"]
 
 
+def test_ptz_khong_co_cau_hinh_nao_cung_tra_json_503():
+    """``create_app()`` không truyền config: vẫn phải là JSON tiếng Việt."""
+    app = create_app(None, state=DashboardState())
+    app.config.update(TESTING=True)
+
+    payload = assert_json_error(
+        app.test_client().post("/api/ptz", json={"direction": "left"}), 503
+    )
+    assert "camera.onvif.enabled" in payload["message"]
+
+
 def test_ptz_onvif_bat_nhung_thieu_host_tra_503(monkeypatch):
     monkeypatch.setenv("POSTURE_ONVIF_PASSWORD", FAKE_PASSWORD)
     client = make_client(config=make_config(onvif_enabled=True, host=""))
