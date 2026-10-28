@@ -92,7 +92,13 @@ from .calibration import CalibrationError, Baseline
 from .calibration import load as load_calibration
 from .capture import CameraError, FrameSource, capture_from_config
 from .classifier import classify
-from .config import Config, ConfigError, load_config, parse_camera_source
+from .config import (
+    Config,
+    ConfigError,
+    load_config,
+    parse_camera_source,
+    redact_camera_source,
+)
 from .features import ALL_NAMES, extract
 from .logging_setup import get_logger, setup_logging
 from .pose import PoseError, PoseEstimator
@@ -460,11 +466,16 @@ def _resolve_source(
 
     spec = config.camera.source if source_override is None else source_override
     if not isinstance(spec, str) or not spec.strip():
+        # ``repr`` giữ nguyên định dạng cũ cho ``None``/chuỗi rỗng, rồi mới che:
+        # đối tượng lạ vẫn có thể mang mật khẩu trong ``repr`` của nó.
         raise BenchmarkError(
-            f"Nguồn ảnh không hợp lệ: {spec!r}. Dùng 'usb:N', 'picamera' "
-            "hoặc 'file:duong_dan'."
+            f"Nguồn ảnh không hợp lệ: {redact_camera_source(repr(spec))}. "
+            "Dùng 'usb:N', 'picamera' hoặc 'file:duong_dan'."
         )
     spec = spec.strip()
+    #: Bản đã che user/mật khẩu, dùng cho **mọi** thông điệp lỗi bên dưới.
+    #: URL RTSP chứa mật khẩu thật; in ``spec`` trần ra màn hình là rò rỉ.
+    safe_spec = redact_camera_source(spec)
 
     try:
         kind, value = parse_camera_source(spec)
@@ -475,9 +486,9 @@ def _resolve_source(
         path = Path(str(value))
         if not path.is_file():
             raise BenchmarkError(
-                f"Nguồn ảnh '{spec}' không tồn tại: {path.resolve()}. Trên Pi "
-                "chưa có camera, hãy trỏ tới ảnh tĩnh hoặc video có sẵn, ví "
-                "dụ --source file:anh_mau.jpg."
+                f"Nguồn ảnh '{safe_spec}' không tồn tại: {path.resolve()}. "
+                "Trên Pi chưa có camera, hãy trỏ tới ảnh tĩnh hoặc video có "
+                "sẵn, ví dụ --source file:anh_mau.jpg."
             )
         if path.suffix.lower() in IMAGE_SUFFIXES:
             try:
@@ -493,11 +504,13 @@ def _resolve_source(
     try:
         source = capture_from_config(patched)
     except CameraError as exc:  # pragma: no cover - capture_from_config nuốt lỗi
-        raise BenchmarkError(f"Không mở được nguồn '{spec}': {exc}") from exc
+        raise BenchmarkError(
+            f"Không mở được nguồn '{safe_spec}': {exc}"
+        ) from exc
     if source is None:
         raise BenchmarkError(
-            f"Không mở được nguồn ảnh '{spec}'. Xem log phía trên để biết lý "
-            "do (thiếu thiết bị, sai đường dẫn, driver lỗi). Chạy "
+            f"Không mở được nguồn ảnh '{safe_spec}'. Xem log phía trên để biết "
+            "lý do (thiếu thiết bị, sai đường dẫn, driver lỗi). Chạy "
             "'python scripts/camera_probe.py' để kiểm tra phần cứng."
         )
     report_kind = "video" if kind == "file" else "camera"
@@ -507,10 +520,15 @@ def _resolve_source(
 def _source_meta(
     kind: str, source: FrameSource, detail: str
 ) -> dict[str, Any]:
-    """Mô tả nguồn ảnh theo cách không thể đọc nhầm thành camera thật."""
+    """Mô tả nguồn ảnh theo cách không thể đọc nhầm thành camera thật.
+
+    ``detail`` được che user/mật khẩu **trước khi** vào dict: báo cáo này vừa
+    in ra màn hình (:func:`format_report`) vừa ghi thẳng ra file qua ``--json``,
+    nên che ở đây là chỗ duy nhất bịt cả hai đường.
+    """
     is_static = kind == "image"
     return {
-        "spec": detail,
+        "spec": redact_camera_source(detail),
         "kind": kind,
         "backend": _safe_backend(source),
         "is_static": is_static,
