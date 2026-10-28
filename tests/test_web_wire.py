@@ -136,13 +136,19 @@ class FakeSensor:
 
 
 class FakeThread:
-    """Luồng giả: ghi lại ``start``/``join`` và cờ daemon."""
+    """Luồng giả: ghi lại ``start``/``join``.
 
-    def __init__(self, target=None, args=(), name=None, daemon=None) -> None:
+    Cố ý **không** có thuộc tính ``daemon``: cờ daemon là hành vi của đối
+    tượng ``_Dashboard`` thật, nên chỉ ``test_run_server_does_not_block_loop``
+    (dựng ``_Dashboard`` thật) được phép khẳng định nó. Cho bản giả tự khai
+    ``daemon=True`` sẽ tạo bằng chứng giả — đổi ``daemon`` trong mã thật mà
+    test vẫn xanh.
+    """
+
+    def __init__(self, target=None, args=(), name=None) -> None:
         self.target = target
         self.args = args
         self.name = name
-        self.daemon = daemon
         self.started = False
         self.joined_with: float | None = None
 
@@ -164,9 +170,7 @@ class FakeDashboard:
         self.state = object()
         self.storage = FakeStorage()
         self.app = object()
-        self.thread = FakeThread(
-            target=cli._serve_web, name="dashboard-web", daemon=True
-        )
+        self.thread = FakeThread(target=cli._serve_web, name="dashboard-web")
         FakeDashboard.created.append(self)
 
     def start(self) -> None:
@@ -285,7 +289,6 @@ def test_run_long_branch_starts_web(monkeypatch, tmp_path):
     assert len(FakeDashboard.created) == 1, "nhánh chạy dài phải dựng _Dashboard"
     dashboard = FakeDashboard.created[0]
     assert dashboard.thread.started, "server web phải được start()"
-    assert dashboard.thread.daemon is True
     # Vòng lặp nhận đúng state mà create_app dùng chung.
     assert captured["kwargs"]["state"] is dashboard.state
     assert captured["kwargs"]["storage"] is dashboard.storage
@@ -330,6 +333,10 @@ def test_run_server_does_not_block_loop(monkeypatch, tmp_path):
     dashboard.start()
     try:
         assert entered.wait(timeout=2.0), "run_server không được gọi"
+        # Cờ daemon phải kiểm trên đối tượng thật này: bản giả không khai
+        # ``daemon``, nên chỉ ở đây mới chứng minh được có đổi daemon=False
+        # là test đỏ.
+        assert dashboard.thread.daemon is True
         assert captured["thread"] is not threading.main_thread()
         assert captured["thread"].name == "dashboard-web"
         # Bất biến "web không mở camera": run_server chỉ nhận app + config,
