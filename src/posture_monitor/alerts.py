@@ -28,7 +28,15 @@ không đếm lại. Escalate được chuyển thành một lời gọi ``BAD``
 tức là đèn đỏ + 2 tiếng buzzer phát lại — ``Hardware`` không có trạng thái
 riêng cho "buzzer dài hơn" và module này không được sửa tầng phần cứng, nên
 dùng lại BAD là mức gần nhất với spec §5.6. Khi ``alert=False`` (cooldown),
-escalate không kích phần cứng.
+escalate không kích tiếng.
+
+**Đổi đèn khác với kêu.** Một khung có thể đổi trạng thái (``GOOD → WARN →
+BAD``) trong khi sự kiện sinh ra đã bị cooldown chặn (``alert_start`` với
+``alert=False``). Lúc đó LED **phải** đổi theo tư thế, còn buzzer/rung phải
+im — nếu không thì ``alert_cooldown_s`` chỉ chặn được trường hợp lặp lại
+cùng trạng thái, đúng thứ người dùng nghe thấy là "vẫn bị làm ồn". Vì vậy
+mỗi mục trong hàng đợi mang theo cờ ``alert`` và được truyền xuống
+``Hardware.set_state(state, alert=...)``.
 
 Trạng thái ``BREAK`` (nhắc nghỉ, 3 tiếng buzzer) không nằm trong bốn trạng
 thái tư thế; nó được chọn khi có ``EVENT_BREAK`` với ``alert=True`` và được
@@ -38,6 +46,7 @@ trạng thái tư thế bình thường vì ``BREAK`` khác nó.
 
 from __future__ import annotations
 
+import inspect
 import threading
 import time
 from dataclasses import dataclass
@@ -59,12 +68,36 @@ QUEUE_SIZE = 2
 CLOSE_JOIN_S = 5.0
 
 
+def _accepts_alert_keyword(hardware) -> bool:
+    """``True`` nếu ``hardware.set_state`` nhận được ``alert=...``.
+
+    Dùng để giữ tương thích với triển khai ``Hardware`` cũ (một tham số).
+    Không dò được chữ ký (C extension, ``__signature__`` lạ) thì giả định là
+    có — giao diện hiện tại của dự án đều có.
+    """
+    try:
+        signature = inspect.signature(hardware.set_state)
+    except (TypeError, ValueError):  # pragma: no cover - chữ ký không đọc được
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind is inspect.Parameter.VAR_KEYWORD:
+            return True
+        if parameter.name == "alert" and parameter.kind in (
+            inspect.Parameter.KEYWORD_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return True
+    return False
+
+
 @dataclass(frozen=True)
 class _Request:
     """Một lần đặt trạng thái đang chờ luồng phần cứng thực hiện."""
 
     state: str
-    #: ``True`` khi có sự kiện ``alert=True``: phải chạy dù trạng thái trùng.
+    #: ``True`` khi có sự kiện ``alert=True``: vừa phải chạy dù trạng thái
+    #: trùng (nên không dùng làm khoá chống lặp), vừa cho phép phát tiếng.
+    #: ``False`` = đổi trạng thái nhưng im lặng — sự kiện bị cooldown chặn.
     force: bool
 
 
@@ -96,6 +129,12 @@ class AlertDispatcher:
         self._hardware = hardware
         self.alerts = alerts
         self._queue_size = int(queue_size)
+
+        #: Triển khai ``Hardware`` cũ chỉ nhận ``set_state(state)``. Dò một
+        #: lần lúc khởi tạo thay vì thử ``TypeError`` mỗi lần gọi: một
+        #: ``TypeError`` thật bên trong ``set_state`` sẽ bị hiểu nhầm thành
+        #: "sai chữ ký" và chạy lại thao tác phần cứng hai lần.
+        self._supports_alert = _accepts_alert_keyword(hardware)
 
         self._cond = threading.Condition()
         self._pending: list[_Request] = []
@@ -302,7 +341,10 @@ class AlertDispatcher:
                 request = self._pending.pop(0)
                 self._busy = True
             try:
-                self._hardware.set_state(request.state)
+                if self._supports_alert:
+                    self._hardware.set_state(request.state, alert=request.force)
+                else:
+                    self._hardware.set_state(request.state)
             except Exception:  # noqa: BLE001 - spec §11.4: không chết vì GPIO
                 logger.warning(
                     "Lỗi phần cứng khi đặt trạng thái %s; bỏ qua và chạy tiếp.",

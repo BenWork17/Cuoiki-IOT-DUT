@@ -44,19 +44,21 @@ FRAME_PERIOD_S = 0.2
 
 
 class RecordingHardware:
-    """Ghi lại mọi lời gọi ``set_state``; không đụng GPIO."""
+    """Ghi lại mọi lời gọi ``set_state`` kèm cờ ``alert``; không đụng GPIO."""
 
     def __init__(self, delay_s: float = 0.0, fail_on: str | None = None):
         self.calls: list[str] = []
+        self.alerts: list[bool] = []
         self.delay_s = delay_s
         self.fail_on = fail_on
         self._lock = threading.Lock()
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, *, alert: bool = True) -> None:
         if self.delay_s:
             time.sleep(self.delay_s)
         with self._lock:
             self.calls.append(state)
+            self.alerts.append(alert)
         if state == self.fail_on:
             raise RuntimeError("phần cứng hỏng")
 
@@ -249,6 +251,11 @@ def test_event_with_alert_false_does_not_force_hardware():
 
 
 def test_alert_false_still_forwards_a_state_change():
+    """``alert=False`` vẫn đổi LED — chỉ tiếng là phải im.
+
+    Đổi đèn và kêu là hai việc khác nhau: trạng thái luôn được chuyển xuống
+    phần cứng, còn cờ ``alert=False`` bảo nó đừng phát buzzer/rung.
+    """
     hardware = RecordingHardware()
     dispatcher = make_dispatcher(hardware)
     try:
@@ -258,6 +265,96 @@ def test_alert_false_still_forwards_a_state_change():
         )
         assert dispatcher.flush()
         assert hardware.calls == [STATE_GOOD, STATE_WARN]
+        assert hardware.alerts == [False, False]
+    finally:
+        dispatcher.close()
+
+
+def test_state_change_to_bad_without_alert_changes_led_silently():
+    """Đổi sang BAD nhưng sự kiện bị cooldown: đèn đỏ, không tiếng."""
+    hardware = RecordingHardware()
+    dispatcher = make_dispatcher(hardware)
+    try:
+        dispatcher.dispatch(update(STATE_WARN))
+        assert dispatcher.flush()
+        # ``alert_start`` sinh ra nhưng ``state.py`` đã đặt ``alert=False``.
+        dispatcher.dispatch(
+            update(STATE_BAD, events=(alert_event(alert=False),))
+        )
+        assert dispatcher.flush()
+        assert hardware.calls == [STATE_WARN, STATE_BAD]
+        assert hardware.alerts == [False, False]
+    finally:
+        dispatcher.close()
+
+
+def test_state_change_to_bad_with_alert_sounds():
+    """Đổi sang BAD kèm sự kiện được phép: tiếng phải phát."""
+    hardware = RecordingHardware()
+    dispatcher = make_dispatcher(hardware)
+    try:
+        dispatcher.dispatch(update(STATE_WARN))
+        assert dispatcher.flush()
+        dispatcher.dispatch(update(STATE_BAD, events=(alert_event(),)))
+        assert dispatcher.flush()
+        assert hardware.calls == [STATE_WARN, STATE_BAD]
+        assert hardware.alerts == [False, True]
+    finally:
+        dispatcher.close()
+
+
+def test_break_is_always_sounded():
+    hardware = RecordingHardware()
+    dispatcher = make_dispatcher(hardware)
+    try:
+        event = Event(ts=0.0, type=EVENT_BREAK, label=None, alert=True)
+        dispatcher.dispatch(update(STATE_GOOD, events=(event,)))
+        assert dispatcher.flush()
+        assert hardware.calls == [HW_BREAK]
+        assert hardware.alerts == [True]
+    finally:
+        dispatcher.close()
+
+
+def test_hardware_without_alert_keyword_still_gets_state():
+    """Triển khai ``Hardware`` cũ (một tham số) không được làm chết luồng."""
+    calls: list[str] = []
+
+    class LegacyHardware:
+        def set_state(self, state):
+            calls.append(state)
+
+        def close(self):
+            pass
+
+    dispatcher = AlertDispatcher(LegacyHardware(), AlertsConfig())
+    try:
+        dispatcher.dispatch(update(STATE_GOOD))
+        assert dispatcher.flush()
+        dispatcher.dispatch(update(STATE_BAD, events=(alert_event(),)))
+        assert dispatcher.flush()
+        assert calls == [STATE_GOOD, STATE_BAD]
+    finally:
+        dispatcher.close()
+
+
+def test_true_type_error_inside_set_state_is_not_retried():
+    """Lỗi thật trong ``set_state`` chỉ được gọi một lần, không chạy lại."""
+    calls: list[str] = []
+
+    class ExplodingHardware:
+        def set_state(self, state, *, alert=True):
+            calls.append(state)
+            raise TypeError("lỗi thật bên trong, không phải sai chữ ký")
+
+        def close(self):
+            pass
+
+    dispatcher = AlertDispatcher(ExplodingHardware(), AlertsConfig())
+    try:
+        dispatcher.dispatch(update(STATE_BAD, events=(alert_event(),)))
+        assert dispatcher.flush()
+        assert calls == [STATE_BAD]
     finally:
         dispatcher.close()
 
@@ -491,3 +588,56 @@ def test_context_manager_closes_worker():
         dispatcher.dispatch(update(STATE_GOOD))
         assert dispatcher.flush()
     assert dispatcher.closed is True
+
+
+# ---------------------------------------------------------------------------
+# Hồi quy với máy trạng thái thật: cooldown phải chặn *tiếng*, không chặn đèn
+# ---------------------------------------------------------------------------
+
+def test_cooldown_blocks_sound_but_not_led_with_real_state_machine():
+    """Kịch bản Lead tái hiện: BAD lần hai trong cooldown 30 s.
+
+    Pipeline thật ``StateMachine`` → ``AlertDispatcher`` → hardware ghi lại,
+    dùng ``config.yaml`` mặc định (``bad_hold_s=5``, ``good_hold_s=2``,
+    ``alert_cooldown_s=30``). Ở ``t=20`` máy trạng thái sinh ``alert_start``
+    với ``alert=False``; khi đó:
+    """
+    from posture_monitor.classifier import HEAD_DOWN
+    from posture_monitor.config import load_config
+    from posture_monitor.state import StateMachine
+
+    config = load_config(_REPO_ROOT / "config.yaml")
+    state_machine = StateMachine(config.timing)
+    hardware = RecordingHardware()
+    dispatcher = AlertDispatcher(hardware, config.alerts)
+
+    # (thời điểm, nhãn) — đúng chuỗi Lead đã chạy: nhãn xấu rời đi ở t=11,
+    # ``good_hold_s=2`` nên sự kiện đóng ở t=13.
+    steps = [
+        (0.0, [HEAD_DOWN]),    # WARN
+        (5.0, [HEAD_DOWN]),    # BAD, alert_start alert=True  → cảnh báo #1
+        (11.0, []),            # nhãn xấu vắng, bắt đầu đếm good_hold
+        (13.0, []),            # GOOD, alert_end
+        (15.0, [HEAD_DOWN]),   # WARN
+        (20.0, [HEAD_DOWN]),   # BAD, alert_start alert=False (còn cooldown)
+    ]
+    try:
+        for now, labels in steps:
+            result = state_machine.update(now, labels, 50.0)
+            dispatcher.dispatch(result)
+            assert dispatcher.flush()
+
+        # Đèn vẫn theo tư thế: mỗi lần đổi trạng thái đều tới phần cứng.
+        assert hardware.calls == [
+            STATE_WARN, STATE_BAD, STATE_GOOD, STATE_WARN, STATE_BAD,
+        ]
+        # Nhưng chỉ đúng một lần BAD được phép kêu — lần thứ hai bị cooldown.
+        bad_sounds = [
+            alert
+            for state, alert in zip(hardware.calls, hardware.alerts)
+            if state == STATE_BAD
+        ]
+        assert bad_sounds == [True, False]
+        assert sum(hardware.alerts) == 1
+    finally:
+        dispatcher.close()

@@ -24,8 +24,16 @@ class Hardware(ABC):
     """Giao diện điều khiển phần cứng cảnh báo."""
 
     @abstractmethod
-    def set_state(self, state: str) -> None:
-        """Chuyển phần cứng sang ``state`` (một giá trị trong :data:`STATES`)."""
+    def set_state(self, state: str, *, alert: bool = True) -> None:
+        """Chuyển phần cứng sang ``state`` (một giá trị trong :data:`STATES`).
+
+        ``alert`` tách "đổi đèn" khỏi "kêu": trạng thái luôn được phản ánh
+        bằng LED, nhưng tiếng buzzer/rung chỉ phát khi ``alert=True``. Tầng
+        :mod:`posture_monitor.alerts` truyền ``False`` khi sự kiện bị cooldown
+        chặn — đèn vẫn đúng tư thế, người dùng vẫn được yên (spec §5.7).
+
+        Mặc định ``True`` để mọi lời gọi một tham số cũ giữ nguyên hành vi.
+        """
 
     @abstractmethod
     def close(self) -> None:
@@ -45,8 +53,10 @@ class NullHardware(Hardware):
     ``gpiozero`` trên PC). Hệ thống vẫn chạy, chỉ mất phần cảnh báo vật lý.
     """
 
-    def set_state(self, state: str) -> None:
-        logger.debug("NullHardware bỏ qua trạng thái %s.", state)
+    def set_state(self, state: str, *, alert: bool = True) -> None:
+        logger.debug(
+            "NullHardware bỏ qua trạng thái %s (alert=%s).", state, alert
+        )
 
     def close(self) -> None:
         pass
