@@ -9,8 +9,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-# Dữ liệu sinh ra khi chạy
-data/
+# Dữ liệu sinh ra khi chạy (chỉ thư mục ở gốc repo; xem chú thích dưới)
+# Phải có dấu "/" đầu: mẫu "data/" không có dấu đầu sẽ khớp ở MỌI độ sâu,
+# tức là nuốt luôn tests/data/ — nơi spec §9 bắt buộc chứa video mẫu và
+# expected.json. Ghi "/data/" để chỉ chặn dữ liệu runtime ở gốc.
+/data/
 *.db
 *.db-journal
 *.log
