@@ -32,6 +32,16 @@ from flask import Flask, Response, jsonify, render_template, request
 
 from ..classifier import LABEL_ORDER
 from ..logging_setup import get_logger
+from ..camera_audio import (
+    CameraAudioBusy,
+    CameraAudioConfigError,
+    CameraAudioError,
+    CameraAudioInputError,
+    CameraAudioUnavailable,
+    DEFAULT_TONE_DURATION_S,
+    DEFAULT_TONE_HZ,
+    SpeakController,
+)
 
 _logger = get_logger(__name__)
 
@@ -220,17 +230,22 @@ def create_app(
     config=None,
     state: DashboardState | None = None,
     storage=None,
+    speak_controller: SpeakController | None = None,
 ) -> Flask:
     """Tạo ứng dụng Flask.
 
     Args:
         config: :class:`posture_monitor.config.Config`; chỉ đọc ``web`` (cổng,
-            stream) và ``sensors`` (ngưỡng hiển thị). Có thể là ``None`` khi
-            test, dùng mặc định của spec.
+            stream), ``sensors`` (ngưỡng hiển thị) và ``camera.onvif`` (loa
+            camera). Có thể là ``None`` khi test, dùng mặc định của spec.
         state: :class:`DashboardState` dùng chung với vòng lặp chính; ``None``
             thì tạo mới (tiện cho test và cho ``/stream`` bị tắt).
         storage: :class:`posture_monitor.storage.Storage`; ``None`` thì
             ``/api/history`` trả kết quả rỗng thay vì lỗi.
+        speak_controller: :class:`posture_monitor.camera_audio.SpeakController`
+            cho ``POST /api/speak``. ``None`` thì dựng từ ``config.camera.onvif``
+            ở lần gọi đầu tiên (để thiếu cấu hình không làm sập lúc khởi động).
+            Tham số thêm ở cuối, có mặc định — lời gọi cũ không phải đổi.
 
     Returns:
         :class:`flask.Flask` đã gắn đủ route.
@@ -253,6 +268,24 @@ def create_app(
     app.config["STORAGE"] = storage
     app.config["STREAM_ENABLED"] = stream_enabled
     app.config["MIN_DISTANCE_CM"] = min_distance
+    app.config["SPEAK_CONTROLLER"] = speak_controller
+
+    _speak_lock = threading.Lock()
+    _speak_state: dict[str, SpeakController | None] = {"controller": speak_controller}
+
+    def _resolve_speak_controller() -> SpeakController:
+        """Controller cho ``/api/speak``; dựng một lần từ ``camera.onvif``.
+
+        Cố ý trễ: thiếu mục ``camera.onvif`` phải làm hỏng **một** request
+        với lỗi tiếng Việt, không làm sập dashboard lúc khởi động. Khóa chỉ
+        bảo vệ việc dựng, không giữ trong lúc phát (controller tự lo việc đó).
+        """
+        if _speak_state["controller"] is not None:
+            return _speak_state["controller"]
+        with _speak_lock:
+            if _speak_state["controller"] is None:
+                _speak_state["controller"] = SpeakController.from_config(config)
+            return _speak_state["controller"]
 
     @app.get("/")
     def index() -> str:
@@ -333,6 +366,67 @@ def create_app(
                 else "Đã bật lại tiếng cảnh báo.",
             }
         )
+
+    @app.post("/api/speak")
+    def api_speak() -> Response:
+        """Phát tiếng ra loa của camera IP (RTSP backchannel).
+
+        Thân JSON, mọi khóa đều tùy chọn::
+
+            {"tone_hz": 880, "duration": 0.5, "file": "duong_dan.mp3"}
+
+        - Không có ``file``: phát tiếng bíp ``tone_hz``/``duration`` — đường
+          này tự sinh G.711 nên **không cần ffmpeg**.
+        - Có ``file``: phát file đó; cần ffmpeg trên máy chạy dashboard.
+
+        Trả 200 kèm tóm tắt lần phát; lỗi tham số 400, đang phát 409, chưa
+        cấu hình loa 403 (giống ``/stream`` khi bị tắt trong config), thiếu
+        thư viện/ffmpeg 503, camera lỗi 502. Thông điệp tiếng Việt và không bao
+        giờ chứa mật khẩu camera.
+        """
+        body = request.get_json(silent=True)
+        if body is None:
+            # Thân rỗng là hợp lệ (dùng tiếng bíp mặc định), nhưng thân có
+            # nội dung mà không đọc được thì phải báo lỗi — nếu không, một
+            # request JSON hỏng sẽ lặng lẽ phát bíp ngoài ý muốn.
+            if request.get_data(cache=True):
+                return _json_error(
+                    "Thân request của /api/speak không phải JSON hợp lệ.", 400
+                )
+            body = {}
+        if not isinstance(body, Mapping):
+            return _json_error(
+                "Thân request của /api/speak phải là một đối tượng JSON.", 400
+            )
+
+        try:
+            controller = _resolve_speak_controller()
+        except CameraAudioConfigError as exc:
+            return _json_error(str(exc), 403)
+
+        file_path = body.get("file")
+        if file_path is not None and not isinstance(file_path, str):
+            return _json_error("'file' phải là chuỗi đường dẫn.", 400)
+
+        try:
+            if file_path:
+                result = controller.speak_file(file_path)
+            else:
+                tone_hz = body.get("tone_hz", DEFAULT_TONE_HZ)
+                duration = body.get("duration", DEFAULT_TONE_DURATION_S)
+                result = controller.speak_tone(tone_hz, duration)
+        except CameraAudioInputError as exc:
+            return _json_error(str(exc), 400)
+        except CameraAudioBusy as exc:
+            return _json_error(str(exc), 409)
+        except CameraAudioUnavailable as exc:
+            return _json_error(str(exc), 503)
+        except CameraAudioError as exc:
+            return _json_error(str(exc), 502)
+
+        payload = {"ok": True, "message": "Đã phát tiếng ra loa camera."}
+        payload.update(result.as_dict())
+        return jsonify(payload)
 
     @app.get("/stream")
     def stream() -> Response:
