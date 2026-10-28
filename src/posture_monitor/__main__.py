@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -288,11 +290,158 @@ def _save_one_overlay(
     return 0
 
 
-def _preview_loop(estimator, source, config, logger) -> int:
-    """Vòng lặp xem trước: đọc khung → suy luận → vẽ → hiện; ``q`` để thoát."""
-    from .overlay import draw_pose  # noqa: PLC0415 - chỉ nhánh này cần
+class _Dashboard:
+    """Bộ ba state + storage + app Flask chạy nền cho dashboard web.
+
+    Chỉ dựng ở nhánh chạy dài của ``run`` (không dựng cho ``--save-overlay``):
+    web chỉ đọc :class:`~posture_monitor.web.DashboardState` mà vòng lặp ghi,
+    **không** mở camera và không nhận ``source`` — nhờ vậy hai bên không tranh
+    nhau thiết bị.
+
+    ``start()`` đẩy server vào một luồng ``daemon`` để lỗi cổng bận (do
+    ``_serve_web`` nuốt) không làm chết vòng lặp giám sát.
+    """
+
+    def __init__(self, config, logger) -> None:
+        # Import muộn: chỉ nhánh chạy dài cần Flask.
+        from .storage import Storage  # noqa: PLC0415
+        from .web import DashboardState, create_app  # noqa: PLC0415
+
+        self.config = config
+        self.logger = logger
+        self.state = DashboardState()
+        self.storage = Storage(config)
+        self.storage.open()
+        try:
+            self.app = create_app(
+                config, state=self.state, storage=self.storage
+            )
+        except BaseException:
+            # Không để rò kết nối ghi khi dựng app hỏng.
+            self.storage.close()
+            raise
+        self.thread = threading.Thread(
+            target=_serve_web,
+            args=(self.app, config, logger),
+            name="dashboard-web",
+            daemon=True,
+        )
+
+    def start(self) -> None:
+        """Chạy server web ở luồng nền (không chặn vòng lặp giám sát)."""
+        self.thread.start()
+
+
+def _serve_web(app, config, logger) -> None:
+    """Chạy dashboard web trong luồng nền; cổng bận chỉ là cảnh báo.
+
+    Werkzeug báo cổng đã dùng bằng ``OSError`` (nhánh thường) hoặc
+    ``SystemExit`` (khi tự gọi ``sys.exit``); cả hai đều không được làm chết
+    tiến trình giám sát — mất dashboard còn hơn mất chức năng chính.
+    """
+    from .web import run_server  # noqa: PLC0415 - chỉ luồng này cần
+
+    try:
+        run_server(app, config)
+    except (OSError, SystemExit) as exc:
+        logger.warning(
+            "Không mở được dashboard web (%s); chương trình vẫn giám sát. "
+            "Kiểm tra 'web.host'/'web.port' và cổng đã bị chiếm.",
+            exc,
+        )
+
+
+def _monitor_loop(
+    estimator,
+    source,
+    config,
+    logger,
+    state=None,
+    storage=None,
+    sensor=None,
+    dispatcher=None,
+    stream_enabled=False,
+) -> int:
+    """Vòng lặp giám sát: đọc khung → pose → đặc trưng → phân loại → trạng thái.
+
+    Vẫn giữ nguyên hành vi xem trước cũ (cửa sổ OpenCV, phím ``q``/``Esc``,
+    nhịp ``target_fps``, mã thoát); phần web chỉ là đích ghi thêm:
+
+    - ``state.update(...)`` mỗi khung, ``state.set_frame(jpeg)`` **chỉ khi**
+      ``stream_enabled`` (không mã hoá JPEG để vứt đi).
+    - ``storage.record(update, distance_cm)`` mỗi khung.
+    - ``dispatcher.dispatch(update)``; khi dashboard đang tắt tiếng thì đẩy
+      bản sao có ``alerts=()`` để phần cứng không kêu, còn sự kiện vẫn được
+      ghi vào DB và hiện trên web.
+    - Yêu cầu hiệu chỉnh từ web **không** tự chạy ở đây: chỉ log hướng dẫn
+      chạy lệnh ``calibrate`` rồi khởi động lại, vì hiệu chỉnh cần một cửa sổ
+      thu riêng và người dùng phải ngồi đúng tư thế.
+    """
+    from .calibration import (  # noqa: PLC0415 - chỉ nhánh này cần
+        DEFAULT_PATH,
+        Baseline,
+        CalibrationError,
+    )
+    from .calibration import load as load_calibration  # noqa: PLC0415
+    from .classifier import LABEL_ORDER, classify  # noqa: PLC0415
+    from .features import ALL_NAMES, extract  # noqa: PLC0415
+    from .overlay import draw_pose  # noqa: PLC0415
+    from .sensors import apply_distance  # noqa: PLC0415
+    from .state import (  # noqa: PLC0415
+        EVENT_ALERT_END,
+        EVENT_ALERT_START,
+        Smoother,
+        StateMachine,
+    )
+    from .web.app import LABEL_TEXT  # noqa: PLC0415 - nhãn tiếng Việt cho web
 
     interval = 1.0 / max(1, config.model.target_fps)
+    view = config.camera.view
+    kp_conf_min = config.model.kp_conf_min
+    min_distance_cm = float(config.sensors.min_distance_cm)
+    smooth_window_s = float(config.timing.smooth_window_s)
+
+    try:
+        baseline = load_calibration(DEFAULT_PATH)
+        feature_baseline = baseline
+    except FileNotFoundError:
+        baseline = Baseline(
+            values={name: None for name in ALL_NAMES},
+            view=view,
+            width=int(config.camera.width),
+            height=int(config.camera.height),
+            created_at="",
+            frames=0,
+        )
+        feature_baseline = None
+        logger.warning(
+            "Chưa có %s: chạy không baseline, các nhãn phụ thuộc hiệu chỉnh "
+            "(HEAD_DOWN/TOO_CLOSE/LEAN/HEAD_TILT/LOOK_AWAY) không được đánh "
+            "giá. Chạy 'python -m posture_monitor calibrate' để hiệu chỉnh.",
+            DEFAULT_PATH,
+        )
+    except CalibrationError as exc:
+        baseline = Baseline(
+            values={name: None for name in ALL_NAMES},
+            view=view,
+            width=int(config.camera.width),
+            height=int(config.camera.height),
+            created_at="",
+            frames=0,
+        )
+        feature_baseline = None
+        logger.warning(
+            "%s hỏng (%s); chạy không baseline. Chạy lại lệnh 'calibrate'.",
+            DEFAULT_PATH,
+            exc,
+        )
+
+    smoother = Smoother(smooth_window_s)
+    machine = StateMachine(config.timing)
+    loop_start = time.monotonic()
+    #: Nhãn đang có sự kiện cảnh báo đang mở, để dựng chữ ``alert`` cho web.
+    active_alerts: dict[str, str] = {}
+
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
     logger.info("Cửa sổ xem trước đã mở. Bấm q hoặc Esc để thoát.")
 
@@ -308,8 +457,22 @@ def _preview_loop(estimator, source, config, logger) -> int:
 
             pose = estimator.detect(frame)
             if pose is None:
+                features = extract(
+                    None,
+                    None,
+                    view=view,
+                    kp_conf_min=kp_conf_min,
+                    baseline=feature_baseline,
+                )
                 drawn = frame
             else:
+                features = extract(
+                    pose.xy,
+                    pose.conf,
+                    view=view,
+                    kp_conf_min=kp_conf_min,
+                    baseline=feature_baseline,
+                )
                 drawn = draw_pose(
                     frame,
                     pose.xy,
@@ -317,6 +480,64 @@ def _preview_loop(estimator, source, config, logger) -> int:
                     config.model.kp_conf_min,
                     copy=False,
                 )
+
+            now = time.monotonic() - loop_start
+            distance_cm = None if sensor is None else sensor.read()
+
+            smoothed = smoother.push(now, features)
+            classification = classify(smoothed, baseline, config.thresholds)
+            labels = apply_distance(
+                classification.labels, distance_cm, min_distance_cm
+            )
+            update = machine.update(now, labels, classification.score)
+
+            for event in update.events:
+                if event.label is None:
+                    continue
+                if event.type == EVENT_ALERT_START:
+                    active_alerts[event.label] = LABEL_TEXT.get(
+                        event.label, event.label
+                    )
+                elif event.type == EVENT_ALERT_END:
+                    active_alerts.pop(event.label, None)
+            alert_text = (
+                ", ".join(active_alerts[label] for label in sorted(active_alerts))
+                if active_alerts
+                else None
+            )
+
+            if state is not None:
+                state.update(
+                    state=update.state,
+                    labels=[
+                        label for label in LABEL_ORDER if label in update.labels
+                    ],
+                    score=update.score,
+                    sitting_s=update.sitting_s,
+                    distance_cm=distance_cm,
+                    alert=alert_text,
+                )
+                if stream_enabled:
+                    ok, buffer = cv2.imencode(".jpg", drawn)
+                    if ok:
+                        state.set_frame(buffer.tobytes())
+                if state.consume_calibration_request():
+                    logger.info(
+                        "Dashboard có yêu cầu hiệu chỉnh lại: hiệu chỉnh cần "
+                        "người ngồi đúng tư thế nên không chạy tự động ở đây. "
+                        "Hãy thoát và chạy 'python -m posture_monitor "
+                        "calibrate', rồi khởi động lại 'run'."
+                    )
+
+            if storage is not None:
+                storage.record(update, distance_cm)
+
+            if dispatcher is not None:
+                if state is not None and state.muted:
+                    # Chỉ chặn tiếng; sự kiện vẫn đi vào DB và lên dashboard.
+                    dispatcher.dispatch(replace(update, alerts=()))
+                else:
+                    dispatcher.dispatch(update)
 
             cv2.imshow(WINDOW_NAME, drawn)
             # waitKey phải được gọi để OpenCV xử lý sự kiện cửa sổ.
@@ -394,7 +615,40 @@ def cmd_run(args: argparse.Namespace) -> int:
             )
 
         _print_status(config, hardware, source, view, estimator.backend)
-        return _preview_loop(estimator, source, config, logger)
+
+        # Nhánh chạy dài: dựng dashboard web (state + storage + Flask) và chạy
+        # server ở luồng nền trước khi vào vòng lặp. Nhánh --save-overlay ở
+        # trên đã return sớm nên không dựng gì.
+        from .alerts import AlertDispatcher  # noqa: PLC0415
+        from .sensors import create_sensor  # noqa: PLC0415
+
+        sensor = None
+        dispatcher = None
+        dashboard = None
+        try:
+            dashboard = _Dashboard(config, logger)
+            dashboard.start()
+            sensor = create_sensor(config)
+            dispatcher = AlertDispatcher(hardware, config.alerts)
+            return _monitor_loop(
+                estimator,
+                source,
+                config,
+                logger,
+                state=dashboard.state,
+                storage=dashboard.storage,
+                sensor=sensor,
+                dispatcher=dispatcher,
+                stream_enabled=bool(config.web.stream_enabled),
+            )
+        finally:
+            if dashboard is not None:
+                dashboard.storage.close()
+                dashboard.thread.join(timeout=1.0)
+            if dispatcher is not None:
+                dispatcher.close()
+            if sensor is not None:
+                sensor.close()
     finally:
         source.close()
         hardware.close()
