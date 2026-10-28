@@ -8,6 +8,7 @@ cứng. Đồng hồ được bơm từ ngoài (:class:`FakeClock`) để mốc 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import sys
 from datetime import datetime
@@ -36,6 +37,9 @@ from posture_monitor.storage import (  # noqa: E402
     MAX_FRAME_GAP_S,
     MINUTE_S,
     Storage,
+    _format_local,
+    _local_day_key,
+    _local_midnight,
 )
 
 #: Mốc bắt đầu cố định: 10/10/2026 08:00:00 giờ địa phương. Dùng giờ địa
@@ -553,3 +557,178 @@ def test_history_khong_loi_khi_db_chua_ton_tai(tmp_path, clock):
     )
     # Chưa open(): đọc phải trả rỗng, không raise.
     assert store.history("today")["has_data"] is False
+
+
+# ---------------------------------------------------------------------------
+# Đồng hồ ngoài dải datetime
+# ---------------------------------------------------------------------------
+
+#: Các mốc từng làm ``history()`` ném ``OSError`` trên Windows trước khi sửa:
+#: trước 1970 (``-1``), đúng epoch (``0``), rất gần epoch (``2000``), và xa
+#: tới mức vượt cả ``datetime.MAXYEAR`` (``1e18``).
+CLOCK_NGOAI_DAI = (-1.0, 0.0, 2000.0, 1e18)
+
+
+@pytest.mark.parametrize("bad_clock", CLOCK_NGOAI_DAI)
+@pytest.mark.parametrize("range_key", ["today", "7d"])
+def test_history_khong_raise_khi_dong_ho_ngoai_dai(
+    tmp_path, bad_clock, range_key
+):
+    """``clock`` là tham số tiêm được, nên mọi ``float`` hữu hạn phải an toàn.
+
+    Trước khi sửa, cả bốn mốc này ném ``OSError: [Errno 22] Invalid argument``
+    từ ``datetime.fromtimestamp(...).timestamp()`` trong ``_local_midnight``
+    (Windows không biểu diễn được mốc trước 1970/gần epoch). Đó là lỗi ở biên
+    API chứ không phải lỗi của người gọi.
+    """
+    store = Storage(
+        StorageConfig(db_path=str(tmp_path / "p.db")), clock=FakeClock(bad_clock)
+    )
+    store.open()
+    try:
+        result = store.history(range_key)
+        # Không raise là điều kiện chính; hình dạng vẫn phải đúng để web đọc.
+        assert result["range"] == range_key
+        assert result["has_data"] is False
+        assert result["labels"] == []
+        # Thông báo tiếng Việt phải nói rõ vấn đề là mốc ngày, không phải
+        # "chưa có dữ liệu" — người dùng cần biết đồng hồ thiết bị có vấn đề.
+        assert "mốc ngày" in result["message"]
+        assert "Chưa có dữ liệu" not in result["message"]
+    finally:
+        store.close()
+
+
+@pytest.mark.parametrize("bad_clock", CLOCK_NGOAI_DAI)
+def test_history_voi_now_ngoai_dai_khong_raise(tmp_path, clock, bad_clock):
+    """``now`` truyền thẳng vào cũng phải an toàn, không chỉ ``clock``."""
+    store = Storage(
+        StorageConfig(db_path=str(tmp_path / "p.db")), clock=clock
+    )
+    store.open()
+    try:
+        assert store.history("today", now=bad_clock)["has_data"] is False
+        assert store.history("7d", now=bad_clock)["has_data"] is False
+    finally:
+        store.close()
+
+
+def test_history_chi_canh_bao_dong_ho_mot_lan(tmp_path, caplog):
+    """Dashboard gọi ``history()`` định kỳ: log WARNING chỉ được ghi một lần."""
+    store = Storage(
+        StorageConfig(db_path=str(tmp_path / "p.db")), clock=FakeClock(-1.0)
+    )
+    store.open()
+    try:
+        with caplog.at_level(logging.WARNING):
+            for _ in range(5):
+                store.history("today")
+                store.history("7d")
+        warnings = [
+            record
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+            and "mốc ngày" in record.getMessage()
+        ]
+        assert len(warnings) == 1, (
+            f"phải cảnh báo đúng một lần, thực tế {len(warnings)} lần"
+        )
+        assert "-1" in warnings[0].getMessage(), "log cần nêu mốc đã nhận"
+    finally:
+        store.close()
+
+
+def test_moi_doi_tuong_storage_canh_bao_rieng(tmp_path, caplog):
+    """Cờ "đã cảnh báo" thuộc từng đối tượng, không phải trạng thái toàn cục."""
+    with caplog.at_level(logging.WARNING):
+        for _ in range(2):
+            store = Storage(
+                StorageConfig(db_path=str(tmp_path / "p.db")),
+                clock=FakeClock(0.0),
+            )
+            store.open()
+            try:
+                store.history("today")
+            finally:
+                store.close()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING and "mốc ngày" in record.getMessage()
+    ]
+    assert len(warnings) == 2
+
+
+def test_history_hoat_dong_lai_khi_dong_ho_tro_lai_binh_thuong(tmp_path):
+    """Cảnh báo đã ghi rồi không được làm hỏng dữ liệu khi đồng hồ đúng lại."""
+    clock = FakeClock(-1.0)
+    store = Storage(StorageConfig(db_path=str(tmp_path / "p.db")), clock=clock)
+    store.open()
+    try:
+        assert store.history("today")["has_data"] is False
+
+        clock.now = BASE_TS
+        store.record(make_update(clock.now, score=90.0))
+        clock.advance(1)
+        store.record(make_update(clock.now, score=90.0))
+        store.flush()
+
+        today = store.history("today")
+        assert today["has_data"] is True
+        assert today["labels"], "đồng hồ hợp lệ lại thì biểu đồ phải có nhãn"
+        index = today["labels"].index("08:00")
+        assert today["good_pct"][index] == pytest.approx(100.0, abs=0.5)
+    finally:
+        store.close()
+
+
+def test_cleanup_retention_khong_raise_khi_dong_ho_ngoai_dai(tmp_path):
+    """Dọn dữ liệu cũ phải chịu được ``clock`` lạ (log dùng mốc đã định dạng)."""
+    for bad_clock in CLOCK_NGOAI_DAI:
+        store = Storage(
+            StorageConfig(db_path=str(tmp_path / f"r{bad_clock}.db")),
+            clock=FakeClock(bad_clock),
+        )
+        store.open()
+        try:
+            assert store.cleanup_retention() >= 0
+        finally:
+            store.close()
+
+
+@pytest.mark.parametrize("value", CLOCK_NGOAI_DAI + (float("nan"), float("inf")))
+def test_ham_dinh_dang_khong_bao_gio_raise(value):
+    """Ba helper định dạng là hàng rào cuối: mọi ``float`` đều phải an toàn.
+
+    Chỉ cần khẳng định "không ném" và "trả đúng kiểu" — giá trị cụ thể tuỳ
+    mốc. Lưu ý ``2000.0`` (1970-01-01 giờ địa phương) vẫn có khoá ngày hợp lệ;
+    chỉ ``_local_midnight`` thất bại vì ``.timestamp()`` của nửa đêm hôm đó
+    rơi về trước 1970.
+    """
+    midnight = _local_midnight(value)
+    assert midnight is None or isinstance(midnight, float)
+
+    key = _local_day_key(value)
+    assert key is None or key.count("-") == 2
+
+    for fmt in ("%Y-%m-%d", "%H:00", "%d/%m"):
+        assert isinstance(_format_local(value, fmt), str)
+
+
+@pytest.mark.parametrize("value", (-1.0, 1e18, float("nan"), float("inf")))
+def test_ham_dinh_dang_tra_du_phong_ro_rang(value):
+    """Mốc thật sự không dùng được phải trả giá trị dự phòng nhìn thấy được."""
+    assert _local_midnight(value) is None
+    assert _local_day_key(value) is None
+    assert _format_local(value, "%d/%m", "--/--") == "--/--"
+
+
+def test_ham_dinh_dang_van_dung_voi_moc_hop_le():
+    """Bọc lỗi không được làm hỏng đường chạy bình thường."""
+    assert _local_midnight(BASE_TS) == pytest.approx(
+        datetime(2026, 10, 10, 0, 0, 0).timestamp()
+    )
+    assert _local_day_key(BASE_TS) == "2026-10-10"
+    assert _format_local(BASE_TS, "%H:00") == "08:00"
+
+

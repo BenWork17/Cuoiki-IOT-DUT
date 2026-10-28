@@ -37,6 +37,13 @@ Quyết định thiết kế:
 - **Không bao giờ crash vì DB** (spec §11.4): mọi thao tác SQL nằm trong
   ``try/except sqlite3.Error``/``OSError``; lỗi được log rõ và hệ thống chạy
   tiếp. Nếu không mở được DB ngay từ đầu, mọi phương thức trở thành no-op.
+- **Đồng hồ hỏng cũng không làm sập dashboard.** ``datetime`` không biểu diễn
+  được mọi ``float``: trên Windows, ``datetime.fromtimestamp()`` với mốc epoch
+  gần 0 ném ``OSError``, còn ``.timestamp()`` của ``datetime`` trước 1970 cũng
+  ném. Vì ``clock`` là tham số tiêm được từ ngoài nên đây là biên API: mọi chỗ
+  dùng ``datetime`` trong module đều được bọc; không xác định được mốc ngày thì
+  :meth:`Storage.history` trả kết quả rỗng kèm thông báo tiếng Việt và chỉ
+  cảnh báo **một lần**, thay vì để ``OSError`` lọt ra ngoài mỗi chu kỳ cập nhật.
 - **Phiên mồ côi:** khi mở, mọi dòng ``sessions`` còn ``end_ts IS NULL`` bị
   coi là phiên của tiến trình đã chết đột ngột; ``end_ts`` được đóng bằng mốc
   muộn nhất có trong ``events``/``minute_stats`` của phiên đó (không có thì
@@ -165,12 +172,49 @@ class _Bucket:
         return round(self.distance_sum / self.distance_n, 2)
 
 
-def _local_midnight(ts: float) -> float:
-    """Mốc 00:00 giờ địa phương của ngày chứa ``ts``."""
-    moment = datetime.fromtimestamp(ts).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    return moment.timestamp()
+def _local_midnight(ts: float) -> float | None:
+    """Mốc 00:00 giờ địa phương của ngày chứa ``ts``.
+
+    Trả ``None`` khi ``ts`` nằm ngoài dải mà :class:`datetime` biểu diễn được.
+    Đây không phải trường hợp hiếm chỉ có trong test: trên Windows
+    ``datetime.fromtimestamp()`` ném ``OSError`` với mốc epoch gần 0, còn
+    ``.timestamp()`` ném khi kết quả là ``datetime`` trước 1970. Vì ``clock``
+    là tham số tiêm được từ ngoài, mọi ``float`` hữu hạn đều là đầu vào hợp lệ
+    về kiểu, nên hàm này **không được** để lỗi đó lọt ra — người gọi xử lý
+    ``None`` như "không xác định được mốc ngày".
+    """
+    try:
+        moment = datetime.fromtimestamp(ts).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return moment.timestamp()
+    except (OSError, OverflowError, ValueError, TypeError):
+        return None
+
+
+def _format_local(ts: float, fmt: str, fallback: str = "?") -> str:
+    """Định dạng mốc thời gian theo giờ địa phương, **không bao giờ** raise.
+
+    Dùng cho nhãn biểu đồ và thông báo log: một mốc lạ chỉ làm nhãn thành
+    ``fallback``, không được làm hỏng cả bản ghi hay cả request HTTP.
+    """
+    try:
+        return datetime.fromtimestamp(ts).strftime(fmt)
+    except (OSError, OverflowError, ValueError, TypeError):
+        return fallback
+
+
+def _local_day_key(ts: float) -> str | None:
+    """Khoá ``YYYY-MM-DD`` của ngày địa phương; ``None`` nếu không biểu diễn được.
+
+    Tách khỏi :func:`_format_local` vì khoá gộp **không được** dùng chung một
+    giá trị dự phòng: nếu hai mốc khác nhau cùng rơi vào một chuỗi như ``""``
+    thì chúng bị cộng dồn vào một ngày ma.
+    """
+    try:
+        return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    except (OSError, OverflowError, ValueError, TypeError):
+        return None
 
 
 def _finite_or_none(value: Any) -> float | None:
@@ -186,7 +230,9 @@ def _finite_or_none(value: Any) -> float | None:
     return number
 
 
-def _empty_history(range_key: str) -> dict[str, Any]:
+def _empty_history(
+    range_key: str, message: str = "Chưa có dữ liệu."
+) -> dict[str, Any]:
     """Kết quả rỗng nhưng cùng hình dạng với :meth:`Storage.history`."""
     unit = "hour" if range_key == "today" else "day"
     return {
@@ -198,8 +244,15 @@ def _empty_history(range_key: str) -> dict[str, Any]:
         "absent_s": [],
         "distance_cm_avg": [],
         "has_data": False,
-        "message": "Chưa có dữ liệu.",
+        "message": message,
     }
+
+
+#: Thông báo trả cho dashboard khi ``clock`` nằm ngoài dải biểu diễn được.
+CLOCK_OUT_OF_RANGE_MESSAGE = (
+    "Không xác định được mốc ngày: đồng hồ hệ thống trả về giá trị nằm ngoài "
+    "dải thời gian hợp lệ. Kiểm tra đồng hồ của thiết bị rồi tải lại trang."
+)
 
 
 class Storage:
@@ -239,6 +292,9 @@ class Storage:
         )
         self._last_flush_ts = 0.0
         self._dropped_rows = 0
+        # Chỉ cảnh báo đồng hồ hỏng một lần: dashboard gọi history() mỗi 30
+        # giây, log mỗi lần sẽ nhấn chìm log thật trên thẻ nhớ.
+        self._warned_bad_clock = False
 
     # ------------------------------------------------------------------
     # Vòng đời
@@ -540,7 +596,7 @@ class Storage:
                 "Đã xoá %d dòng cũ hơn %d ngày (trước %s).",
                 removed,
                 self.retention_days,
-                datetime.fromtimestamp(cutoff).strftime("%Y-%m-%d %H:%M"),
+                _format_local(cutoff, "%Y-%m-%d %H:%M", "mốc không xác định"),
             )
         return removed
 
@@ -567,14 +623,28 @@ class Storage:
         50 giây không kéo lệch cả giờ như khi lấy trung bình cộng đơn thuần.
 
         Không raise khi DB chưa có/chưa mở: trả kết quả rỗng kèm thông báo.
+
+        Cũng không raise khi ``clock`` (hoặc ``now``) nằm ngoài dải thời gian
+        mà :class:`datetime` biểu diễn được — ví dụ đồng hồ hệ thống chưa được
+        đồng bộ. Khi đó trả kết quả rỗng, ``has_data`` là ``False`` và
+        ``message`` nói rõ không xác định được mốc ngày; log WARNING đúng một
+        lần cho mỗi đối tượng (dashboard gọi hàm này định kỳ).
         """
         if range_key not in ("today", "7d"):
             raise ValueError(
                 f"range phải là 'today' hoặc '7d', nhận được {range_key!r}."
             )
 
-        moment = float(self._clock()) if now is None else float(now)
+        raw_moment = self._clock() if now is None else now
+        moment = _finite_or_none(raw_moment)
+        if moment is None:
+            self._warn_bad_clock(raw_moment)
+            return _empty_history(range_key, CLOCK_OUT_OF_RANGE_MESSAGE)
+
         midnight = _local_midnight(moment)
+        if midnight is None:
+            self._warn_bad_clock(raw_moment)
+            return _empty_history(range_key, CLOCK_OUT_OF_RANGE_MESSAGE)
         if range_key == "today":
             start = midnight
             end = midnight + DAY_S
@@ -596,6 +666,23 @@ class Storage:
         if range_key == "today":
             return self._build_hourly(rows, midnight, moment)
         return self._build_daily(rows, start, moment)
+
+    def _warn_bad_clock(self, raw_moment: Any) -> None:
+        """Cảnh báo **một lần** rằng ``clock`` không dùng để tính mốc ngày được.
+
+        ``history()`` được dashboard gọi định kỳ (mỗi 30 giây). Log mỗi lần gọi
+        sẽ làm ngập log trên thẻ nhớ mà không thêm thông tin gì, nên chỉ lần
+        đầu tiên mới ghi WARNING; các lần sau im lặng và vẫn trả kết quả rỗng.
+        """
+        if self._warned_bad_clock:
+            return
+        self._warned_bad_clock = True
+        _logger.warning(
+            "Đồng hồ trả về mốc %r không dùng được để xác định mốc ngày "
+            "(ngoài dải datetime biểu diễn được); dashboard sẽ tạm hiện "
+            "trống cho tới khi đồng hồ hợp lệ trở lại.",
+            raw_moment,
+        )
 
     # ------------------------------------------------------------------
     # Nội bộ — ghi
@@ -732,7 +819,9 @@ class Storage:
                 "thể đã bị dừng đột ngột); đã đóng tạm ở %s dựa trên dữ liệu "
                 "cuối cùng ghi được.",
                 session_id,
-                datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S"),
+                _format_local(
+                    end_ts, "%Y-%m-%d %H:%M:%S", "mốc không xác định"
+                ),
             )
 
     def _start_session(self) -> int | None:
@@ -836,9 +925,7 @@ class Storage:
         hour = int(midnight)
         while hour <= last_hour:
             row = by_hour.get(hour)
-            result["labels"].append(
-                datetime.fromtimestamp(hour).strftime("%H:00")
-            )
+            result["labels"].append(_format_local(hour, "%H:00", "--:--"))
             if row is None:
                 result["good_pct"].append(None)
                 result["avg_score"].append(None)
@@ -860,9 +947,12 @@ class Storage:
     ) -> dict[str, Any]:
         days: dict[str, dict[str, float]] = {}
         for row in rows:
-            day = datetime.fromtimestamp(int(row["hour_ts"])).strftime(
-                "%Y-%m-%d"
-            )
+            # Khoá gộp lấy từ _local_day_key: trả None cho mốc không biểu diễn
+            # được, và None thì bỏ qua — không gộp nhầm nhiều ngày lạ vào một
+            # xô chung. Nhãn trục bên dưới dùng đúng cùng khoá đó.
+            day = _local_day_key(int(row["hour_ts"]))
+            if day is None:
+                continue
             bucket = days.setdefault(
                 day,
                 {
@@ -890,11 +980,9 @@ class Storage:
         }
         for index in range(HISTORY_7D_DAYS):
             day_ts = start + index * DAY_S
-            key = datetime.fromtimestamp(day_ts).strftime("%Y-%m-%d")
-            values = days.get(key)
-            result["labels"].append(
-                datetime.fromtimestamp(day_ts).strftime("%d/%m")
-            )
+            key = _local_day_key(day_ts)
+            values = days.get(key) if key is not None else None
+            result["labels"].append(_format_local(day_ts, "%d/%m", "--/--"))
             if values is None:
                 result["good_pct"].append(None)
                 result["avg_score"].append(None)
