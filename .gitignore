@@ -1,0 +1,33 @@
+# Môi trường Python
+venv/
+.venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Dữ liệu sinh ra khi chạy
+data/
+*.db
+*.db-journal
+*.log
+calibration.json
+out.json
+
+# Model và file export (lớn, không nên commit)
+*.pt
+*.onnx
+*_ncnn_model/
+models/
+
+# Cấu hình cá nhân (giữ config.yaml mẫu trong repo)
+config.local.yaml
+
+# Hệ điều hành / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

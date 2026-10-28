@@ -1,0 +1,48 @@
+# Thư viện của dự án — phiên bản khóa theo môi trường đã kiểm chứng trên Pi 4
+# (Raspberry Pi OS Trixie, aarch64, Python 3.13.5). Xem docs/SPEC_V2.md §2b.
+#
+# CẢNH BÁO về ba bẫy phiên bản:
+#   - torch==2.6.0   -> Illegal instruction trên Cortex-A72 (thiếu ldaddal)
+#   - ultralytics 8.4.0..8.4.3 -> NotImplementedError NCNN trên ARM64
+#   - opencv-python 4.13.0.90  -> bị chính ultralytics loại trừ (lỗi FIPS selftest)
+#
+# KHÔNG cài "ultralytics[export]": extra export gồm 5 sub-extra không điều kiện
+# (export-base, export-openvino, export-tensorflow, export-coreml, export-litert).
+# Đọc requires_dist của chúng, trên Linux/aarch64/Python 3.13 có các ràng buộc
+# áp dụng được: tensorflow>2.19.0, openvino>=2024.0.0, onnxruntime>=1.20.0,
+# onnx>=1.12.0, coremltools>=9.0.
+# Chưa chạy resolve thật (pip install --dry-run bị kill vì quá chậm) nên chưa
+# khẳng định được pip cài được hay thất bại — nhưng đây rõ ràng là tập phụ
+# thuộc lớn hơn nhiều so với ultralytics trần, và không cần cho export NCNN.
+# Cài trần ultralytics==8.4.191; pnnx KHÔNG nằm trong extra export, cài riêng.
+#
+# Ràng buộc torch<2.15.0,>=2.12.0 trong extra export mang marker
+# python_version == "3.11", nên KHÔNG áp dụng cho máy đích (Python 3.13.5).
+#
+# ---------------------------------------------------------------------------
+# BẮT BUỘC cài thêm bằng apt trên Pi (KHÔNG có trong danh sách pip dưới đây):
+#
+#   sudo apt install -y python3-picamera2 python3-lgpio python3-numpy
+#
+# Lý do: picamera2 và lgpio chỉ có bản apt dành cho hệ thống; không có wheel
+# cp313 trên PyPI cho Trixie aarch64. Vì vậy venv BẮT BUỘC tạo bằng:
+#
+#   python3 -m venv --system-site-packages venv
+#
+# Thiếu --system-site-packages thì `import picamera2` và `import lgpio` sẽ
+# thất bại ngay cả khi đã cài apt.
+#
+# Kiểm tra đã có: python3 -c "import picamera2, lgpio, numpy; print('ok')"
+# ---------------------------------------------------------------------------
+
+ultralytics==8.4.191
+torch==2.7.1              # KHÔNG BAO GIỜ 2.6.0 trên Cortex-A72
+torchvision==0.22.1       # khớp cứng torch==2.7.1
+ncnn==1.0.20261020
+pnnx==20260526            # chỉ cần khi export NCNN trên Pi
+opencv-python==5.0.0.93
+numpy==2.2.4
+PyYAML>=6.0
+Flask==3.1.3
+gpiozero==2.0.1.post3
+psutil>=6.0

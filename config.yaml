@@ -1,0 +1,71 @@
+# Cấu hình mẫu của Hệ thống giám sát tư thế học tập.
+# Mọi ngưỡng đặt ở đây, không sửa trong code (docs/SPEC_V2.md §1, §6).
+# Bỏ một khóa thì chương trình dùng giá trị mặc định trong src/posture_monitor/config.py.
+
+camera:
+  source: usb:0          # usb:N | picamera | file:duong_dan.mp4
+  width: 640
+  height: 480
+  view: front            # front | side
+
+model:
+  name: yolo11n-pose     # dự phòng: yolov8n-pose
+  format: ncnn           # ncnn | onnx | pt
+  imgsz: 320
+  target_fps: 5
+  kp_conf_min: 0.5
+  # false = export NCNN ngay trên Pi (mặc định, đo thật 42,8 giây, spec §5.2).
+  # true  = copy thư mục *_ncnn_model từ PC sang; chỉ dùng khi không muốn cài pnnx.
+  # Lưu ý: dù export trên PC, torch vẫn là phụ thuộc bắt buộc lúc chạy trên Pi.
+  export_on_pc: false
+
+tracking:
+  enabled: true          # chọn người theo track id (spec §5.6)
+  tracker: botsort.yaml
+
+thresholds:
+  head_down_ratio: 0.70
+  too_close_ratio: 1.25
+  shoulder_tilt_deg: 8
+  head_tilt_deg: 12
+  lean_x: 0.35
+  look_away_yaw: 0.5
+  neck_angle_drop_deg: 15   # chỉ dùng cho view side
+
+timing:
+  smooth_window_s: 1.0
+  bad_hold_s: 5
+  good_hold_s: 2
+  alert_cooldown_s: 30
+  escalate_after_s: 60
+  break_after_min: 45
+  absent_reset_s: 120
+  drowsy_hold_s: 10
+
+alerts:
+  buzzer_enabled: true
+  vibration_enabled: true
+
+hardware:
+  mock: auto             # auto | true | false
+  pins:
+    led_green: 17
+    led_yellow: 27
+    led_red: 22
+    buzzer: 18
+    vibration: 23
+    trig: 5
+    echo: 6              # BẮT BUỘC chia áp 5V -> 3.3V trước khi nối vào GPIO
+
+sensors:
+  ultrasonic_enabled: true
+  min_distance_cm: 35
+
+storage:
+  db_path: data/posture.db
+  retention_days: 30
+
+web:
+  host: 0.0.0.0
+  port: 8000
+  stream_enabled: false
