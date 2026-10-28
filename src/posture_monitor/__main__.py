@@ -7,9 +7,10 @@ Các lệnh theo spec v2 §7::
     python -m posture_monitor replay video.mp4 [--no-gpio] [--save-report out.json]
     python -m posture_monitor benchmark [--seconds 60]
 
-Ở phạm vi M0 chỉ ``run`` được triển khai: nạp cấu hình, khởi tạo phần cứng
-giả lập, thử mở camera (hoặc ghi rõ lý do không mở được), in trạng thái khởi
-động. Ba lệnh còn lại in thông báo "chưa triển khai" và thoát với mã 0.
+``run`` (mốc M1) mở camera, suy luận pose và vẽ 17 keypoint + xương lên khung
+hình trực tiếp; bấm ``q`` hoặc ``Esc`` để thoát. Cờ ``--save-overlay`` lưu
+**một** khung đã vẽ ra file ảnh rồi thoát, dùng để kiểm chứng trên máy không
+có màn hình. Ba lệnh còn lại in thông báo "chưa triển khai" và thoát với mã 0.
 
 Không in bất kỳ số liệu hiệu năng nào: mọi chỉ số FPS/độ trễ phải do
 ``benchmark`` sinh ra trên máy đích (spec §11.6).
@@ -19,16 +20,30 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
+
+import cv2
 
 from . import __version__
 from .capture import capture_from_config
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, redact_camera_source
 from .logging_setup import setup_logging
 
-#: Nội dung in ra cho các lệnh chưa có trong phạm vi M0.
+#: Tên cửa sổ xem trước của OpenCV.
+WINDOW_NAME = "Giam sat tu the — bam q de thoat"
+
+#: Phím thoát (mã ASCII của ``q`` và ``Esc``).
+QUIT_KEYS = (ord("q"), ord("Q"), 27)
+
+#: Số khung tối đa đọc khi chờ có người cho ``--save-overlay``. Camera mới mở
+#: thường trả vài khung tối/sai phơi sáng; đọc vài khung giúp ảnh lưu ra đúng
+#: cảnh hơn. Không phải ngưỡng nghiệp vụ nên để trong code.
+SAVE_OVERLAY_MAX_FRAMES = 10
+
+#: Nội dung in ra cho các lệnh chưa có trong phạm vi M0/M1.
 NOT_IMPLEMENTED = (
-    "Lệnh '{name}' chưa triển khai (đang ở mốc M0). "
+    "Lệnh '{name}' chưa triển khai (đang ở mốc M1). "
     "Xem docs/SPEC_V2.md §10 để biết lịch triển khai."
 )
 
@@ -66,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ghi đè góc đặt camera trong cấu hình.",
     )
     run.add_argument(
+        "--save-overlay",
+        default=None,
+        metavar="DUONG_DAN",
+        help=(
+            "Lưu một khung đã vẽ ra file ảnh rồi thoát (dùng để kiểm chứng "
+            "khi không có màn hình). Ví dụ: --save-overlay frame.jpg"
+        ),
+    )
+    run.add_argument(
         "--log-level",
         default="INFO",
         help="Mức log: DEBUG, INFO, WARNING, ERROR (mặc định: INFO).",
@@ -91,16 +115,17 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_status(config, hardware, source, view: str) -> None:
+def _print_status(config, hardware, source, view: str, backend: str) -> None:
     """In khối trạng thái khởi động cho người dùng."""
     camera_cfg = config.camera
     print()
     print("=" * 60)
-    print("  GIÁM SÁT TƯ THẾ — TRẠNG THÁI KHỞI ĐỘNG (M0)")
+    print("  GIÁM SÁT TƯ THẾ — TRẠNG THÁI KHỞI ĐỘNG (M1)")
     print("=" * 60)
     print(f"  Cấu hình      : {config.path or '(mặc định)'}")
-    print(f"  Nguồn camera  : {camera_cfg.source}")
+    print(f"  Nguồn camera  : {redact_camera_source(camera_cfg.source)}")
     print(f"  Độ phân giải  : {camera_cfg.width}x{camera_cfg.height}, view={view}")
+    print(f"  Model         : {config.model.name} ({backend}), imgsz={config.model.imgsz}")
 
     if source is None:
         print("  Camera        : KHÔNG MỞ ĐƯỢC (xem log phía trên)")
@@ -122,13 +147,116 @@ def _print_status(config, hardware, source, view: str) -> None:
         f"cooldown={config.timing.alert_cooldown_s}s"
     )
     print("-" * 60)
-    print("  Suy luận tư thế chưa triển khai ở mốc M0 (xem spec §10).")
+    print("  Vẽ xương trực tiếp; bấm q hoặc Esc trong cửa sổ để thoát.")
+    print("  Phân loại tư thế chưa triển khai ở mốc M1 (xem spec §10).")
     print("=" * 60)
     print()
 
 
+def _save_one_overlay(
+    estimator, source, config, target: Path, logger
+) -> int:
+    """Lưu **một** khung đã vẽ ra ``target`` rồi trả mã thoát.
+
+    Đọc tối đa :data:`SAVE_OVERLAY_MAX_FRAMES` khung để tránh khung đầu tiên
+    còn tối, nhưng chỉ vẽ và lưu khung đọc được sau cùng. Không có ai trong
+    khung là trạng thái hợp lệ, không phải lỗi: ghi ``persons=0``.
+    """
+    from .overlay import draw_pose  # noqa: PLC0415 - chỉ nhánh này cần
+
+    frame = None
+    for _ in range(SAVE_OVERLAY_MAX_FRAMES):
+        candidate = source.read()
+        if candidate is None:
+            break
+        frame = candidate
+
+    if frame is None:
+        logger.error(
+            "Không đọc được khung nào từ camera; không lưu được %s.", target
+        )
+        return 1
+
+    pose = estimator.detect(frame)
+    persons = estimator.last_person_count
+    if pose is None:
+        drawn = frame.copy()
+    else:
+        drawn = draw_pose(
+            frame, pose.xy, pose.conf, config.model.kp_conf_min
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(target), drawn):
+        logger.error(
+            "Không ghi được file ảnh '%s' (kiểm tra phần mở rộng và quyền "
+            "ghi).",
+            target,
+        )
+        return 1
+
+    print(f"Đã lưu khung đã vẽ: {target.resolve()}")
+    print(f"persons={persons}")
+    if persons == 0:
+        print(
+            "persons=0: không có người trong khung ở thời điểm chụp — đây là "
+            "trạng thái hợp lệ, không phải lỗi code."
+        )
+    return 0
+
+
+def _preview_loop(estimator, source, config, logger) -> int:
+    """Vòng lặp xem trước: đọc khung → suy luận → vẽ → hiện; ``q`` để thoát."""
+    from .overlay import draw_pose  # noqa: PLC0415 - chỉ nhánh này cần
+
+    interval = 1.0 / max(1, config.model.target_fps)
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
+    logger.info("Cửa sổ xem trước đã mở. Bấm q hoặc Esc để thoát.")
+
+    try:
+        while True:
+            started = time.monotonic()
+            frame = source.read()
+            if frame is None:
+                # Mất camera: capture đã ghi log lý do; dừng vòng lặp thay vì
+                # quay vòng liên tục làm nóng CPU.
+                logger.error("Không còn khung nào từ camera; dừng xem trước.")
+                return 1
+
+            pose = estimator.detect(frame)
+            if pose is None:
+                drawn = frame
+            else:
+                drawn = draw_pose(
+                    frame,
+                    pose.xy,
+                    pose.conf,
+                    config.model.kp_conf_min,
+                    copy=False,
+                )
+
+            cv2.imshow(WINDOW_NAME, drawn)
+            # waitKey phải được gọi để OpenCV xử lý sự kiện cửa sổ.
+            key = cv2.waitKey(1) & 0xFF
+            if key in QUIT_KEYS:
+                logger.info("Nhận phím thoát; đóng cửa sổ.")
+                return 0
+            if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
+                # Người dùng bấm nút X của cửa sổ.
+                logger.info("Cửa sổ đã đóng; thoát.")
+                return 0
+
+            # Giữ nhịp theo target_fps, không ngủ nếu xử lý đã lâu hơn.
+            elapsed = time.monotonic() - started
+            remaining = interval - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+    finally:
+        cv2.destroyAllWindows()
+
+
 def cmd_run(args: argparse.Namespace) -> int:
-    """Xử lý lệnh ``run``: cấu hình → phần cứng → camera → trạng thái."""
+    """Xử lý lệnh ``run``: cấu hình → phần cứng → camera → pose + overlay."""
     logger = setup_logging(args.log_level)
 
     try:
@@ -155,32 +283,38 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     source = capture_from_config(config)
     if source is None:
-        # Không có camera vẫn là trạng thái hợp lệ ở M0: báo rõ và chạy tiếp.
-        logger.warning(
-            "Không mở được nguồn ảnh '%s'. Hệ thống chạy ở chế độ không "
-            "camera; chạy 'python scripts/camera_probe.py' để kiểm tra "
-            "phần cứng.",
-            config.camera.source,
+        logger.error(
+            "Không mở được nguồn ảnh '%s' nên không thể suy luận pose. Chạy "
+            "'python scripts/camera_probe.py' để kiểm tra phần cứng.",
+            redact_camera_source(config.camera.source),
         )
-    else:
-        frame = source.read()
-        if frame is None:
-            logger.warning("Camera đã mở nhưng chưa đọc được khung nào.")
-        else:
-            logger.info(
-                "Đọc thử một khung thành công: %dx%d.",
-                frame.shape[1],
-                frame.shape[0],
-            )
+        hardware.close()
+        return 1
+
+    # Import muộn: kéo ultralytics/torch chỉ khi thật sự chạy suy luận.
+    from .pose import PoseError, PoseEstimator  # noqa: PLC0415
 
     try:
-        _print_status(config, hardware, source, view)
-    finally:
-        if source is not None:
-            source.close()
+        estimator = PoseEstimator(config)
+    except PoseError as exc:
+        logger.error("%s", exc)
+        source.close()
         hardware.close()
+        return 2
+    except KeyboardInterrupt:  # pragma: no cover - export có thể bị dừng tay
+        raise
 
-    return 0
+    try:
+        if args.save_overlay:
+            return _save_one_overlay(
+                estimator, source, config, Path(args.save_overlay), logger
+            )
+
+        _print_status(config, hardware, source, view, estimator.backend)
+        return _preview_loop(estimator, source, config, logger)
+    finally:
+        source.close()
+        hardware.close()
 
 
 def main(argv: list[str] | None = None) -> int:

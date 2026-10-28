@@ -3,7 +3,17 @@
 # Bỏ một khóa thì chương trình dùng giá trị mặc định trong src/posture_monitor/config.py.
 
 camera:
-  source: usb:0          # usb:N | picamera | file:duong_dan.mp4
+  source: usb:0          # usb:N | picamera | file:duong_dan.mp4 | rtsp:rtsp://...
+  # Camera IP (RTSP): dùng luồng PHỤ (sub-stream), đừng dùng luồng chính 1080p —
+  # dự án thu 640x480 rồi YOLO resize về imgsz 320, nên 1080p chỉ tốn CPU giải mã.
+  #   ví dụ luồng phụ 704x576:  # rtsp:rtsp://user:matkhau@192.168.1.50:554/1/2
+  # KHÔNG dán URL thật (có mật khẩu) vào file này: nó được commit. Chọn một trong hai:
+  #   1) copy sang config.local.yaml (đã bị .gitignore chặn) rồi chạy
+  #      python -m posture_monitor run --config config.local.yaml
+  #   2) đặt biến môi trường POSTURE_CAMERA_SOURCE="rtsp://user:matkhau@host:554/1/2"
+  #      (biến môi trường thắng khóa camera.source ở trên, mật khẩu không nằm trong file nào)
+  #      Ở biến môi trường, URL trần như trên chạy được luôn (tự hiểu là rtsp:);
+  #      dạng tường minh "rtsp:rtsp://user:matkhau@host:554/1/2" cũng chạy.
   width: 640
   height: 480
   view: front            # front | side

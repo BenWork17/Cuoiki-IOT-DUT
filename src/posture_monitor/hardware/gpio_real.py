@@ -164,8 +164,14 @@ class GpioRealHardware(Hardware):
 
     # -- giao diện Hardware --------------------------------------------
 
-    def set_state(self, state: str) -> None:
-        """Ánh xạ trạng thái sang LED/buzzer/rung theo spec §5.7."""
+    def set_state(self, state: str, *, alert: bool = True) -> None:
+        """Ánh xạ trạng thái sang LED/buzzer/rung theo spec §5.7.
+
+        ``alert=False`` vẫn đổi LED đúng trạng thái nhưng **không** kêu và
+        **không** rung — đó là trường hợp sự kiện bị ``alert_cooldown_s``
+        chặn: người dùng đã được nhắc gần đây thì đèn vẫn phải phản ánh tư
+        thế, chỉ tiếng là phải im.
+        """
         if state not in STATES:
             logger.warning("Trạng thái phần cứng không hợp lệ: %r (bỏ qua).", state)
             return
@@ -179,6 +185,7 @@ class GpioRealHardware(Hardware):
         alerts = self._alerts_config()
         buzzer_enabled = bool(getattr(alerts, "buzzer_enabled", True))
         vibration_enabled = bool(getattr(alerts, "vibration_enabled", True))
+        sound = bool(alert)
 
         if state == "GOOD":
             self._led_on("led_green")
@@ -186,16 +193,20 @@ class GpioRealHardware(Hardware):
             self._led_on("led_yellow")
         elif state == "BAD":
             self._led_on("led_red")
-            if buzzer_enabled:
+            if sound and buzzer_enabled:
                 self._beep(2)
-            if vibration_enabled:
+            if sound and vibration_enabled:
                 self._vibrate(VIBRATION_BAD_SECONDS)
         elif state == "BREAK":
-            if buzzer_enabled:
+            # Nhắc nghỉ không bao giờ bị cooldown chặn, nhưng vẫn tôn trọng
+            # cờ cho nhất quán với hợp đồng.
+            if sound and buzzer_enabled:
                 self._beep(3)
         # ABSENT: tắt hết, không làm gì thêm.
 
-        logger.info("Phần cứng thật -> %s", state)
+        logger.info(
+            "Phần cứng thật -> %s%s", state, "" if sound else " (im lặng — cooldown)"
+        )
 
     def close(self) -> None:
         self._all_leds_off()

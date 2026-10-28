@@ -14,13 +14,20 @@ Quy tắc:
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-# Giá trị hợp lệ cho các trường có danh sách đóng.
+#: Biến môi trường ghi đè ``camera.source``; dùng để đặt URL camera IP kèm mật
+#: khẩu mà không phải ghi mật khẩu vào file cấu hình nào (kể cả
+#: ``config.local.yaml``). Có giá trị khác rỗng thì thắng cấu hình file.
+CAMERA_SOURCE_ENV = "POSTURE_CAMERA_SOURCE"
+
+#: Giá trị hợp lệ cho các trường có danh sách đóng.
 VIEWS = ("front", "side")
 MODEL_FORMATS = ("ncnn", "onnx", "pt")
 MOCK_MODES = ("auto", True, False)
@@ -239,6 +246,25 @@ def _get_choice(
 # --------------------------------------------------------------------------
 
 
+def _normalize_env_source(override: str) -> str:
+    """Chuẩn hoá giá trị biến môi trường thành cú pháp ``camera.source``.
+
+    Người dùng tự nhiên dán thẳng URL RTSP vào ``POSTURE_CAMERA_SOURCE`` mà
+    không kèm tiền tố loại nguồn, trong khi ``config.yaml`` bắt buộc tiền tố.
+    Biến môi trường chấp nhận cả hai dạng: giá trị bắt đầu bằng ``rtsp://``
+    hoặc ``rtsps://`` mà **không** có tiền tố ``usb|file|rtsp|rtsps|picamera``
+    được hiểu ngầm là ``rtsp:``. Không nới lỏng ``parse_camera_source``: ở
+    ``config.yaml`` tiền tố vẫn là bắt buộc.
+    """
+    text = override.strip()
+    lowered = text.lower()
+    if _SOURCE_PREFIX.match(lowered):
+        return text
+    if lowered.startswith(("rtsp://", "rtsps://")):
+        return f"rtsp:{text}"
+    return text
+
+
 def _parse_camera(raw: Any) -> CameraConfig:
     data = _as_dict(raw, "camera")
     cfg = CameraConfig(
@@ -247,6 +273,12 @@ def _parse_camera(raw: Any) -> CameraConfig:
         height=_get_int(data, "height", CameraConfig.height, "camera"),
         view=_get_choice(data, "view", CameraConfig.view, VIEWS, "camera"),
     )
+    # Nguồn ảnh có thể ghi đè bằng biến môi trường để đặt URL camera IP kèm
+    # mật khẩu mà không phải ghi mật khẩu vào bất kỳ file cấu hình nào.
+    override = os.environ.get(CAMERA_SOURCE_ENV, "").strip()
+    if override:
+        cfg.source = _normalize_env_source(override)
+
     # Kiểm tra cú pháp nguồn ngay lúc nạp, để lỗi hiện ra trước khi mở camera.
     parse_camera_source(cfg.source)
     if cfg.width <= 0 or cfg.height <= 0:
@@ -457,6 +489,51 @@ def _parse_web(raw: Any) -> WebConfig:
 # Cú pháp nguồn camera
 # --------------------------------------------------------------------------
 
+#: Mẫu thông tin đăng nhập trong URL: ``scheme://user:pass@...``.
+#: Cố ý khớp **mọi** scheme, không chỉ ``rtsp``: thông điệp lỗi cũng phải che
+#: một URL sai scheme (``rtsp:http://user:pass@host``) hoặc URL lẫn trong nguồn
+#: không nhận ra.
+#:
+#: ``userinfo`` dùng ``[^/]*`` **greedy** chứ không phải ``[^/@]*``: mật khẩu
+#: hợp lệ có thể chứa ``@`` (``pa@ss``), và ``[^/@]*`` chỉ ăn tới ``@`` đầu
+#: tiên nên phần đuôi mật khẩu lọt ra ngoài chuỗi đã che. Với ``[^/]*``,
+#: greedy bắt tới ``@`` **cuối** trong authority — đúng ranh giới userinfo/địa
+#: chỉ, vì ``@`` không được phép xuất hiện trong phần host của URL.
+_URL_USERINFO = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.\-]*://)(?P<userinfo>[^/]*)@"
+)
+
+#: Chuỗi thay cho user/mật khẩu khi đưa nguồn ảnh vào log hoặc thông điệp lỗi.
+REDACTED = "***"
+
+#: Tiền tố loại nguồn hợp lệ đầu cú pháp ``camera.source``. Dùng để phân biệt
+#: "người dùng đã ghi tiền tố" với "URL RTSP trần" ở biến môi trường.
+#: Phải yêu cầu dấu ``:`` **và** loại trừ ``://`` — nếu chỉ dùng
+#: ``^(?:usb|file|rtsp|rtsps|picamera)\b`` thì chính URL trần ``rtsp://...``
+#: cũng khớp (biên từ nằm giữa ``p`` và ``:``) và sẽ không được thêm tiền tố.
+_SOURCE_PREFIX = re.compile(r"^(?:usb|file|rtsp|rtsps):(?!//)")
+
+
+def redact_camera_source(source: object) -> str:
+    """Che user/mật khẩu trong URL RTSP trước khi đưa ra log hay thông điệp lỗi.
+
+    URL camera IP chứa mật khẩu thật, nên đây là bản duy nhất được phép xuất
+    hiện trong log, thông điệp lỗi và ``ConfigError``.
+
+    >>> redact_camera_source("rtsp://admin:matkhau@192.168.1.50:554/1/2")
+    'rtsp://***:***@192.168.1.50:554/1/2'
+    >>> redact_camera_source("rtsp://192.168.1.50:554/1/2")
+    'rtsp://192.168.1.50:554/1/2'
+    """
+    text = source if isinstance(source, str) else repr(source)
+
+    def _hide(match: re.Match[str]) -> str:
+        userinfo = match.group("userinfo")
+        hidden = REDACTED if ":" not in userinfo else f"{REDACTED}:{REDACTED}"
+        return f"{match.group('scheme')}{hidden}@"
+
+    return _URL_USERINFO.sub(_hide, text)
+
 
 def parse_camera_source(source: str) -> tuple[str, int | str | None]:
     """Tách ``camera.source`` thành ``(loại, tham số)``.
@@ -466,10 +543,20 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
     - ``usb:0``        → ``("usb", 0)``
     - ``picamera``     → ``("picamera", None)``
     - ``file:a.mp4``   → ``("file", "a.mp4")``
+    - ``rtsp:rtsp://user:matkhau@host:554/1/2``
+                       → ``("rtsp", "rtsp://user:matkhau@host:554/1/2")``
 
-    Đường dẫn file được giữ nguyên phần sau dấu ``:`` đầu tiên, nên đường dẫn
-    Windows (``file:C:\\video\\a.mp4``) vẫn đọc đúng.
+    Đường dẫn file và URL RTSP được giữ nguyên phần sau dấu ``:`` đầu tiên,
+    nên đường dẫn Windows (``file:C:\\video\\a.mp4``) và URL có ``:`` trong
+    thông tin đăng nhập lẫn cổng (``rtsp://user:pass@host:554/...``) vẫn đọc
+    đúng.
+
+    Raises:
+        ConfigError: cú pháp không hợp lệ. Thông điệp đã che thông tin đăng
+            nhập của URL RTSP (xem :func:`redact_camera_source`).
     """
+    safe = redact_camera_source(source)
+
     if not isinstance(source, str) or not source.strip():
         raise ConfigError("'camera.source' phải là chuỗi không rỗng.")
 
@@ -479,8 +566,8 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
 
     if ":" not in text:
         raise ConfigError(
-            f"'camera.source' = {source!r} không hợp lệ. Dùng 'usb:N', "
-            "'picamera' hoặc 'file:duong_dan.mp4'."
+            f"'camera.source' = {safe!r} không hợp lệ. Dùng 'usb:N', "
+            "'picamera', 'file:duong_dan.mp4' hoặc 'rtsp:rtsp://...'."
         )
 
     kind, _, value = text.partition(":")
@@ -492,24 +579,37 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
             index = int(value)
         except ValueError as exc:
             raise ConfigError(
-                f"'camera.source' = {source!r}: chỉ số USB phải là số nguyên."
+                f"'camera.source' = {safe!r}: chỉ số USB phải là số nguyên."
             ) from exc
         if index < 0:
             raise ConfigError(
-                f"'camera.source' = {source!r}: chỉ số USB không được âm."
+                f"'camera.source' = {safe!r}: chỉ số USB không được âm."
             )
         return "usb", index
 
     if kind == "file":
         if not value:
             raise ConfigError(
-                f"'camera.source' = {source!r}: thiếu đường dẫn file."
+                f"'camera.source' = {safe!r}: thiếu đường dẫn file."
             )
         return "file", value
 
+    if kind == "rtsp":
+        if not value:
+            raise ConfigError(
+                f"'camera.source' = {safe!r}: thiếu URL RTSP sau 'rtsp:'."
+            )
+        if not value.lower().startswith(("rtsp://", "rtsps://")):
+            raise ConfigError(
+                f"'camera.source' = {safe!r}: URL RTSP phải bắt đầu bằng "
+                "'rtsp://' hoặc 'rtsps://'."
+            )
+        return "rtsp", value
+
     raise ConfigError(
-        f"'camera.source' = {source!r}: loại {kind!r} không được hỗ trợ. "
-        "Dùng 'usb:N', 'picamera' hoặc 'file:duong_dan.mp4'."
+        f"'camera.source' = {safe!r}: loại {kind!r} không được hỗ trợ. "
+        "Dùng 'usb:N', 'picamera', 'file:duong_dan.mp4' hoặc "
+        "'rtsp:rtsp://...'."
     )
 
 
