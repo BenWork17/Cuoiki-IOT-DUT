@@ -7,6 +7,7 @@ cuối file cần trọng số thật và tự bỏ qua khi máy không có file
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -316,23 +317,35 @@ def test_ncnn_directory_naming():
 # Tích hợp: cần trọng số thật (bỏ qua nếu không có)
 # --------------------------------------------------------------------------
 
-_PC_WEIGHTS = Path(
-    r"C:\Users\ACER\AppData\Local\Temp\pcbench\yolo11n-pose.pt"
-)
-_PC_BUS = Path(
-    r"C:\Users\ACER\AppData\Local\Temp\pcbench\assets\bus.jpg"
-)
+# Dữ liệu mẫu nằm trong ``tests/data/`` của chính repo (spec §9). Không commit
+# được trọng số (``*.pt`` bị .gitignore) hay ảnh bên thứ ba, nên dev có thể trỏ
+# sang bản cục bộ bằng biến môi trường; thiếu file thì test tự bỏ qua, không đỏ.
+_DATA_DIR = _REPO_ROOT / "tests" / "data"
+
+
+def _fixture(env_var: str, default_name: str) -> Path:
+    """Đường dẫn dữ liệu mẫu: ưu tiên ``env_var``, mặc định ``tests/data/``."""
+    override = os.environ.get(env_var)
+    return Path(override).expanduser() if override else _DATA_DIR / default_name
+
+
+_WEIGHTS = _fixture("POSTURE_TEST_WEIGHTS", "yolo11n-pose.pt")
+_BUS_IMAGE = _fixture("POSTURE_TEST_IMAGE", "bus.jpg")
 
 
 def test_bus_image_has_three_persons():
     """Mốc đối chiếu: ``bus.jpg`` ở imgsz 320 phải ra đúng 3 người."""
-    if not _PC_WEIGHTS.is_file() or not _PC_BUS.is_file():
-        pytest.skip("Không có trọng số/ảnh mẫu trên máy này.")
+    if not _WEIGHTS.is_file() or not _BUS_IMAGE.is_file():
+        pytest.skip(
+            "Không có trọng số/ảnh mẫu: đặt "
+            f"POSTURE_TEST_WEIGHTS và POSTURE_TEST_IMAGE hoặc chép file vào "
+            f"{_DATA_DIR} (trọng số yolo11n-pose.pt, ảnh bus.jpg)."
+        )
     import cv2
 
     config = Config(model=ModelConfig(format="pt", imgsz=320))
-    estimator = PoseEstimator(config, weights=_PC_WEIGHTS)
-    frame = cv2.imread(str(_PC_BUS))
+    estimator = PoseEstimator(config, weights=_WEIGHTS)
+    frame = cv2.imread(str(_BUS_IMAGE))
     assert frame is not None
 
     pose = estimator.detect(frame)

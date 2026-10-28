@@ -260,6 +260,11 @@ python -m pytest tests/ -v
 Test chạy được trên PC, không cần camera thật: video giả được tạo bằng
 `cv2.VideoWriter` trong thư mục tạm.
 
+Bài tích hợp `test_bus_image_has_three_persons` cần trọng số thật và ảnh mẫu.
+Đặt chúng trong `tests/data/` (`yolo11n-pose.pt`, `bus.jpg`) hoặc trỏ ra bản
+cục bộ bằng `POSTURE_TEST_WEIGHTS` và `POSTURE_TEST_IMAGE`; thiếu file thì test
+tự bỏ qua (skip), không làm đỏ bộ test.
+
 ---
 
 ## Kiểm tra nhanh sau khi cài trên Pi
