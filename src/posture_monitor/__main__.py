@@ -10,10 +10,15 @@ Các lệnh theo spec v2 §7::
 ``run`` (mốc M1) mở camera, suy luận pose và vẽ 17 keypoint + xương lên khung
 hình trực tiếp; bấm ``q`` hoặc ``Esc`` để thoát. Cờ ``--save-overlay`` lưu
 **một** khung đã vẽ ra file ảnh rồi thoát, dùng để kiểm chứng trên máy không
-có màn hình. Ba lệnh còn lại in thông báo "chưa triển khai" và thoát với mã 0.
+có màn hình.
 
-Không in bất kỳ số liệu hiệu năng nào: mọi chỉ số FPS/độ trễ phải do
-``benchmark`` sinh ra trên máy đích (spec §11.6).
+``calibrate`` thu khung ở tư thế chuẩn rồi ghi baseline ra ``calibration.json``;
+``replay`` chạy pipeline trên một video có sẵn và xuất báo cáo JSON;
+``benchmark`` đo FPS/độ trễ/nhiệt/RAM/throttle trên máy đích. Cả bốn lệnh đều
+đã triển khai, nên không còn nhánh "chưa triển khai" nào.
+
+Không in bất kỳ số liệu hiệu năng nào ngoài ``benchmark``: mọi chỉ số FPS/độ
+trễ phải do ``benchmark`` sinh ra trên máy đích (spec §11.6).
 """
 
 from __future__ import annotations
@@ -40,12 +45,6 @@ QUIT_KEYS = (ord("q"), ord("Q"), 27)
 #: thường trả vài khung tối/sai phơi sáng; đọc vài khung giúp ảnh lưu ra đúng
 #: cảnh hơn. Không phải ngưỡng nghiệp vụ nên để trong code.
 SAVE_OVERLAY_MAX_FRAMES = 10
-
-#: Nội dung in ra cho các lệnh chưa có trong phạm vi M0/M1.
-NOT_IMPLEMENTED = (
-    "Lệnh '{name}' chưa triển khai (đang ở mốc M1). "
-    "Xem docs/SPEC_V2.md §10 để biết lịch triển khai."
-)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -96,21 +95,105 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     calibrate = subparsers.add_parser(
-        "calibrate", help="Hiệu chỉnh tư thế chuẩn (chưa triển khai)."
+        "calibrate",
+        help="Hiệu chỉnh tư thế chuẩn và lưu baseline (calibration.json).",
     )
-    calibrate.add_argument("--config", default="config.yaml")
+    # Import muộn: hằng số mặc định nằm cùng module với logic hiệu chỉnh, để
+    # đường dẫn mặc định chỉ có một nguồn sự thật.
+    from .calibration import DEFAULT_PATH  # noqa: PLC0415 - chỉ cần ở đây
+
+    calibrate.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Đường dẫn file cấu hình (mặc định: config.yaml).",
+    )
+    calibrate.add_argument(
+        "--output",
+        default=DEFAULT_PATH,
+        metavar="DUONG_DAN",
+        help=f"File baseline ghi ra (mặc định: {DEFAULT_PATH}).",
+    )
+    calibrate.add_argument(
+        "--no-gpio",
+        action="store_true",
+        help=(
+            "Chấp nhận cho đồng bộ với 'run'; calibrate không dùng GPIO nên "
+            "cờ này là no-op."
+        ),
+    )
+    calibrate.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Mức log: DEBUG, INFO, WARNING, ERROR (mặc định: INFO).",
+    )
 
     replay = subparsers.add_parser(
-        "replay", help="Chạy lại trên video có sẵn (chưa triển khai)."
+        "replay", help="Chạy lại trên video có sẵn và xuất báo cáo JSON."
     )
-    replay.add_argument("video", help="Đường dẫn video.")
-    replay.add_argument("--no-gpio", action="store_true")
-    replay.add_argument("--save-report", default=None)
+    replay.add_argument("video", help="Đường dẫn video (mp4/avi/mkv).")
+    replay.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Đường dẫn file cấu hình (mặc định: config.yaml).",
+    )
+    replay.add_argument(
+        "--no-gpio",
+        action="store_true",
+        help="Tương thích CLI chung; replay không dùng GPIO.",
+    )
+    replay.add_argument(
+        "--save-report",
+        default=None,
+        metavar="DUONG_DAN",
+        help="Ghi báo cáo JSON (UTF-8) ra file. Ví dụ: --save-report out.json",
+    )
+    replay.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Mức log: DEBUG, INFO, WARNING, ERROR (mặc định: INFO).",
+    )
 
     benchmark = subparsers.add_parser(
-        "benchmark", help="Đo hiệu năng trên máy đích (chưa triển khai)."
+        "benchmark", help="Đo hiệu năng trên máy đích (spec §8)."
     )
-    benchmark.add_argument("--seconds", type=int, default=60)
+    # Cờ dưới đây giữ đúng bộ cờ của ``python -m posture_monitor.benchmark``
+    # để ``cmd_benchmark`` chuyển thẳng được sang ``benchmark.main``.
+    benchmark.add_argument(
+        "--seconds",
+        type=float,
+        default=60.0,
+        help="Thời lượng đo, giây (mặc định: 60).",
+    )
+    benchmark.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Đường dẫn file cấu hình (mặc định: config.yaml).",
+    )
+    benchmark.add_argument(
+        "--source",
+        default=None,
+        metavar="NGUON",
+        help=(
+            "Ghi đè nguồn ảnh: usb:0 | picamera | file:anh.jpg | "
+            "file:video.mp4. Trên Pi chưa có camera, dùng ảnh tĩnh."
+        ),
+    )
+    benchmark.add_argument(
+        "--json",
+        default=None,
+        metavar="DUONG_DAN",
+        help="Ghi báo cáo JSON ra file (ngoài bảng in trên màn hình).",
+    )
+    benchmark.add_argument(
+        "--no-gpio",
+        action="store_true",
+        help="Tương thích CLI chung; benchmark không dùng GPIO.",
+    )
+    benchmark.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Mức log: DEBUG, INFO, WARNING, ERROR (mặc định: INFO).",
+    )
 
     return parser
 
@@ -317,6 +400,530 @@ def cmd_run(args: argparse.Namespace) -> int:
         hardware.close()
 
 
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    """Xử lý lệnh ``benchmark``: chuyển tiếp sang :func:`benchmark.main`.
+
+    Chọn **chuyển tiếp** thay vì gọi ``run_benchmark``/``format_report`` trực
+    tiếp: ``benchmark.main`` đã giữ toàn bộ quy ước của bài đo (nạp cấu hình,
+    kiểm ``--seconds``, in bảng, ghi JSON UTF-8, ánh xạ mã thoát 2/1/130/0).
+    Chép lại thân hàm đó sẽ tạo bản thứ hai dễ lệch nhau; dựng lại ``argv``
+    giữ cho ``python -m posture_monitor benchmark`` và
+    ``python -m posture_monitor.benchmark`` chạy đúng **một** thân code.
+    """
+    from . import benchmark as bench  # noqa: PLC0415 - import muộn (kéo model)
+
+    argv: list[str] = ["--seconds", str(args.seconds), "--config", args.config]
+    if args.source is not None:
+        argv += ["--source", args.source]
+    if args.json is not None:
+        argv += ["--json", args.json]
+    if args.no_gpio:
+        argv.append("--no-gpio")
+    argv += ["--log-level", args.log_level]
+    return bench.main(argv)
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    """Xử lý lệnh ``calibrate``: đếm ngược → thu khung → lưu baseline.
+
+    Chỉ **thu** dữ liệu chứ không tự quyết định baseline: việc lọc khung và
+    lấy trung vị nằm ở :mod:`posture_monitor.calibration` (đã có test riêng).
+    Nhờ vậy lệnh này chỉ còn lo phần tương tác — nhịp thu, thông báo tiếng
+    Việt và mã thoát.
+
+    Mã thoát: ``0`` thành công, ``1`` không mở được nguồn ảnh / không ghi
+    được file, ``2`` cấu hình hoặc model sai, hoặc không đủ khung hợp lệ.
+    """
+    logger = setup_logging(args.log_level)
+
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 2
+    except ConfigError as exc:
+        logger.error("Cấu hình không hợp lệ: %s", exc)
+        return 2
+
+    # Import muộn: chỉ lệnh này cần tới calibration/features.
+    from .calibration import (  # noqa: PLC0415
+        CAPTURE_S,
+        COUNTDOWN_S,
+        CalibrationError,
+        compute_baseline,
+        save,
+    )
+    from .features import extract  # noqa: PLC0415
+
+    camera = config.camera
+    view = camera.view
+    kp_conf_min = config.model.kp_conf_min
+    output = Path(args.output)
+    #: Khi nguồn tạm thời không trả khung, nghỉ một chút rồi thử lại thay vì
+    #: quay vòng liên tục làm nóng CPU trong suốt cửa sổ thu.
+    sample_retry_s = 0.05
+
+    if args.no_gpio:
+        # calibrate không chạm phần cứng nào; cờ này chỉ để dùng chung cú
+        # pháp với ``run``.
+        logger.info(
+            "--no-gpio: calibrate không dùng GPIO nên cờ này không có tác "
+            "dụng (no-op)."
+        )
+
+    source = capture_from_config(config)
+    if source is None:
+        logger.error(
+            "Không mở được nguồn ảnh '%s' nên không thể hiệu chỉnh. Kiểm tra "
+            "phần cứng bằng 'python scripts/camera_probe.py', hoặc chạy "
+            "'python -m posture_monitor run' để xem trực tiếp.",
+            redact_camera_source(camera.source),
+        )
+        return 1
+
+    try:
+        from .pose import PoseError, PoseEstimator  # noqa: PLC0415
+
+        try:
+            estimator = PoseEstimator(config)
+        except PoseError as exc:
+            logger.error("%s", exc)
+            return 2
+
+        # Nạp trước model **trước khi mở cửa sổ thu**. Lần suy luận đầu tiên
+        # của ultralytics nạp bộ nhớ đệm nên chậm hơn hẳn (đo trên Pi: ~3,7 s
+        # so với ~143 ms). Nếu để nó rơi vào CAPTURE_S thì gần hết cửa sổ bị
+        # một lần gọi nguội ăn mất và không đủ khung cho baseline. Dùng chung
+        # WARMUP_FRAMES với `benchmark` để hai lệnh có cùng định nghĩa "khởi
+        # động"; khung khởi động không được đưa vào baseline.
+        from .benchmark import WARMUP_FRAMES  # noqa: PLC0415 - chỉ nhánh này cần
+
+        logger.info(
+            "Đang nạp trước model (%d khung; lần suy luận đầu chậm hơn hẳn, "
+            "có thể mất vài giây)...",
+            WARMUP_FRAMES,
+        )
+        for _ in range(WARMUP_FRAMES):
+            frame = source.read()
+            if frame is None:
+                break
+            try:
+                estimator.detect(frame)
+            except Exception as exc:  # noqa: BLE001 - khung khởi động lỗi thì thôi
+                logger.warning("Khung khởi động lỗi: %s", exc)
+                break
+        logger.info("Nạp trước xong.")
+        logger.info(
+            "Hiệu chỉnh tư thế chuẩn: ngồi đúng tư thế và giữ yên. Đếm ngược "
+            "%.0f giây (view=%s, %dx%d).",
+            COUNTDOWN_S,
+            view,
+            camera.width,
+            camera.height,
+        )
+
+        # Đếm ngược ~COUNTDOWN_S giây, log từng giây để người dùng kịp ngồi.
+        remaining = float(COUNTDOWN_S)
+        while remaining > 0:
+            logger.info("Bắt đầu thu sau %.0f giây...", remaining)
+            step = min(1.0, remaining)
+            time.sleep(step)
+            remaining -= step
+
+        logger.info(
+            "Bắt đầu thu %.0f giây ở nhịp tự nhiên của vòng lặp (không chờ "
+            "theo target_fps: lấy mẫu càng nhiều thì trung vị càng vững).",
+            CAPTURE_S,
+        )
+
+        frames = []
+        read_count = 0
+        deadline = time.monotonic() + float(CAPTURE_S)
+        while time.monotonic() < deadline:
+            frame = source.read()
+            if frame is None:
+                logger.warning(
+                    "Không đọc được khung từ nguồn ảnh; bỏ qua nhịp này."
+                )
+                time.sleep(sample_retry_s)
+                continue
+
+            read_count += 1
+            pose = estimator.detect(frame)
+            if pose is None:
+                # Không thấy người vẫn là mẫu hợp lệ để calibration tự
+                # lọc; tránh tự quyết định ở đây.
+                frames.append(
+                    extract(None, None, view=view, kp_conf_min=kp_conf_min)
+                )
+            else:
+                frames.append(
+                    extract(
+                        pose.xy,
+                        pose.conf,
+                        view=view,
+                        kp_conf_min=kp_conf_min,
+                    )
+                )
+
+        logger.info(
+            "Thu xong %d khung (%d lần đọc thành công); đang tính baseline.",
+            len(frames),
+            read_count,
+        )
+
+        if read_count == 0:
+            # Nguồn mở được nhưng không trả khung nào: coi như hỏng camera,
+            # không phải lỗi hiệu chỉnh. Nêu cùng lối kiểm tra với nhánh
+            # không mở được nguồn.
+            logger.error(
+                "Không đọc được khung nào từ nguồn ảnh '%s' trong %.0f giây "
+                "nên không thể hiệu chỉnh. Kiểm tra bằng 'python "
+                "scripts/camera_probe.py' hoặc chạy 'python -m "
+                "posture_monitor run' để xem trực tiếp.",
+                redact_camera_source(camera.source),
+                CAPTURE_S,
+            )
+            return 1
+
+        try:
+            baseline = compute_baseline(
+                frames,
+                view=view,
+                width=camera.width,
+                height=camera.height,
+            )
+        except CalibrationError as exc:
+            # Thông điệp của calibration đã kèm hướng dẫn chỉnh camera; in
+            # nguyên văn thay vì bọc lại.
+            logger.error("%s", exc)
+            return 2
+
+        try:
+            saved = save(baseline, output)
+        except OSError as exc:
+            logger.error(
+                "Không ghi được file baseline '%s': %s", output, exc
+            )
+            return 1
+
+        print()
+        print("=" * 60)
+        print("  HIỆU CHỈNH XONG — BASELINE TƯ THẾ CHUẨN")
+        print("=" * 60)
+        print(f"  File baseline : {saved.resolve()}")
+        print(f"  Số khung dùng : {baseline.frames}")
+        print(
+            f"  Chế độ camera : {baseline.view} "
+            f"({baseline.width}x{baseline.height})"
+        )
+        print(f"  Thời điểm     : {baseline.created_at}")
+        print("-" * 60)
+        for name, unit in (
+            ("shoulder_width", " px"),
+            ("shoulder_tilt_deg", "°"),
+            ("head_height", ""),
+            ("neck_angle", "°"),
+            ("torso_angle", "°"),
+        ):
+            value = baseline.get(name)
+            if value is None:
+                # Thiếu đặc trưng phụ là chuyện bình thường (spec §5.3);
+                # nói rõ để người dùng không tưởng hiệu chỉnh hỏng.
+                print(f"  {name:<18}: (không đủ dữ liệu ở lần thu này)")
+            else:
+                print(f"  {name:<18}: {value:.3f}{unit}")
+        print("-" * 60)
+        print("  closeness và lean_x là đại lượng tương đối, được tính khi")
+        print("  chạy 'python -m posture_monitor run' dựa trên baseline này.")
+        print("=" * 60)
+        print()
+        return 0
+    finally:
+        source.close()
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Xử lý lệnh ``replay``: chạy pipeline trên video, xuất báo cáo.
+
+    Thứ tự dây nối từng khung theo đúng ``benchmark.run_benchmark``: đọc
+    khung → ``detect`` → ``extract`` → ``classify`` → ``StateMachine.update``.
+    Không mở camera, không tạo phần cứng, không vẽ cửa sổ, nên chạy được trên
+    PC không có GPIO (spec §7, §9).
+
+    Báo cáo JSON chỉ chứa dữ liệu tất định: không đường dẫn tuyệt đối, không
+    tên máy, không mốc thời gian thực trong từng khung. Chỉ ``duration_s``
+    của phần tóm tắt là số đo thời gian chạy thật.
+    """
+    import json  # noqa: PLC0415 - chỉ nhánh này cần
+    import math  # noqa: PLC0415 - chỉ nhánh này cần
+
+    from .calibration import Baseline, CalibrationError  # noqa: PLC0415
+    from .calibration import load as load_calibration  # noqa: PLC0415
+    from .capture import CameraError, FileSource  # noqa: PLC0415
+    from .classifier import LABEL_ORDER, classify  # noqa: PLC0415
+    from .features import ALL_NAMES, extract  # noqa: PLC0415
+    from .pose import PoseError, PoseEstimator  # noqa: PLC0415
+    from .state import STATES, StateMachine  # noqa: PLC0415
+
+    logger = setup_logging(args.log_level)
+
+    try:
+        config = load_config(args.config)
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 2
+    except ConfigError as exc:
+        logger.error("Cấu hình không hợp lệ: %s", exc)
+        return 2
+
+    if args.no_gpio:
+        logger.info(
+            "replay không dùng GPIO; cờ --no-gpio chỉ để tương thích CLI."
+        )
+
+    try:
+        source = FileSource(args.video, loop=False)
+    except CameraError as exc:
+        logger.error("%s", exc)
+        return 2
+
+    def _empty_baseline() -> "Baseline":
+        """Baseline rỗng: mọi nhãn phụ thuộc baseline không được đánh giá."""
+        return Baseline(
+            values={name: None for name in ALL_NAMES},
+            view=config.camera.view,
+            width=int(config.camera.width),
+            height=int(config.camera.height),
+            created_at="",
+            frames=0,
+        )
+
+    try:
+        # Mốc thời gian của máy trạng thái là trục thời gian của video, không
+        # phải đồng hồ thực: nhờ vậy báo cáo tất định và hold/hysteresis được
+        # đánh giá trên đúng nhịp video. ``FileSource`` không công bố FPS nên
+        # đọc metadata qua một lần mở riêng; file hỏng đã bị chặn ở trên.
+        fps = 0.0
+        probe = cv2.VideoCapture(str(Path(args.video)))
+        try:
+            if probe.isOpened():
+                fps = float(probe.get(cv2.CAP_PROP_FPS) or 0.0)
+        finally:
+            probe.release()
+
+        fps_source = "container"
+        if not math.isfinite(fps) or fps <= 0:
+            fps = float(config.model.target_fps)
+            fps_source = "config.model.target_fps"
+            logger.warning(
+                "Không đọc được FPS từ video; dùng %s (%.1f) để tính mốc "
+                "thời gian.",
+                fps_source,
+                fps,
+            )
+            if not math.isfinite(fps) or fps <= 0:
+                # Cấu hình cũng vô lý: không có trục thời gian nào dùng được.
+                logger.error(
+                    "Cả video lẫn 'model.target_fps' đều không cho FPS hợp "
+                    "lệ; không tính được mốc thời gian."
+                )
+                return 2
+
+        calibration_path = "calibration.json"
+        try:
+            baseline = load_calibration(calibration_path)
+            calibration_loaded = True
+            calibration_note = "Đã nạp baseline hiệu chỉnh có sẵn."
+        except FileNotFoundError:
+            baseline = _empty_baseline()
+            calibration_loaded = False
+            calibration_note = (
+                "Chưa có calibration.json: chạy KHÔNG baseline. Các nhãn phụ "
+                "thuộc baseline (HEAD_DOWN ở view front, TOO_CLOSE, LEAN, "
+                "HEAD_TILT, LOOK_AWAY) không được đánh giá."
+            )
+        except CalibrationError as exc:
+            baseline = _empty_baseline()
+            calibration_loaded = False
+            calibration_note = (
+                f"calibration.json hỏng ({exc}); chạy KHÔNG baseline."
+            )
+
+        if not calibration_loaded:
+            logger.warning("%s", calibration_note)
+
+        try:
+            estimator = PoseEstimator(config)
+        except PoseError as exc:
+            logger.error("%s", exc)
+            return 2
+
+        # ``extract`` đọc thẳng ``baseline.shoulder_width`` (thuộc tính ném
+        # lỗi khi thiếu) nên khi chưa hiệu chỉnh phải truyền ``None``;
+        # ``classify`` chỉ dùng ``baseline.get()`` nên nhận baseline rỗng.
+        feature_baseline = baseline if calibration_loaded else None
+
+        view = config.camera.view
+        kp_conf_min = float(config.model.kp_conf_min)
+        machine = StateMachine(config.timing)
+
+        rows: list[dict[str, object]] = []
+        state_counts = {state: 0 for state in STATES}
+        label_counts = {label: 0 for label in LABEL_ORDER}
+        frames_with_person = 0
+        frames_errored = 0
+
+        started = time.monotonic()
+        index = 0
+        try:
+            while True:
+                frame = source.read()
+                if frame is None:
+                    break
+
+                pose = None
+                try:
+                    pose = estimator.detect(frame)
+                except Exception as exc:  # noqa: BLE001 - 1 khung lỗi không sập
+                    frames_errored += 1
+                    logger.warning(
+                        "Suy luận lỗi ở khung %d: %s", index, exc
+                    )
+
+                if pose is None:
+                    features = extract(
+                        None,
+                        None,
+                        view=view,
+                        kp_conf_min=kp_conf_min,
+                        baseline=feature_baseline,
+                    )
+                else:
+                    features = extract(
+                        pose.xy,
+                        pose.conf,
+                        view=view,
+                        kp_conf_min=kp_conf_min,
+                        baseline=feature_baseline,
+                    )
+
+                classification = classify(
+                    features, baseline, config.thresholds
+                )
+                timestamp = round(index / fps, 3)
+                update = machine.update(
+                    timestamp, classification.labels, classification.score
+                )
+
+                labels = list(classification.sorted_labels)
+                rows.append(
+                    {
+                        "frame": index,
+                        "timestamp_s": timestamp,
+                        "person": pose is not None,
+                        "labels": labels,
+                        "score": round(float(classification.score), 2),
+                        "state": update.state,
+                    }
+                )
+                if pose is not None:
+                    frames_with_person += 1
+                state_counts[update.state] += 1
+                for label in labels:
+                    label_counts[label] += 1
+                index += 1
+        except KeyboardInterrupt:
+            print("\nĐã dừng theo yêu cầu.", file=sys.stderr)
+            return 130
+        finally:
+            source.close()
+
+        duration_s = round(time.monotonic() - started, 3)
+
+        if not rows:
+            logger.error(
+                "Không đọc được khung nào từ video '%s'; không có gì để báo "
+                "cáo.",
+                Path(args.video).name,
+            )
+            return 1
+
+        report = {
+            "version": 1,
+            "command": "replay",
+            "video": Path(args.video).name,
+            "view": view,
+            "backend": estimator.backend,
+            "video_fps": round(fps, 3),
+            "fps_source": fps_source,
+            "calibration": {
+                "loaded": calibration_loaded,
+                "path": calibration_path,
+                "note": calibration_note,
+            },
+            "summary": {
+                "frames": len(rows),
+                "frames_with_person": frames_with_person,
+                "frames_errored": frames_errored,
+                "duration_s": duration_s,
+                "states": state_counts,
+                "labels": label_counts,
+            },
+            "frames": rows,
+        }
+
+        if args.save_report:
+            target = Path(args.save_report)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(
+                    json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.error(
+                    "Không ghi được báo cáo '%s': %s", target, exc
+                )
+                return 2
+
+        active_labels = [
+            f"{label}={label_counts[label]}"
+            for label in LABEL_ORDER
+            if label_counts[label]
+        ]
+        print()
+        print("=" * 60)
+        print("  REPLAY — KẾT QUẢ CHẠY LẠI VIDEO")
+        print("=" * 60)
+        print(f"  Video          : {Path(args.video).name}")
+        print(
+            f"  Khung đã xử lý : {len(rows)} "
+            f"(có người: {frames_with_person})"
+        )
+        if frames_errored:
+            print(f"  Khung lỗi      : {frames_errored}")
+        print(
+            "  Trạng thái     : "
+            + ", ".join(f"{s}={state_counts[s]}" for s in STATES)
+        )
+        print(
+            "  Nhãn           : "
+            + (", ".join(active_labels) if active_labels else "(không có)")
+        )
+        print(
+            "  Hiệu chỉnh     : "
+            + ("đã nạp baseline" if calibration_loaded else "KHÔNG có baseline")
+        )
+        if args.save_report:
+            print(f"  Báo cáo        : {Path(args.save_report).name}")
+        print("=" * 60)
+        print()
+        return 0
+    finally:
+        source.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     """Hàm chính; trả mã thoát của tiến trình."""
     parser = build_parser()
@@ -332,8 +939,44 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Lỗi không mong muốn: {exc}", file=sys.stderr)
             return 1
 
-    print(NOT_IMPLEMENTED.format(name=args.command))
-    return 0
+    elif args.command == "benchmark":
+        # ``benchmark.main`` tự đổi lỗi trong lúc đo thành 1/2/130, nhưng phần
+        # in báo cáo và ghi file nằm **sau** khối try của nó, nên một lỗi ở đó
+        # vẫn thoát ra ngoài. Bọc ở đây để ``benchmark`` có cùng mức xử lý với
+        # ba lệnh kia; các mã thoát đã có (0/1/2/130) vẫn giữ nguyên.
+        try:
+            return cmd_benchmark(args)
+        except KeyboardInterrupt:
+            print("\nĐã dừng theo yêu cầu.", file=sys.stderr)
+            return 130
+        except Exception as exc:  # noqa: BLE001 - lỗi cuối cùng phải có thông báo
+            print(f"Lỗi không mong muốn: {exc}", file=sys.stderr)
+            return 1
+    elif args.command == "calibrate":
+        try:
+            return cmd_calibrate(args)
+        except KeyboardInterrupt:
+            print("\nĐã dừng theo yêu cầu.", file=sys.stderr)
+            return 130
+        except Exception as exc:  # noqa: BLE001 - lỗi cuối cùng phải có thông báo
+            print(f"Lỗi không mong muốn: {exc}", file=sys.stderr)
+            return 1
+    elif args.command == "replay":
+        try:
+            return cmd_replay(args)
+        except KeyboardInterrupt:
+            print("\nĐã dừng theo yêu cầu.", file=sys.stderr)
+            return 130
+        except Exception as exc:  # noqa: BLE001 - lỗi cuối cùng phải có thông báo
+            print(f"Lỗi không mong muốn: {exc}", file=sys.stderr)
+            return 1
+
+    # ``subparsers(dest="command", required=True)`` chỉ cho qua bốn lệnh đã
+    # khai báo và đều có nhánh riêng ở trên, nên không còn lệnh nào rơi xuống
+    # đây. Giữ một lỗi rõ ràng thay vì trả 0 trong im lặng, phòng khi sau này
+    # có người thêm lệnh vào parser mà quên thêm nhánh dispatch.
+    print(f"Lệnh không có nhánh xử lý: {args.command}", file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":
