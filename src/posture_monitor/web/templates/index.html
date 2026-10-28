@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
+  <title>Giám sát tư thế</title>
+  <!-- Biểu tượng nhúng thẳng dạng data: URI — Pi có thể không có Internet, và
+       trình duyệt tự xin /favicon.ico nếu thiếu nên sẽ rác log 404. -->
+  <link rel="icon" type="image/png" sizes="32x32"
+        href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR42u3XQQrAIAwEQN/TF/al/YxCPRdBjJvFtUbI1Z1DCElKu73rft5eLQmlYmbDYQQaDEG8w00IVvgwYinA8lEp+VMwAgl3QZwNmGkmJLxBsDv/fwCPHghAAKBZEKOYArAgUEBsRNpLqcRaLnGYyJxmEscp81V7I1uuByPDxQAAAABJRU5ErkJggg==">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <!-- Chart.js nằm cục bộ trong static/ (spec §5.10): Pi có thể không có
+       Internet, nên tuyệt đối không nạp từ máy chủ ngoài. -->
+  <script src="{{ url_for('static', filename='chart.umd.min.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body data-stream-enabled="{{ '1' if stream_enabled else '0' }}"
+      data-min-distance="{{ min_distance_cm }}">
+  <main class="page">
+    <header class="head">
+      <h1>Giám sát tư thế học tập</h1>
+      <p class="sub" id="updated">Đang tải trạng thái…</p>
+    </header>
+
+    <!-- Thẻ trạng thái: màu + biểu tượng + nhãn chữ, không dựa vào màu đơn
+         thuần để truyền đạt. -->
+    <section id="status-card" class="card status status--unknown" aria-live="polite">
+      <div class="status__row">
+        <span id="status-icon" class="status__icon" aria-hidden="true">•</span>
+        <div>
+          <p class="label">Trạng thái hiện tại</p>
+          <p id="status-text" class="status__value">Không thấy người</p>
+        </div>
+      </div>
+      <p id="labels-text" class="status__labels">Đang chờ dữ liệu từ camera.</p>
+
+      <div class="metrics">
+        <div class="metric">
+          <span class="metric__label">Điểm tư thế</span>
+          <span id="score" class="metric__value">—</span>
+        </div>
+        <div class="metric">
+          <span class="metric__label">Thời gian ngồi</span>
+          <span id="sitting" class="metric__value">—</span>
+        </div>
+        <div class="metric">
+          <span class="metric__label">Khoảng cách</span>
+          <span id="distance" class="metric__value">—</span>
+        </div>
+      </div>
+      <p id="stale-warning" class="stale" hidden>
+        Không nhận được dữ liệu mới. Kiểm tra chương trình giám sát còn chạy
+        không.
+      </p>
+    </section>
+
+    <!-- Nút bấm to, đủ cho ngón tay trên điện thoại. -->
+    <section class="actions">
+      <button id="mute-btn" type="button" class="btn btn--quiet">
+        <span id="mute-icon" aria-hidden="true">🔊</span>
+        <span id="mute-text">Tắt tiếng cảnh báo</span>
+      </button>
+      <button id="calibrate-btn" type="button" class="btn">
+        Hiệu chỉnh lại
+      </button>
+    </section>
+    <p id="action-message" class="message" role="status" hidden></p>
+
+    <section class="card chart-card">
+      <div class="chart-head">
+        <h2>Tỉ lệ tư thế đúng</h2>
+        <div class="tabs" role="tablist" aria-label="Khoảng thời gian">
+          <button id="tab-today" class="tab tab--active" type="button"
+                  role="tab" aria-selected="true" data-range="today">Hôm nay</button>
+          <button id="tab-7d" class="tab" type="button"
+                  role="tab" aria-selected="false" data-range="7d">7 ngày</button>
+        </div>
+      </div>
+      <p id="chart-caption" class="caption">
+        Phần trăm thời gian có người ngồi đúng tư thế trong mỗi giờ.
+      </p>
+      <div class="chart-wrap">
+        <canvas id="chart" role="img"
+                aria-label="Biểu đồ cột tỉ lệ tư thế đúng theo thời gian"></canvas>
+        <p id="chart-empty" class="chart-empty" hidden>Chưa có số liệu.</p>
+      </div>
+
+      <details class="table-view">
+        <summary>Xem dạng bảng</summary>
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Mốc</th>
+              <th scope="col">Đúng (%)</th>
+              <th scope="col">Điểm</th>
+              <th scope="col">Vắng (giây)</th>
+            </tr>
+          </thead>
+          <tbody id="chart-table"></tbody>
+        </table>
+      </details>
+    </section>
+
+    <section class="card hints">
+      <h2>Ghi chú</h2>
+      <ul>
+        <li>Hệ thống chỉ lưu <strong>số liệu</strong>; không lưu ảnh, không lưu video.</li>
+        <li>Xem trực tiếp (stream) mặc định <strong>tắt</strong> vì tốn CPU và ảnh
+          hưởng quyền riêng tư.</li>
+        <li>Dashboard chỉ dùng trong mạng LAN, <strong>không mở ra Internet</strong>.</li>
+      </ul>
+    </section>
+
+    <footer class="foot">Thiết bị: Raspberry Pi 4 · Giao diện cho điện thoại</footer>
+  </main>
+</body>
+</html>

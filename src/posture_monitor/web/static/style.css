@@ -1,0 +1,325 @@
+/* Dashboard tư thế — giao diện cho điện thoại (spec v2 §5.10).
+ *
+ * Bảng màu theo bộ tham chiếu đã kiểm chứng của skill dataviz: nền sáng/tối
+ * tách riêng (dark mode chọn bước riêng, không đảo màu tự động), màu trạng
+ * thái là bộ cố định good/warning/serious/critical đi kèm biểu tượng + nhãn
+ * chữ nên không bao giờ truyền đạt chỉ bằng màu.
+ */
+
+:root {
+  color-scheme: light;
+  --surface-1: #fcfcfb;
+  --page: #f9f9f7;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --ink-muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11, 11, 11, 0.10);
+
+  --series-1: #2a78d6;
+  --good: #0ca30c;
+  --warning: #fab219;
+  --serious: #ec835a;
+  --critical: #d03b3b;
+
+  --radius: 14px;
+  --tap: 52px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --surface-1: #1a1a19;
+    --page: #0d0d0d;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --ink-muted: #898781;
+    --grid: #2c2c2a;
+    --axis: #383835;
+    --ring: rgba(255, 255, 255, 0.10);
+
+    --series-1: #3987e5;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 17px;
+  line-height: 1.45;
+}
+
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 16px 16px calc(24px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.head h1 {
+  margin: 4px 0 2px;
+  font-size: 1.45rem;
+  letter-spacing: -0.01em;
+}
+
+.sub {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
+.card {
+  background: var(--surface-1);
+  border: 1px solid var(--ring);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+/* ---- Thẻ trạng thái ------------------------------------------------ */
+
+.status { border-left: 8px solid var(--axis); }
+
+.status--good { border-left-color: var(--good); }
+.status--warn { border-left-color: var(--warning); }
+.status--bad { border-left-color: var(--critical); }
+.status--absent { border-left-color: var(--ink-muted); }
+
+.status__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.status__icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  flex: 0 0 46px;
+  display: grid;
+  place-items: center;
+  font-size: 1.5rem;
+  background: var(--grid);
+}
+
+.status--good .status__icon { background: var(--good); color: #fff; }
+.status--warn .status__icon { background: var(--warning); color: #0b0b0b; }
+.status--bad .status__icon { background: var(--critical); color: #fff; }
+.status--absent .status__icon { background: var(--axis); color: #0b0b0b; }
+
+.label {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.status__value {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.status__labels {
+  margin: 12px 0 0;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--grid);
+}
+
+.metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.metric__label { color: var(--ink-2); font-size: 0.78rem; }
+
+.metric__value {
+  font-size: 1.25rem;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.stale {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning) 18%, transparent);
+  color: var(--ink);
+  font-size: 0.9rem;
+}
+
+/* ---- Nút bấm ------------------------------------------------------- */
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.btn {
+  min-height: var(--tap);
+  border-radius: var(--radius);
+  border: 1px solid var(--ring);
+  background: var(--series-1);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 650;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 12px;
+  /* Vùng chạm tối thiểu 44px theo khuyến nghị của Apple/Google. */
+  touch-action: manipulation;
+}
+
+.btn--quiet {
+  background: var(--surface-1);
+  color: var(--ink);
+}
+
+.btn:active { transform: scale(0.985); }
+
+.btn:disabled { opacity: 0.55; cursor: progress; }
+
+.message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--series-1) 12%, transparent);
+  color: var(--ink);
+  font-size: 0.92rem;
+}
+
+/* ---- Biểu đồ ------------------------------------------------------- */
+
+.chart-card { padding-bottom: 8px; }
+
+.chart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.chart-head h2, .hints h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.caption {
+  margin: 4px 0 10px;
+  color: var(--ink-2);
+  font-size: 0.85rem;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--grid);
+  border-radius: 999px;
+  padding: 3px;
+}
+
+.tab {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ink-2);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.tab--active {
+  background: var(--surface-1);
+  color: var(--ink);
+  box-shadow: 0 1px 2px var(--ring);
+}
+
+.chart-wrap {
+  position: relative;
+  /* Cao đủ để đọc trên điện thoại, không chiếm quá một màn hình. */
+  height: 240px;
+}
+
+.chart-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+}
+
+/* Rule theo lớp ở trên mạnh hơn ``[hidden]`` của trình duyệt, nên nếu không
+   có dòng này chữ "Chưa có số liệu." sẽ đè lên biểu đồ đã vẽ. */
+.chart-empty[hidden] { display: none; }
+
+/* ---- Bảng số liệu (bản thay thế cho biểu đồ) ------------------------ */
+
+.table-view { margin-top: 12px; }
+
+.table-view summary {
+  cursor: pointer;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  padding: 6px 0;
+}
+
+.table-view table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-view th, .table-view td {
+  text-align: left;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--grid);
+}
+
+.table-view th { color: var(--ink-2); font-weight: 600; }
+
+/* ---- Ghi chú ------------------------------------------------------- */
+
+.hints ul { margin: 8px 0 0; padding-left: 20px; color: var(--ink-2); }
+.hints li { margin-bottom: 4px; font-size: 0.92rem; }
+
+.foot {
+  text-align: center;
+  color: var(--ink-muted);
+  font-size: 0.8rem;
+  padding-top: 4px;
+}
+
+@media (max-width: 360px) {
+  body { font-size: 16px; }
+  .metrics { grid-template-columns: 1fr 1fr; }
+  .actions { grid-template-columns: 1fr; }
+}
