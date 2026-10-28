@@ -458,8 +458,10 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     camera = config.camera
     view = camera.view
     kp_conf_min = config.model.kp_conf_min
-    target_fps = max(1, int(config.model.target_fps))
     output = Path(args.output)
+    #: Khi nguồn tạm thời không trả khung, nghỉ một chút rồi thử lại thay vì
+    #: quay vòng liên tục làm nóng CPU trong suốt cửa sổ thu.
+    sample_retry_s = 0.05
 
     if args.no_gpio:
         # calibrate không chạm phần cứng nào; cờ này chỉ để dùng chung cú
@@ -488,6 +490,29 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
             logger.error("%s", exc)
             return 2
 
+        # Nạp trước model **trước khi mở cửa sổ thu**. Lần suy luận đầu tiên
+        # của ultralytics nạp bộ nhớ đệm nên chậm hơn hẳn (đo trên Pi: ~3,7 s
+        # so với ~143 ms). Nếu để nó rơi vào CAPTURE_S thì gần hết cửa sổ bị
+        # một lần gọi nguội ăn mất và không đủ khung cho baseline. Dùng chung
+        # WARMUP_FRAMES với `benchmark` để hai lệnh có cùng định nghĩa "khởi
+        # động"; khung khởi động không được đưa vào baseline.
+        from .benchmark import WARMUP_FRAMES  # noqa: PLC0415 - chỉ nhánh này cần
+
+        logger.info(
+            "Đang nạp trước model (%d khung; lần suy luận đầu chậm hơn hẳn, "
+            "có thể mất vài giây)...",
+            WARMUP_FRAMES,
+        )
+        for _ in range(WARMUP_FRAMES):
+            frame = source.read()
+            if frame is None:
+                break
+            try:
+                estimator.detect(frame)
+            except Exception as exc:  # noqa: BLE001 - khung khởi động lỗi thì thôi
+                logger.warning("Khung khởi động lỗi: %s", exc)
+                break
+        logger.info("Nạp trước xong.")
         logger.info(
             "Hiệu chỉnh tư thế chuẩn: ngồi đúng tư thế và giữ yên. Đếm ngược "
             "%.0f giây (view=%s, %dx%d).",
@@ -505,44 +530,41 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
             time.sleep(step)
             remaining -= step
 
-        interval = 1.0 / target_fps
         logger.info(
-            "Bắt đầu thu %.0f giây ở nhịp %d khung/giây...", CAPTURE_S, target_fps
+            "Bắt đầu thu %.0f giây ở nhịp tự nhiên của vòng lặp (không chờ "
+            "theo target_fps: lấy mẫu càng nhiều thì trung vị càng vững).",
+            CAPTURE_S,
         )
 
         frames = []
         read_count = 0
         deadline = time.monotonic() + float(CAPTURE_S)
         while time.monotonic() < deadline:
-            started = time.monotonic()
             frame = source.read()
             if frame is None:
                 logger.warning(
                     "Không đọc được khung từ nguồn ảnh; bỏ qua nhịp này."
                 )
-            else:
-                read_count += 1
-                pose = estimator.detect(frame)
-                if pose is None:
-                    # Không thấy người vẫn là mẫu hợp lệ để calibration tự
-                    # lọc; tránh tự quyết định ở đây.
-                    frames.append(
-                        extract(None, None, view=view, kp_conf_min=kp_conf_min)
-                    )
-                else:
-                    frames.append(
-                        extract(
-                            pose.xy,
-                            pose.conf,
-                            view=view,
-                            kp_conf_min=kp_conf_min,
-                        )
-                    )
+                time.sleep(sample_retry_s)
+                continue
 
-            # Giữ nhịp mẫu theo target_fps, không ngủ nếu xử lý đã lâu hơn.
-            wait = interval - (time.monotonic() - started)
-            if wait > 0:
-                time.sleep(wait)
+            read_count += 1
+            pose = estimator.detect(frame)
+            if pose is None:
+                # Không thấy người vẫn là mẫu hợp lệ để calibration tự
+                # lọc; tránh tự quyết định ở đây.
+                frames.append(
+                    extract(None, None, view=view, kp_conf_min=kp_conf_min)
+                )
+            else:
+                frames.append(
+                    extract(
+                        pose.xy,
+                        pose.conf,
+                        view=view,
+                        kp_conf_min=kp_conf_min,
+                    )
+                )
 
         logger.info(
             "Thu xong %d khung (%d lần đọc thành công); đang tính baseline.",
