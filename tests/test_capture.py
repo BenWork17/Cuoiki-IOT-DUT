@@ -509,3 +509,80 @@ def test_opencv_source_gives_up_after_reconnect_budget(
         assert source._gave_up is True
     finally:
         source.close()
+
+
+# --------------------------------------------------------------------------
+# Hợp đồng FrameSource: đóng là trạng thái cuối
+# --------------------------------------------------------------------------
+
+
+def test_opencv_source_read_after_close_does_not_reopen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sau ``close()``, ``read()`` trả ``None`` và **không** mở lại thiết bị.
+
+    Hợp đồng ở :class:`FrameSource`: đóng là trạng thái cuối. Trước khi có cờ
+    ``_closed``, ``read()`` thấy ``_cap is None`` nên gọi ``_reconnect()`` và
+    mở lại webcam thật — rò rỉ tài nguyên.
+    """
+    made: list[object] = []
+
+    class _OkCapture(_FailingCapture):
+        def __init__(self, *args, **kwargs) -> None:
+            made.append(self)
+
+        def isOpened(self) -> bool:
+            return True
+
+        def set(self, *_args) -> bool:
+            return True
+
+        def read(self):
+            return True, np.zeros((480, 640, 3), dtype=np.uint8)
+
+    monkeypatch.setattr(capture.cv2, "VideoCapture", _OkCapture)
+    monkeypatch.setattr(capture, "_sleep", lambda _seconds: None)
+
+    source = OpenCVSource(index=0)
+    assert source.read() is not None
+
+    source.close()
+    source.close()
+    opens_at_close = len(made)
+
+    assert source.read() is None
+    assert len(made) == opens_at_close, "read() sau close() đã mở lại thiết bị"
+    assert source._closed is True
+    assert source._cap is None
+
+
+def test_picamera_source_read_after_close_does_not_reopen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sau ``close()``, ``read()`` trả ``None`` và **không** mở lại camera."""
+    from posture_monitor.capture import PiCameraSource
+
+    created: list[_FakePicamera2] = []
+
+    def fake_cls():
+        camera = _FakePicamera2()
+        created.append(camera)
+        return camera
+
+    def fake_load(self) -> None:
+        self._picamera2_cls = fake_cls
+
+    monkeypatch.setattr(PiCameraSource, "_load_picamera2", fake_load)
+
+    source = PiCameraSource(640, 480)
+    assert source.read() is not None
+
+    source.close()
+    source.close()
+    opens_at_close = len(created)
+
+    assert source.read() is None
+    assert len(created) == opens_at_close, "read() sau close() đã mở lại camera"
+    assert source._closed is True
+    assert source._picam2 is None
+
