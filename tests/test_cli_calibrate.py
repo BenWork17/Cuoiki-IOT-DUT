@@ -224,6 +224,21 @@ def _khong_co_bien_moi_truong_camera(monkeypatch):
     monkeypatch.delenv(CAMERA_SOURCE_ENV, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _chay_trong_thu_muc_tam(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Chạy mọi test của module trong thư mục tạm; trả lại cwd gốc.
+
+    Không có ``--output`` thì ``cmd_calibrate`` dùng
+    ``calibration.DEFAULT_PATH`` — một đường dẫn **tương đối**, nên nó ghi
+    vào cwd của tiến trình pytest chứ không vào ``tmp_path``. Thiếu fixture
+    này, chạy test sẽ ném ``calibration.json`` vào gốc repo, và file sót lại
+    bị ``replay``/``run`` đọc như baseline thật.
+    """
+    cwd_goc = Path.cwd()
+    monkeypatch.chdir(tmp_path)
+    return cwd_goc
+
+
 def _run_calibrate(config_path: Path, *extra: str) -> int:
     return cli.main(["calibrate", "--config", str(config_path), *extra])
 
@@ -405,9 +420,28 @@ class TestThanhCong:
     ) -> None:
         _setup(monkeypatch)
 
-        monkeypatch.chdir(tmp_path)
         assert _run_calibrate(_write_config(tmp_path)) == 0
         assert (tmp_path / DEFAULT_PATH).is_file()
+
+    def test_output_mac_dinh_khong_ro_vao_thu_muc_lam_viec(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        _chay_trong_thu_muc_tam: Path,
+    ) -> None:
+        """Hồi quy: không ``--output`` thì file phải nằm trong thư mục tạm.
+
+        Bỏ fixture ``_chay_trong_thu_muc_tam`` đi, ``DEFAULT_PATH`` tương đối
+        sẽ trỏ về gốc repo và test này fail ở vế ``cwd_goc``.
+        """
+        _setup(monkeypatch)
+        cwd_goc = _chay_trong_thu_muc_tam
+
+        assert _run_calibrate(_write_config(tmp_path)) == 0
+
+        assert (tmp_path / DEFAULT_PATH).is_file()
+        assert Path.cwd() == tmp_path
+        assert not (cwd_goc / DEFAULT_PATH).exists()
 
     def test_tao_thu_muc_cha_cho_output(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
