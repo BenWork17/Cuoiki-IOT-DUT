@@ -2,9 +2,10 @@
 
 Thiết kế theo spec v2 §5.1:
 
-- Ba triển khai :class:`FrameSource`: ``OpenCVSource`` (USB webcam / V4L2),
-  ``PiCameraSource`` (Pi Camera qua picamera2) và ``FileSource`` (video file,
-  dùng cho ``replay`` và test trên PC).
+- Bốn triển khai :class:`FrameSource`: ``OpenCVSource`` (USB webcam / V4L2),
+  ``PiCameraSource`` (Pi Camera qua picamera2), ``RTSPSource`` (camera IP qua
+  RTSP/FFmpeg) và ``FileSource`` (video file, dùng cho ``replay`` và test trên
+  PC).
 - Không crash khi thiếu camera: mọi lỗi mở thiết bị được ghi log và trả
   ``None`` ở tầng :func:`capture_from_config`.
 - Tự kết nối lại tối đa :data:`OPEN_ATTEMPTS` lần kèm backoff khi mất kết nối
@@ -29,7 +30,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .config import parse_camera_source
+from .config import parse_camera_source, redact_camera_source
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -39,6 +40,43 @@ OPEN_ATTEMPTS = 3
 
 #: Thời gian chờ giữa các lần thử, tính bằng giây (backoff tăng dần).
 BACKOFF_SCHEDULE = (0.2, 0.5, 1.0)
+
+#: Biến môi trường OpenCV dùng để truyền cờ cho backend FFmpeg. Toàn tiến
+#: trình, nên :class:`RTSPSource` đặt rồi khôi phục ngay sau khi mở.
+FFMPEG_OPTIONS_ENV = "OPENCV_FFMPEG_CAPTURE_OPTIONS"
+
+#: Cờ FFmpeg tương ứng lệnh ``ffplay`` của người dùng (xem docs/SPEC_V2.md
+#: §5.1). Định dạng của OpenCV là ``key;value`` ghép bằng ``|``.
+RTSP_FFMPEG_OPTIONS = "|".join(
+    (
+        "rtsp_transport;udp",
+        "fflags;nobuffer+discardcorrupt",
+        "flags;low_delay",
+        "framedrop;1",
+        "probesize;500000",
+        "analyzeduration;1000000",
+        "max_delay;500000",
+    )
+)
+
+#: Trần số khung xả mỗi lần đọc, chặn trường hợp đệm phình bất thường.
+#: Đo trên PC (192.168.1.151, luồng 704x576 HEVC, ~29 khung/giây vào đệm):
+#: pipeline nghỉ 8 s tích 128 khung, nên trần 240 còn dư rộng rãi mà không cắt
+#: ngang lần xả nào đã đo.
+RTSP_MAX_DRAIN_FRAMES = 240
+
+#: Ngưỡng thời gian một bước ``grab()`` bị coi là "đã đuổi kịp luồng trực
+#: tiếp" và dừng xả, tính bằng giây. Đo trên PC: ``grab()`` trên khung đã nằm
+#: trong đệm tốn 0,29 ms, còn ``grab()`` phải chờ khung mới tốn ~50 ms
+#: (1/20 fps). 30 ms nằm giữa hai mốc đó rất rộng, còn dư cho Pi 4 chậm hơn.
+RTSP_DRAIN_STEP_LIMIT_S = 0.03
+
+#: Trần cho **vòng xả** (giây), kiểm giữa các lần ``grab()``. Đo trên PC lần
+#: xả lâu nhất là 137 ms ở mức nghỉ 3 s. Đây KHÔNG phải trần thời gian của
+#: ``read()``: một ``grab()`` đang chờ gói tin không bị hạn này cắt (hàm đồng
+#: bộ, không huỷ được từ ngoài) và ``grab()`` đầu tiên nằm ngoài hạn — đã đo
+#: một lần ``read()`` mất 2201 ms dù hạn là 2,0 s. Xem spec §5.1.
+RTSP_DRAIN_TIME_LIMIT_S = 2.0
 
 #: Tên driver các node codec/ISP của SoC Raspberry Pi — tuyệt đối không phải
 #: camera, phải loại khỏi danh sách thiết bị.
@@ -75,6 +113,9 @@ class FrameSource(ABC):
       không còn khung / không kết nối lại được. Không raise trong vòng lặp
       đọc bình thường.
     - :meth:`close` giải phóng tài nguyên, gọi được nhiều lần.
+    - **Đóng là trạng thái cuối**: sau :meth:`close`, :meth:`read` trả
+      ``None`` và không được mở lại thiết bị/kết nối mạng nào. Với nguồn
+      mạng (RTSP) mở lại ngầm là rò rỉ tài nguyên và có thể treo vòng lặp.
     """
 
     @abstractmethod
@@ -88,7 +129,7 @@ class FrameSource(ABC):
     @property
     @abstractmethod
     def backend(self) -> str:
-        """Tên backend: ``opencv``, ``picamera`` hoặc ``file``."""
+        """Tên backend: ``opencv``, ``picamera``, ``file`` hoặc ``rtsp``."""
 
     # Cho phép dùng trong ``with`` để bảo đảm giải phóng tài nguyên.
     def __enter__(self) -> "FrameSource":
@@ -106,6 +147,11 @@ def _sleep(seconds: float) -> None:
     """Ngủ ngắn; tách riêng để test có thể thay bằng hàm rỗng."""
     if seconds > 0:
         time.sleep(seconds)
+
+
+def _monotonic() -> float:
+    """Đồng hồ đơn điệu; tách riêng để test điều khiển được thời gian."""
+    return time.monotonic()
 
 
 # --------------------------------------------------------------------------
@@ -136,6 +182,9 @@ class OpenCVSource(FrameSource):
         #: đọc được khung, để lần mất kết nối sau lại có đủ ngân sách.
         self._reconnect_budget = self._max_attempts
         self._gave_up = False
+        #: Đã đóng: trạng thái cuối, ``read()`` không được mở lại thiết bị
+        #: (hợp đồng :class:`FrameSource`).
+        self._closed = False
 
         if not self._open():
             raise CameraError(
@@ -199,6 +248,9 @@ class OpenCVSource(FrameSource):
         Ngân sách bị trừ mỗi lần gọi; hết ngân sách thì báo lỗi rõ một lần và
         từ đó ``read()`` trả ``None`` ngay, không thử vô hạn (spec §5.1).
         """
+        if self._closed:
+            # Đã đóng là trạng thái cuối: không có đường nào hồi sinh nguồn.
+            return False
         if self._gave_up:
             return False
         if self._reconnect_budget <= 0:
@@ -234,6 +286,8 @@ class OpenCVSource(FrameSource):
     # -- giao diện FrameSource -----------------------------------------
 
     def read(self) -> np.ndarray | None:
+        if self._closed:
+            return None
         if self._cap is None and not self._reconnect():
             return None
 
@@ -256,6 +310,8 @@ class OpenCVSource(FrameSource):
         return None
 
     def close(self) -> None:
+        """Đóng thiết bị; trạng thái cuối, gọi nhiều lần không sao."""
+        self._closed = True
         self._release_capture()
 
     @property
@@ -264,6 +320,253 @@ class OpenCVSource(FrameSource):
 
     def __repr__(self) -> str:  # pragma: no cover - chỉ để đọc log
         return f"OpenCVSource(index={self._index})"
+
+
+# --------------------------------------------------------------------------
+# RTSPSource — camera IP qua RTSP/FFmpeg
+# --------------------------------------------------------------------------
+
+
+class RTSPSource(FrameSource):
+    """Camera IP qua RTSP, đọc bằng ``cv2.VideoCapture(url, cv2.CAP_FFMPEG)``.
+
+    **Vì sao phải xả bộ đệm.** Camera IP đẩy khung liên tục (~29 fps ở luồng
+    thử nghiệm) còn pipeline chỉ đọc ở ``model.target_fps`` (5 fps). FFmpeg
+    giữ hàng đợi riêng, nên mỗi lần chỉ ``read()`` một khung sẽ đọc **khung
+    cũ nhất còn trong đệm** và độ trễ tăng dần theo thời gian pipeline nghẽn.
+    Đo trên PC (camera ``192.168.1.151``, luồng 704x576 HEVC):
+
+    | Pipeline nghỉ | Khung cũ tích trong đệm |
+    | --- | --- |
+    | 0,5 s | ~10 |
+    | 2,0 s | ~42 |
+    | 5,0 s | ~101 |
+    | 8,0 s | ~128 |
+
+    Ở mức nghỉ 5 s, độ trễ ~3,6 s — phá tiêu chí §8 "độ trễ cảnh báo ≤ 2 s".
+    Vì vậy :meth:`read` **luôn xả cạn đệm** rồi mới lấy khung cuối, thay vì
+    lấy khung đầu hàng đợi.
+
+    Cách xả: ``grab()`` liên tiếp (mỗi lần bỏ một khung đệm) cho tới khi một
+    lần ``grab()`` phải chờ lâu hơn :data:`RTSP_DRAIN_STEP_LIMIT_S` — nghĩa là
+    đã đuổi kịp luồng trực tiếp — rồi ``retrieve()`` đúng một lần để lấy
+    khung vừa grab. Đo trên PC ở 5 FPS: xả mất median 69 ms, p95 218 ms; số
+    khung bỏ median 4; **không có khung trùng lặp**. Chi phí ``grab()`` trên
+    khung đã nằm trong đệm là 0,29 ms, nên xả 128 khung chỉ tốn ~37 ms.
+
+    **Cờ FFmpeg.** ``cv2.VideoCapture`` chỉ nhận tham số số nguyên có tên
+    trong danh sách của OpenCV; thử truyền khóa FFmpeg tuỳ ý (ví dụ
+    ``rtsp_transport``) thì OpenCV từ chối thẳng — đo được
+    ``unsupported parameters in .open()``, ``isOpened()`` trả ``False``. Vì
+    vậy cờ phải đi qua biến môi trường :data:`FFMPEG_OPTIONS_ENV`. Biến này
+    **có tác dụng toàn tiến trình**, ảnh hưởng mọi ``VideoCapture`` mở sau đó
+    (kể cả ``file:``), nên :meth:`_open` đặt nó ngay trước lệnh mở và khôi
+    phục giá trị cũ trong ``finally``.
+
+    Giới hạn đã biết, **chưa** kiểm chứng trên Pi 4: camera thử nghiệm phát
+    HEVC (H.265), mà Pi 4 chỉ có giải mã H.265 bằng phần mềm. Số đo trong
+    docstring này đều là **trên PC**, chưa phải trên Pi.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        max_attempts: int = OPEN_ATTEMPTS,
+        drain_step_limit_s: float = RTSP_DRAIN_STEP_LIMIT_S,
+        max_drain_frames: int = RTSP_MAX_DRAIN_FRAMES,
+        drain_time_limit_s: float = RTSP_DRAIN_TIME_LIMIT_S,
+    ) -> None:
+        self._url = str(url)
+        self._max_attempts = max(1, int(max_attempts))
+        self._drain_step_limit_s = float(drain_step_limit_s)
+        self._max_drain_frames = max(1, int(max_drain_frames))
+        self._drain_time_limit_s = float(drain_time_limit_s)
+        self._cap: cv2.VideoCapture | None = None
+        #: Ngân sách mở lại sau khi mất kết nối giữa chừng (xem OpenCVSource).
+        self._reconnect_budget = self._max_attempts
+        self._gave_up = False
+        #: Đã đóng: trạng thái cuối, ``read()`` không được mở lại camera.
+        #: ``OpenCVSource`` hiện chưa có cờ này (đọc sau ``close()`` vẫn mở
+        #: lại thiết bị); với RTSP thì mở lại là một kết nối mạng thật nên
+        #: phải chặn hẳn.
+        self._closed = False
+        #: Số khung đệm đã bỏ ở lần đọc gần nhất; chỉ để chẩn đoán.
+        self._last_dropped = 0
+
+        if not self._open():
+            raise CameraError(
+                f"Không mở được luồng RTSP {redact_camera_source(self._url)} "
+                f"sau {self._max_attempts} lần thử."
+            )
+
+    # -- nội bộ ---------------------------------------------------------
+
+    def _open_with_ffmpeg_options(self) -> cv2.VideoCapture | None:
+        """Mở URL với cờ FFmpeg, khôi phục biến môi trường ngay sau khi mở."""
+        previous = os.environ.get(FFMPEG_OPTIONS_ENV)
+        os.environ[FFMPEG_OPTIONS_ENV] = RTSP_FFMPEG_OPTIONS
+        try:
+            return cv2.VideoCapture(self._url, cv2.CAP_FFMPEG)
+        finally:
+            # Biến môi trường là toàn tiến trình: khôi phục để ``file:``/
+            # ``usb:`` mở sau đó không bị ảnh hưởng bởi cờ RTSP.
+            if previous is None:
+                os.environ.pop(FFMPEG_OPTIONS_ENV, None)
+            else:
+                os.environ[FFMPEG_OPTIONS_ENV] = previous
+
+    def _open(self, attempts: int | None = None) -> bool:
+        """Thử mở luồng; ``attempts`` mặc định là ``self._max_attempts``."""
+        total = self._max_attempts if attempts is None else max(1, attempts)
+        cap = None
+        for attempt in range(1, total + 1):
+            cap = self._open_with_ffmpeg_options()
+
+            if cap is not None and cap.isOpened():
+                # Đã đo là có tác dụng một phần, nhưng không đủ một mình: độ
+                # trễ vẫn tăng nếu không xả đệm trong read().
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                self._cap = cap
+                logger.info(
+                    "Đã mở luồng RTSP %s (backend=%s).",
+                    redact_camera_source(self._url),
+                    self.backend,
+                )
+                return True
+
+            if cap is not None:
+                cap.release()
+            if attempt < total:
+                delay = BACKOFF_SCHEDULE[
+                    min(attempt - 1, len(BACKOFF_SCHEDULE) - 1)
+                ]
+                logger.warning(
+                    "Mở luồng RTSP %s thất bại (lần %d/%d), thử lại sau "
+                    "%.1f giây. Kiểm tra camera có bật RTSP và đúng luồng "
+                    "phụ (sub-stream) không.",
+                    redact_camera_source(self._url),
+                    attempt,
+                    total,
+                    delay,
+                )
+                _sleep(delay)
+        self._cap = None
+        return False
+
+    def _release_capture(self) -> None:
+        cap, self._cap = self._cap, None
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:  # noqa: BLE001 - release lỗi không được làm crash
+                logger.debug("Bỏ qua lỗi khi release luồng RTSP.", exc_info=True)
+
+    def _reconnect(self) -> bool:
+        """Giải phóng handle cũ rồi mở lại, tối đa ``_reconnect_budget`` lần."""
+        if self._closed:
+            # Đã đóng là trạng thái cuối: không có đường nào hồi sinh nguồn.
+            return False
+        if self._gave_up:
+            return False
+        if self._reconnect_budget <= 0:
+            self._gave_up = True
+            logger.error(
+                "Luồng RTSP %s đã hết %d lần kết nối lại; dừng đọc khung.",
+                redact_camera_source(self._url),
+                self._max_attempts,
+            )
+            return False
+
+        self._reconnect_budget -= 1
+        self._release_capture()
+        logger.warning(
+            "Mất kết nối luồng RTSP %s, đang kết nối lại (còn %d lần)...",
+            redact_camera_source(self._url),
+            self._reconnect_budget + 1,
+        )
+        opened = self._open(attempts=1)
+        if opened:
+            self._reconnect_budget = self._max_attempts
+        return opened
+
+    def _drain(self) -> tuple[bool, np.ndarray | None]:
+        """Bỏ hết khung đệm rồi trả khung mới nhất.
+
+        Returns:
+            ``(ok, frame)`` như ``cap.read()``. ``_last_dropped`` ghi số khung
+            đệm đã bỏ (không tính khung trả về).
+        """
+        cap = self._cap
+        assert cap is not None
+        self._last_dropped = 0
+
+        # Ít nhất một khung, để ``retrieve()`` luôn có dữ liệu.
+        if not cap.grab():
+            return False, None
+
+        deadline = _monotonic() + self._drain_time_limit_s
+        while self._last_dropped + 1 < self._max_drain_frames:
+            start = _monotonic()
+            if not cap.grab():
+                break
+            self._last_dropped += 1
+            # Một bước grab tốn >30 ms nghĩa là đệm đã cạn và vừa phải chờ
+            # khung trực tiếp: khung vừa lấy là mới nhất, dừng xả.
+            if _monotonic() - start > self._drain_step_limit_s:
+                break
+            # ``deadline`` chỉ chặn vòng xả, KHÔNG chặn thời gian một ``grab()``
+            # đang chờ gói tin: ``grab()`` đồng bộ, không huỷ được từ ngoài, và
+            # ``grab()`` đầu tiên ở trên nằm ngoài hạn. Vì vậy ``read()`` không
+            # có trần thời gian — đã đo một lần 2201 ms với hạn này là 2,0 s.
+            if _monotonic() > deadline:
+                break
+
+        ok, frame = cap.retrieve()
+        if ok and frame is not None and frame.size > 0:
+            return True, frame
+        return False, None
+
+    # -- giao diện FrameSource -----------------------------------------
+
+    def read(self) -> np.ndarray | None:
+        if self._closed:
+            return None
+        if self._cap is None and not self._reconnect():
+            return None
+
+        assert self._cap is not None
+        ok, frame = self._drain()
+        if ok and frame is not None and frame.size > 0:
+            self._reconnect_budget = self._max_attempts
+            return frame
+
+        # Không lấy được khung: thử mở lại trong ngân sách cho phép.
+        if self._reconnect() and self._cap is not None:
+            ok, frame = self._drain()
+            if ok and frame is not None and frame.size > 0:
+                return frame
+
+        logger.error(
+            "Luồng RTSP %s trả khung rỗng sau khi kết nối lại; bỏ khung này.",
+            redact_camera_source(self._url),
+        )
+        return None
+
+    def close(self) -> None:
+        """Đóng luồng; trạng thái cuối, gọi nhiều lần không sao.
+
+        ``read()`` sau khi đóng trả ``None`` và **không** mở lại kết nối mạng.
+        """
+        self._closed = True
+        self._release_capture()
+
+    @property
+    def backend(self) -> str:
+        return "rtsp"
+
+    def __repr__(self) -> str:  # pragma: no cover - chỉ để đọc log
+        # Không bao giờ đưa URL thật (có mật khẩu) vào repr.
+        return f"RTSPSource({redact_camera_source(self._url)!r})"
 
 
 # --------------------------------------------------------------------------
@@ -318,6 +621,9 @@ class PiCameraSource(FrameSource):
         #: Ngân sách mở lại sau khi mất kết nối giữa chừng (xem OpenCVSource).
         self._reconnect_budget = self._max_attempts
         self._gave_up = False
+        #: Đã đóng: trạng thái cuối, ``read()`` không được mở lại camera
+        #: (hợp đồng :class:`FrameSource`).
+        self._closed = False
         self._load_picamera2()
 
         if not self._open():
@@ -399,6 +705,9 @@ class PiCameraSource(FrameSource):
 
     def _reconnect(self) -> bool:
         """Mở lại sau khi mất kết nối, trong ngân sách có hạn (spec §5.1)."""
+        if self._closed:
+            # Đã đóng là trạng thái cuối: không có đường nào hồi sinh nguồn.
+            return False
         if self._gave_up:
             return False
         if self._reconnect_budget <= 0:
@@ -423,6 +732,8 @@ class PiCameraSource(FrameSource):
     # -- giao diện FrameSource -----------------------------------------
 
     def read(self) -> np.ndarray | None:
+        if self._closed:
+            return None
         if self._picam2 is None and not self._reconnect():
             return None
 
@@ -447,6 +758,8 @@ class PiCameraSource(FrameSource):
         return None
 
     def close(self) -> None:
+        """Đóng camera; trạng thái cuối, gọi nhiều lần không sao."""
+        self._closed = True
         self._close_device()
 
     @property
@@ -807,6 +1120,19 @@ def capture_from_config(config) -> FrameSource | None:
             )
             return None
 
+    if kind == "rtsp":
+        url = str(value)
+        try:
+            return RTSPSource(url)
+        except CameraError as exc:
+            logger.warning(
+                "Không mở được camera IP %s (%s). Kiểm tra camera đã bật "
+                "RTSP, đúng địa chỉ/cổng và đúng luồng phụ (sub-stream).",
+                redact_camera_source(url),
+                exc,
+            )
+            return None
+
     # parse_camera_source đã chặn loại lạ; đây chỉ là lưới an toàn.
-    logger.error("Loại nguồn ảnh không hỗ trợ: %r", source)
+    logger.error("Loại nguồn ảnh không hỗ trợ: %s", redact_camera_source(source))
     return None

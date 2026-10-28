@@ -27,7 +27,7 @@ import cv2
 
 from . import __version__
 from .capture import capture_from_config
-from .config import ConfigError, load_config
+from .config import ConfigError, load_config, redact_camera_source
 from .logging_setup import setup_logging
 
 #: Tên cửa sổ xem trước của OpenCV.
@@ -123,7 +123,7 @@ def _print_status(config, hardware, source, view: str, backend: str) -> None:
     print("  GIÁM SÁT TƯ THẾ — TRẠNG THÁI KHỞI ĐỘNG (M1)")
     print("=" * 60)
     print(f"  Cấu hình      : {config.path or '(mặc định)'}")
-    print(f"  Nguồn camera  : {camera_cfg.source}")
+    print(f"  Nguồn camera  : {redact_camera_source(camera_cfg.source)}")
     print(f"  Độ phân giải  : {camera_cfg.width}x{camera_cfg.height}, view={view}")
     print(f"  Model         : {config.model.name} ({backend}), imgsz={config.model.imgsz}")
 
@@ -286,7 +286,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         logger.error(
             "Không mở được nguồn ảnh '%s' nên không thể suy luận pose. Chạy "
             "'python scripts/camera_probe.py' để kiểm tra phần cứng.",
-            config.camera.source,
+            redact_camera_source(config.camera.source),
         )
         hardware.close()
         return 1

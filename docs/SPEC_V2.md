@@ -171,9 +171,10 @@ posture-monitor/
 
 ### 5.1 capture.py
 
-- Giao diện `FrameSource.read()` trả khung BGR. Hai triển khai: `OpenCVSource` (webcam hoặc file video) và `PiCameraSource` (picamera2). Chọn bằng `camera.source`: `usb:0`, `picamera`, `file:duong_dan.mp4`.
+- Giao diện `FrameSource.read()` trả khung BGR. Các triển khai: `OpenCVSource` (webcam), `FileSource` (file video), `PiCameraSource` (picamera2) và `RTSPSource` (camera IP). Chọn bằng `camera.source`: `usb:0`, `picamera`, `file:duong_dan.mp4`, `rtsp:rtsp://user:matkhau@host:554/1/2`.
 - Thu 640x480; YOLO tự resize về imgsz khi suy luận.
 - Tự kết nối lại khi mất camera (tối đa N lần), sau đó báo lỗi rõ ràng.
+- Đóng nguồn là trạng thái cuối: sau `close()`, `read()` trả `None` và **không** mở lại thiết bị hay kết nối mạng (xem docstring `FrameSource`).
 
 **Bẫy format màu của picamera2 (quan trọng).** Tên format của picamera2 — lấy từ libcamera — **ngược** với thứ tự byte thật trong bộ nhớ. Theo picamera2 manual RP-008156-DS-7 (Appendix A "Pixel and image formats"); manual ghi rõ nó mô tả **picamera2 version 0.3.37**, đúng bản apt đang cài trên máy đích, nên không có vênh phiên bản giữa tài liệu và máy:
 
@@ -203,6 +204,59 @@ Hệ quả bắt buộc:
 - `camera.source: picamera` dùng `Picamera2`; `usb:N` dùng `cv2.VideoCapture(N, cv2.CAP_V4L2)`.
 - Cả hai đường phải kiểm tra tồn tại trước khi mở và trả về `None` kèm log rõ ràng khi không có thiết bị — không được crash (theo §11.4).
 - `usb:N` phải thử lần lượt các chỉ số và bỏ qua thiết bị codec/ISP: chỉ chấp nhận node có `V4L2_CAP_VIDEO_CAPTURE` và không thuộc `bcm2835-codec`/`bcm2835-isp`/`rpi-hevc-dec`.
+
+#### Camera IP (RTSP)
+
+`camera.source: rtsp:rtsp://user:matkhau@host:554/1/2` tạo `RTSPSource`. Nguồn này mở bằng `cv2.VideoCapture(url, cv2.CAP_FFMPEG)` và dùng cờ FFmpeg tương ứng lệnh tham chiếu:
+
+```
+ffplay -fflags nobuffer+discardcorrupt -flags low_delay -framedrop \
+       -probesize 500000 -analyzeduration 1000000 -max_delay 500000 \
+       -rtsp_transport udp rtsp://...
+```
+
+**Đo thật trên PC (không phải Pi):** OpenCV 4.13 từ chối cờ FFmpeg khi truyền qua tham số `.open()` (`VideoCapture(path, CAP_FFMPEG, [9999, 1])` → log "unsupported parameters in .open()", `isOpened()` = `False`), nên cờ phải đặt qua biến môi trường **process-global** `OPENCV_FFMPEG_CAPTURE_OPTIONS`, gán ngay trước khi mở và **khôi phục** trong `finally`. `CAP_PROP_BUFFERSIZE = 1` được đặt sau khi mở.
+
+**Hệ quả về độ trễ — phải xả đệm trong mỗi lần đọc.** RTSP/FFmpeg vẫn đệm khung phía client dù đã đặt `BUFFERSIZE = 1`. Nếu pipeline chỉ đọc 5 FPS còn camera phát 20 FPS, đệm phình tuyến tính và độ trễ tăng vô hạn. Vì vậy `RTSPSource.read()` **bắt buộc** gọi `grab()` liên tiếp để vứt khung cũ, dừng khi một lần `grab()` phải chờ lâu hơn `RTSP_DRAIN_STEP_LIMIT_S = 0,03 s` (nghĩa là đã đuổi kịp luồng trực tiếp), rồi `retrieve()` đúng một lần.
+
+Bảng dưới **đo trên PC, camera 192.168.1.151, luồng phụ 704x576** — không phải số liệu Pi (§11.6):
+
+| Pipeline để trôi | Khung đệm phải bỏ | Thời gian xả |
+| --- | --- | --- |
+| 0,2 s | 4 | 34 ms |
+| 0,5 s | 10 | 40 ms |
+| 1,0 s | 26 | 59 ms |
+| 2,0 s | 42 | 51 ms |
+| 3,0 s | 62 | 137 ms |
+| 5,0 s | 101 | 66 ms |
+| 8,0 s | 128 | 94 ms |
+
+Đệm tích lũy khoảng **29 khung/giây** (20 FPS phát, pipeline đọc ~5 FPS). Một lần `grab()` trên khung đã đệm tốn **0,29 ms**; khi đệm cạn, `grab()` phải chờ khung trực tiếp ≈ **50 ms** (= 1/20 FPS). Hai số này là cơ sở chọn ngưỡng 0,03 s: lớn hơn 0,29 ms gần 100 lần, nhỏ hơn 50 ms. `RTSP_MAX_DRAIN_FRAMES = 240` phủ đệm của stall 8 s (128 khung). Ngưỡng 0,03 s và các giới hạn này đều là **tham số constructor** để sau này chỉnh trên Pi mà không sửa code.
+
+**`RTSP_DRAIN_TIME_LIMIT_S = 2,0` KHÔNG giới hạn thời gian một lần `read()`.** Nó chỉ là hạn cho **vòng xả**: kiểm giữa các lần `grab()`, ngăn vòng lặp xả chạy mãi. Bản thân `cap.grab()` là lời gọi đồng bộ, không huỷ được từ ngoài, nên một `grab()` đang chờ gói tin không bị hạn này cắt; `grab()` đầu tiên còn nằm hoàn toàn ngoài hạn. Hệ quả: **`read()` không có trần thời gian**. Chính bảng dưới đây chứng minh điều đó — có lần `read()` mất **2201 ms**, vượt hạn 2,0 s, trong khi số khung phải xả của lần đó chỉ vài chục, không phải 240.
+
+**Rủi ro còn tồn tại — chưa đặt `timeout`/`stimeout` cho RTSP.** `RTSP_FFMPEG_OPTIONS` hiện chỉ có `rtsp_transport|fflags|flags|framedrop|probesize|analyzeduration|max_delay`, **không** có khóa `timeout`. Nếu camera mất kết nối giữa chừng, `grab()` có thể chặn rất lâu và cả vòng lặp pipeline đứng theo — dạng treo, tệ hơn crash vì không có log nào (§11.4). **Chưa đo** mức độ trầm trọng (cần camera + kiểm trên Pi); chưa có biện pháp khắc phục trong M6. Không được đọc phần trên như một bảo đảm chịu được mất mạng.
+
+**Đuôi phân bố độ trễ đọc rất dài — không được chỉ nhìn p50.** Bốn lần đo `RTSPSource` thật, **Lead đo trên PC**, camera `192.168.1.151`, 5 FPS (không phải số liệu Pi, §11.6):
+
+| Lần đo | n | p50 | p95 | p99 | max | > 500 ms | > 1000 ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 30 s | 67 | 132 ms | 887 ms | — | 1255 ms | — | — |
+| 60 s | 156 | 77 ms | 725 ms | 1739 ms | 2201 ms | 13/156 (8%) | 5 |
+| 45 s, `udp` | 151 | 67 ms | 255 ms | 646 ms | 946 ms | 5 | 0 |
+| 45 s, `tcp` | 137 | 82 ms | 490 ms | 1052 ms | 1240 ms | 6 | 2 |
+
+Bốn lần đo cùng một camera cho p95 lệch nhau 255 / 490 / 725 / 887 ms: độ trễ đọc RTSP **không ổn định**. Nguyên nhân quan sát được: cảnh báo `Could not find ref with POC` của HEVC — mất gói UDP làm hỏng chuỗi tham chiếu, buộc giải mã chờ keyframe kế tiếp. Đo riêng của Peer (30 s, cùng camera) cho p50 79 ms / p95 242 ms / max 1807 ms, cũng lệch theo hướng này.
+
+Hệ quả: tiêu chí §8 "độ trễ cảnh báo ≤ 2 s" **chưa thể kết luận** từ các số trên. Một lần đọc chậm 2,2 s là đã vượt tiêu chí, và p95 có lúc sát ngưỡng 2 s. Phải đo lại trên Pi, và cân nhắc `udp` vs `tcp` (`udp` tốt hơn ở p95 trong lần đo 45 s, nhưng số dao động giữa các lần nên chưa đủ kết luận).
+
+**Camera của dự án phát HEVC (H.265), không phải H.264.** Luồng phụ `/1/2` là 704x576 @ 20 FPS HEVC; `/1/1` và `/1` là 1920x1080 HEVC. Chọn `/1/2` vì pipeline thu 640x480 rồi YOLO resize về `imgsz: 320` — 1080p chỉ tốn CPU giải mã mà không thêm thông tin.
+
+**Giải mã HEVC trên Pi 4 — phần cứng có node, nhưng chưa đo được đường dùng.** `README.md` ghi nhận trên chính Pi của dự án (đo 28/10/2026) node `/dev/video19` mang driver `rpi-hevc-dec`, tức SoC có bộ giải mã HEVC V4L2 stateless. **Chưa đo** liệu OpenCV/FFmpeg có dùng được node đó cho luồng RTSP này hay không (cần `v4l2-ctl --list-devices`, `vainfo`/`v4l2-ctl --list-formats-out` và thử decode thật), và **chưa đo** FPS/độ trễ của `RTSPSource` trên Pi. Do đó **FPS và độ trễ trên Pi 4 là CHƯA ĐO** — không được suy ra từ bảng PC ở trên (§11.6).
+
+**Chưa có công cụ đo RTSP trên Pi.** `scripts/camera_probe.py` hiện **không** đọc `POSTURE_CAMERA_SOURCE`, không gọi `RTSPSource`, không in FPS, không đọc nhiệt độ — `probe_cameras()` chỉ dò `picamera` + `usb` (`capture.py`). Lệnh `python -m posture_monitor benchmark` cũng chưa triển khai (in "chưa triển khai"). Vậy bước đo trên Pi **chưa có công cụ sẵn**; cần bổ sung chế độ RTSP cho `camera_probe.py` (hoặc một script đo FPS/nhiệt độ riêng) trước khi có số liệu. Chỉ ghi nhận việc cần làm, không được viết như thể đã đo được.
+
+**Bảo mật:** URL có mật khẩu **không** được nằm trong file commit. `parse_camera_source` che thông tin đăng nhập (`rtsp://***:***@host:554/...`) trước khi đưa vào `ConfigError`, log và `repr`. Cách đặt URL thật: `config.local.yaml` (đã gitignore) rồi chạy `--config config.local.yaml`, hoặc biến môi trường `POSTURE_CAMERA_SOURCE` (thắng `camera.source` khi khác rỗng). Ở biến môi trường, URL trần `rtsp://...` được tự hiểu là `rtsp:rtsp://...`; dạng tường minh cũng chạy. Còn ở `config.yaml`, tiền tố `rtsp:` là **bắt buộc**.
 
 ### 5.2 pose.py
 
