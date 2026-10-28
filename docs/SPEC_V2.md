@@ -658,7 +658,35 @@ grep -v "throttled=0x0" ~/posetest/thermal.log | head
 | A | Đạt. `aarch64`, Trixie, Python 3.13.5, Pi 4 Model B Rev 1.5, có `crc32`, RAM 3795 MB, đĩa còn 7,6 GB |
 | B | Đạt. Venv `--system-site-packages`; `torch 2.7.1+cpu` import OK, không có `Illegal instruction` |
 | C | Đạt. Export NCNN trên Pi thành công 42,8 giây, 11,1 MB |
-| D | Đạt. 9,32 FPS suy luận thuần, nhiệt 55–58 °C |
+| D | Đạt. 9,32 FPS suy luận thuần, nhiệt 55–58 °C. Chạy lại trên camera thật có FPS pipeline: **marginal**, 4/8 lần chạy đạt ≥ 5 FPS, trung vị ~4,96 FPS |
 | E | Đạt. `throttled=0x0` mỗi lần lấy mẫu |
 
-**Chưa làm được:** bước D chưa dùng camera thật vì chưa gắn thiết bị. Cần chạy lại bước D khi có camera để có FPS pipeline đầy đủ.
+**Bổ sung — bước D đã chạy trên camera thật:** bước D giờ đã dùng camera thật, nên có FPS pipeline đầy đủ thay vì chỉ FPS suy luận thuần. Điều kiện đo: camera IP qua RTSP substream 704x576 @20fps, model `yolo11n-pose` NCNN, `imgsz: 320`, số liệu do `benchmark` của dự án sinh ra trên chính Pi 4, ngày 28/10/2026.
+
+Tám lần chạy, cùng build cùng camera:
+
+| Thời lượng | FPS pipeline | Đạt ≥ 5? |
+| --- | --- | --- |
+| 12 s | 5,006 | có |
+| 20 s | 5,085 | có |
+| 20 s | 4,985 | không |
+| 30 s | 5,015 | có |
+| 40 s | 3,929 | không |
+| 45 s | 3,833 | không |
+| 60 s | 4,207 | không |
+| 60 s | 5,019 | có |
+
+→ **4/8 đạt, trung vị ~4,96 FPS.** FPS pipeline **chưa đạt ổn định** mục tiêu 5 FPS ở §8.
+
+Chi tiết một lần chạy 60 giây (lần có 5,019 FPS), phân vị p50 tính bằng ms:
+
+| Đại lượng | p50 | p95 | max |
+| --- | --- | --- | --- |
+| `pipeline_total` | 199,25 | 233,09 | 1082,77 |
+| `capture` | 65,93 | 96,85 | — |
+| `pose_detect` | 133,32 | 142,25 | — |
+| `pose_inference` | 100,51 | 108,63 | — |
+
+Trong lần chạy đó: nhiệt độ max 58,9 °C, RAM peak 464,0 MiB, `vcgencmd get_throttled` = `0x0` suốt lần chạy. Ba tiêu chí §8 còn lại (nhiệt < 80 °C, RAM < 1024 MiB, throttle `0x0`) **đạt với biên rộng**; riêng FPS **không đạt ổn định**.
+
+**Còn thiếu:** FPS ổn định ≥ 5. Bậc thang dự phòng của §8 là bước tiếp theo nhưng **chưa thực hiện**. Đổi model hoặc `imgsz` phải được ghi nhận và báo cáo theo §11 (quy tắc 2), nên cần người quyết định trước khi làm.
