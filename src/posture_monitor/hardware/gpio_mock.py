@@ -119,11 +119,12 @@ class GpioMockHardware(Hardware):
                 logger.debug("Bỏ qua lỗi buzzer.", exc_info=True)
                 return
 
-    def set_state(self, state: str) -> None:
+    def set_state(self, state: str, *, alert: bool = True) -> None:
         """Ánh xạ trạng thái sang thiết bị và ghi log.
 
         ``BAD`` và ``BREAK`` có tiếng buzzer nên chạy đồng bộ ngắn; các trạng
-        thái khác chỉ đổi LED, gần như tức thời.
+        thái khác chỉ đổi LED, gần như tức thời. ``alert=False`` giữ nguyên
+        việc đổi LED nhưng bỏ tiếng — sự kiện đang bị cooldown chặn.
         """
         if state not in STATES:
             logger.warning("Trạng thái phần cứng không hợp lệ: %r (bỏ qua).", state)
@@ -131,6 +132,7 @@ class GpioMockHardware(Hardware):
 
         self._state = state
         self._all_off()
+        sound = bool(alert)
 
         if state == "GOOD":
             self._led("led_green", True)
@@ -140,11 +142,17 @@ class GpioMockHardware(Hardware):
             detail = "LED vàng sáng"
         elif state == "BAD":
             self._led("led_red", True)
-            detail = "LED đỏ sáng, buzzer 2 tiếng ngắn"
-            self._beep(2)
+            if sound:
+                detail = "LED đỏ sáng, buzzer 2 tiếng ngắn"
+                self._beep(2)
+            else:
+                detail = "LED đỏ sáng, im lặng — cooldown"
         elif state == "BREAK":
-            detail = "buzzer 3 tiếng (nhắc nghỉ)"
-            self._beep(3)
+            if sound:
+                detail = "buzzer 3 tiếng (nhắc nghỉ)"
+                self._beep(3)
+            else:
+                detail = "nhắc nghỉ, im lặng — cooldown"
         else:  # ABSENT
             detail = "tắt hết LED"
 
