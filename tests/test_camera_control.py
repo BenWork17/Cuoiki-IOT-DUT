@@ -330,9 +330,18 @@ def test_move_sau_close_bao_loi_ro_rang():
 
 
 def test_lock_khong_cho_hai_lenh_chong_len_nhau():
-    """Flask chạy đa luồng: hai cú bấm không được chồng lên cùng một phiên."""
+    """Flask chạy đa luồng: hai cú bấm không được chồng lên cùng một phiên.
+
+    Bộ đếm phải mở ở ``continuous_move`` và chỉ đóng ở ``stop`` — tức là span
+    bao trọn cả quãng ngủ giữa hai lệnh, nơi camera đang thật sự xoay. Bản cũ
+    tăng/giảm ngay trong một lời gọi ``continuous_move`` (vài micro-giây), nên
+    nó chỉ đo độ chồng lấn bên trong lời gọi đồng bộ và **luôn** thấy
+    ``max_active == 1``, kể cả khi bỏ khoá: một test xanh giả.
+    """
 
     class DoSession(FakeSession):
+        """Mở span khi bắt đầu xoay, đóng span khi camera đã dừng."""
+
         def __init__(self):
             super().__init__()
             self.active = 0
@@ -343,25 +352,40 @@ def test_lock_khong_cho_hai_lenh_chong_len_nhau():
             with self._guard:
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
+            super().continuous_move(pan_tilt=pan_tilt, timeout_ms=timeout_ms)
+
+        def stop(self, *, pan_tilt=True, zoom=True):
             try:
-                super().continuous_move(pan_tilt=pan_tilt, timeout_ms=timeout_ms)
+                super().stop(pan_tilt=pan_tilt, zoom=zoom)
             finally:
                 with self._guard:
                     self.active -= 1
 
+    # Đủ dài để 4 luồng thật sự có cơ hội chồng nhau nếu thiếu khoá, đủ ngắn
+    # để cả test dưới 1 giây khi khoá hoạt động (4 luồng nối tiếp nhau).
+    duration = 0.1
     session = DoSession()
     controller, _ = make_controller(session, sleeper=time.sleep)
 
-    threads = [
-        threading.Thread(target=controller.move, args=(1.0, 0.0, 0.02))
-        for _ in range(4)
-    ]
+    # Cổng xuất phát: cả 4 luồng cùng vào ``move`` một lúc, không dựa vào việc
+    # lịch trình luồng tình cờ trùng nhau.
+    start_gate = threading.Event()
+
+    def worker():
+        start_gate.wait()
+        controller.move(1.0, 0.0, duration)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
     for thread in threads:
         thread.start()
+    start_gate.set()
     for thread in threads:
-        thread.join(timeout=5.0)
-    assert not any(t.is_alive() for t in threads)
-    assert session.max_active == 1
+        thread.join(timeout=10.0)
+
+    assert not any(t.is_alive() for t in threads), "còn luồng treo sau move"
+    # Khoá đang giữ thì không bao giờ quá 1 — assert này không thể đỏ vì máy
+    # chậm. Bỏ khoá thì 4 luồng cùng ngủ, bộ đếm thấy 2..4.
+    assert session.max_active == 1, f"{session.max_active} lệnh chồng lên nhau"
     assert len(session.moves) == 4
     assert len(session.stops) == 4
 
