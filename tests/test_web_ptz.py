@@ -262,6 +262,54 @@ def test_ptz_onvif_bat_khong_truyen_controller_thi_mo_luoi(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Ghép route với PtzController thật (phiên giả): chặn duration nằm ở đâu?
+# ---------------------------------------------------------------------------
+
+
+class FakePtzSession:
+    """Phiên tối thiểu để kiểm route + controller thật cùng lúc."""
+
+    def __init__(self) -> None:
+        self.pan_tilt: list[tuple[float, float]] = []
+        self.stopped = 0
+
+    def continuous_move(self, *, pan_tilt, timeout_ms):
+        self.pan_tilt.append(pan_tilt)
+
+    def stop(self, *, pan_tilt=True, zoom=True):
+        self.stopped += 1
+
+    def close(self):
+        pass
+
+
+def test_route_voi_controller_that_thi_duration_bi_ep():
+    """Route không tự cắt ``duration``; ``PtzController`` mới cắt.
+
+    Ghép hai nửa lại để chốt rằng client gửi 999 giây vẫn chỉ xoay 3 giây —
+    đây là chỗ chặn giữ khoá và giữ camera xoay quá lâu.
+    """
+    from posture_monitor.camera_control import PtzController
+
+    session = FakePtzSession()
+    controller = PtzController(
+        "192.0.2.10", password=FAKE_PASSWORD, opener=lambda: session,
+        sleeper=lambda seconds: None,
+    )
+    client = make_client(
+        config=make_config(onvif_enabled=True, host="192.0.2.10"), ptz=controller
+    )
+
+    payload = client.post(
+        "/api/ptz", json={"direction": "left", "duration": 999}
+    ).get_json()
+
+    assert payload["duration"] == pytest.approx(3.0)
+    assert session.pan_tilt == [(-1.0, 0.0)], "chỉ đúng một lệnh xoay"
+    assert session.stopped == 1
+
+
+# ---------------------------------------------------------------------------
 # Lỗi từ controller → mã HTTP của PtzError
 # ---------------------------------------------------------------------------
 
