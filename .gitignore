@@ -17,8 +17,18 @@ __pycache__/
 *.db
 *.db-journal
 *.log
-calibration.json
-out.json
+# File runtime ở gốc repo. Có dấu "/" đầu để không nuốt fixture trùng tên
+# nằm trong tests/ (ví dụ tests/data/calibration.json nếu sau này có).
+/calibration.json
+/out.json
+
+# Ultralytics tự tạo khi predict/export (ảnh overlay, log, weight trung gian)
+runs/
+
+# Thư mục nháp kiểm chứng ở gốc repo (ảnh overlay, khung hình chụp lại)
+# Có dấu "/" đầu: chỉ chặn ở gốc, không khớp thư mục con trùng tên.
+/out/
+/artifacts/
 
 # Model và file export (lớn, không nên commit)
 *.pt
@@ -29,8 +39,28 @@ models/
 # Cấu hình cá nhân (giữ config.yaml mẫu trong repo)
 config.local.yaml
 
-# Hệ điều hành / IDE
+# Công cụ Python sinh ra khi chạy test/đóng gói
+.coverage
+htmlcov/
+.tox/
+.nox/
+build/
+dist/
+
+# File rác do Paseo tự sinh, nội dung rỗng {}
+paseo.json
+
+# Editor / OS
+*.swp
+*~
+*.bak
 .DS_Store
 Thumbs.db
+desktop.ini
 .idea/
 .vscode/
+
+# Lưới an toàn (phải nằm CUỐI file, sau mọi mẫu loại trừ): spec §9 và §13
+# bắt buộc commit video mẫu + expected.json. Negation chỉ hiệu lực vì thư mục
+# cha tests/ không bị loại trừ — "/data/" không khớp "tests/data/".
+!tests/data/**
