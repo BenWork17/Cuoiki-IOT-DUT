@@ -30,10 +30,28 @@ from typing import Any, Callable, Mapping
 
 from flask import Flask, Response, jsonify, render_template, request
 
+from .. import camera_control
 from ..classifier import LABEL_ORDER
 from ..logging_setup import get_logger
 
 _logger = get_logger(__name__)
+
+#: Hướng PTZ hợp lệ, khớp khóa của ``camera_control.DIRECTION_VECTORS``.
+#: Route từ chối hướng lạ trước khi chạm camera.
+PTZ_DIRECTIONS = ("left", "right", "up", "down")
+
+#: Thời gian xoay mặc định cho một cú bấm (giây), dùng khi client không gửi
+#: ``duration``. Chặn trên/dưới thuộc về ``camera_control`` — một nguồn sự
+#: thật duy nhất, tránh hai nơi ép hai kiểu.
+PTZ_DEFAULT_DURATION_S = 0.5
+
+#: Nhãn tiếng Việt của từng hướng, dùng cho thông điệp trả về UI.
+PTZ_DIRECTION_TEXT = {
+    "left": "trái",
+    "right": "phải",
+    "up": "lên",
+    "down": "xuống",
+}
 
 #: Nhãn tiếng Việt của trạng thái (spec v2 §5.6), dùng cho UI và API.
 STATE_TEXT = {
@@ -220,6 +238,7 @@ def create_app(
     config=None,
     state: DashboardState | None = None,
     storage=None,
+    ptz=None,
 ) -> Flask:
     """Tạo ứng dụng Flask.
 
@@ -231,6 +250,11 @@ def create_app(
             thì tạo mới (tiện cho test và cho ``/stream`` bị tắt).
         storage: :class:`posture_monitor.storage.Storage`; ``None`` thì
             ``/api/history`` trả kết quả rỗng thay vì lỗi.
+        ptz: :class:`posture_monitor.camera_control.PtzController` (hoặc đối
+            tượng có ``move_direction``). ``None`` thì tạo từ
+            ``config.camera.onvif`` ở lần gọi ``/api/ptz`` đầu tiên — nhờ vậy
+            không mở phiên ONVIF khi người dùng chưa từng bấm nút xoay, và
+            test tiêm được bản giả mà không cần camera.
 
     Returns:
         :class:`flask.Flask` đã gắn đủ route.
@@ -253,6 +277,22 @@ def create_app(
     app.config["STORAGE"] = storage
     app.config["STREAM_ENABLED"] = stream_enabled
     app.config["MIN_DISTANCE_CM"] = min_distance
+    app.config["PTZ_CONTROLLER"] = ptz
+    # Bảo vệ bước tạo controller lười: hai request đồng thời không được mở hai
+    # phiên ONVIF (mỗi phiên tốn vài round-trip SOAP xuống camera).
+    ptz_create_lock = threading.Lock()
+
+    def _get_ptz():
+        """Trả controller PTZ, tạo một lần từ cấu hình nếu chưa được tiêm."""
+        controller = app.config.get("PTZ_CONTROLLER")
+        if controller is not None:
+            return controller
+        with ptz_create_lock:
+            controller = app.config.get("PTZ_CONTROLLER")
+            if controller is None:
+                controller = camera_control.from_config(config)
+                app.config["PTZ_CONTROLLER"] = controller
+        return controller
 
     @app.get("/")
     def index() -> str:
@@ -331,6 +371,64 @@ def create_app(
                 "message": "Đã tắt tiếng cảnh báo."
                 if muted
                 else "Đã bật lại tiếng cảnh báo.",
+            }
+        )
+
+    @app.post("/api/ptz")
+    def api_ptz() -> Response:
+        """Xoay camera theo một hướng trong một khoảng ngắn.
+
+        Thân JSON: ``{"direction": "left"|"right"|"up"|"down",
+        "duration": <giây, tuỳ chọn>}``. Giá trị âm hoặc không phải số bị trả
+        400 ngay; giá trị quá lớn được ``camera_control`` ép về chặn trên của
+        nó (không phải lỗi: UI bấm giữ cũng chỉ cần xoay ngắn), và câu trả lời
+        chứa ``duration`` **thực tế** đã xoay.
+
+        Luôn trả JSON. Lỗi cấu hình/thiếu thư viện/camera không hỗ trợ được
+        quy về mã HTTP tương ứng và thông điệp tiếng Việt; mật khẩu camera
+        không bao giờ đi qua đây (xem ``camera_control``).
+        """
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping):
+            return _json_error(
+                "Thân request phải là JSON dạng "
+                '{"direction": "left"|"right"|"up"|"down"}.',
+                400,
+            )
+
+        direction = body.get("direction")
+        if not isinstance(direction, str) or direction.strip().lower() not in (
+            PTZ_DIRECTIONS
+        ):
+            return _json_error(
+                "Hướng xoay phải là 'left', 'right', 'up' hoặc 'down'.",
+                400,
+            )
+        direction = direction.strip().lower()
+
+        duration = body.get("duration", PTZ_DEFAULT_DURATION_S)
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
+            return _json_error("Thời gian xoay phải là một số (giây).", 400)
+        if float(duration) < 0:
+            return _json_error("Thời gian xoay không được âm.", 400)
+
+        try:
+            controller = _get_ptz()
+            moved_s = controller.move_direction(direction, float(duration))
+        except camera_control.PtzError as exc:
+            return _json_error(str(exc), int(getattr(exc, "status", 503)))
+        except Exception:  # noqa: BLE001 - web không được sập vì camera
+            _logger.exception("Lỗi không lường trước khi điều khiển PTZ.")
+            return _json_error(
+                "Không điều khiển được camera. Xem log để biết chi tiết.", 500
+            )
+
+        return jsonify(
+            {
+                "ok": True,
+                "direction": direction,
+                "duration": moved_s,
+                "message": f"Đã xoay camera sang {PTZ_DIRECTION_TEXT[direction]}.",
             }
         )
 
