@@ -4,10 +4,17 @@ Demo quan sát người học bằng camera, nhận diện tư thế ngồi theo
 bằng YOLO11n-pose, cảnh báo bằng LED/buzzer/rung, hiển thị trạng thái trên
 dashboard web trong mạng LAN và lưu thống kê vào SQLite.
 
-> **Trạng thái hiện tại: mốc M1.** Đã có khung repo, cấu hình, CLI, logging,
-> nguồn camera hai đường (Pi Camera + USB), phần cứng giả lập, và **suy luận
-> pose + vẽ 17 keypoint/xương lên khung hình trực tiếp**.
-> Phần phân loại tư thế, lưu trữ và web **chưa** được triển khai.
+> **Trạng thái hiện tại.** Đã có khung repo, cấu hình, logging, đủ bốn lệnh
+> CLI (`run`, `calibrate`, `replay`, `benchmark`), nguồn camera hai đường
+> (Pi Camera + USB), phần cứng thật/giả lập, **suy luận pose + vẽ 17
+> keypoint/xương**, **phân loại tư thế** (`classifier.py`, `state.py`) và
+> **lưu trữ SQLite** (`storage.py`).
+>
+> Hai phần **chưa được nối**: dashboard web **có mã trong `web/` và có test
+> xanh**, nhưng chưa nối vào lệnh `run` — chạy `run` hiện chưa mở web. Lưu
+> trữ SQLite cũng chưa được lệnh nào ghi vào; nó mới được dashboard dùng để
+> đọc lịch sử. Bản thân `run` vẫn chỉ suy luận pose và vẽ lên khung hình —
+> phân loại tư thế hiện chạy trong `replay` và `benchmark`.
 > Đặc tả kỹ thuật đầy đủ nằm ở [`docs/SPEC_V2.md`](docs/SPEC_V2.md).
 
 ---
@@ -125,23 +132,43 @@ nâng `ultralytics` giữa chừng.**
 # Từ gốc repo, với PYTHONPATH trỏ vào src/
 export PYTHONPATH=src          # Windows PowerShell: $env:PYTHONPATH="src"
 
+python -m posture_monitor --help
+
 python -m posture_monitor run --no-gpio       # chạy không cần GPIO
 python -m posture_monitor run                 # tự phát hiện GPIO
-python -m posture_monitor --help
 ```
 
-Các lệnh theo spec: `run | calibrate | replay | benchmark`. Ở mốc M1 chỉ `run`
-được triển khai; ba lệnh còn lại in "chưa triển khai" và thoát với mã 0.
+Bốn lệnh, đều đã triển khai:
+
+| Lệnh | Cờ chính |
+| --- | --- |
+| `run` | `--config`, `--no-gpio`, `--view {front,side}`, `--save-overlay`, `--log-level` |
+| `calibrate` | `--config`, `--output`, `--no-gpio` (no-op), `--log-level` |
+| `replay <video>` | `video` (vị trí), `--config`, `--no-gpio` (no-op), `--save-report`, `--log-level` |
+| `benchmark` | `--seconds`, `--config`, `--source`, `--json`, `--no-gpio` (no-op), `--log-level` |
+
+- `run` — giám sát trực tiếp từ camera: suy luận pose và vẽ lên khung hình.
+- `calibrate` — thu khung ở tư thế chuẩn rồi ghi baseline ra
+  `calibration.json`.
+- `replay` — chạy pipeline (pose → features → phân loại → máy trạng thái)
+  trên một video có sẵn, in tóm tắt và tuỳ chọn ghi báo cáo JSON.
+- `benchmark` — đo hiệu năng trên máy đích (spec §8).
 
 `run` sẽ: nạp `config.yaml` → khởi tạo phần cứng (giả lập nếu `--no-gpio`) →
 mở camera → nạp model pose → mở cửa sổ xem trước. Mỗi khung hình được suy
 luận rồi vẽ 17 keypoint (chấm đỏ) và xương (nét xanh) lên trên.
 
+> **Dashboard web chưa chạy trong `run`.** Mã dashboard nằm ở
+> `src/posture_monitor/web/` và đã có test, nhưng vòng lặp của `run` hiện
+> chưa khởi động Flask — chạy `run` sẽ **chưa** thấy web. Xem
+> [`docs/WEB_DASHBOARD.md`](docs/WEB_DASHBOARD.md) để biết giao diện và API
+> mà mã hiện có.
+
 **Cách thoát:** bấm `q` (hoặc `Q`, hoặc `Esc`) khi cửa sổ đang được chọn, hoặc
 bấm nút `X` của cửa sổ. Thoát bằng `Ctrl+C` cũng được (mã thoát `130`).
 
 **Không có camera vẫn chạy được**: chương trình ghi log lý do cụ thể và thoát
-với mã `1` — mốc M1 cần camera để suy luận pose.
+với mã `1` — `run` cần camera để suy luận pose.
 
 ### Kiểm chứng trên máy không có màn hình
 
@@ -257,6 +284,8 @@ là bắt buộc, không phải tùy chọn** nếu muốn số đo FPS hợp l�
 python -m pytest tests/ -v
 ```
 
+Đo trên PC (Python 3.13): **544 passed, 4 skipped**.
+
 Test chạy được trên PC, không cần camera thật: video giả được tạo bằng
 `cv2.VideoWriter` trong thư mục tạm.
 
@@ -313,36 +342,50 @@ Khi có camera, chạy lại `python scripts/camera_probe.py` để xác nhận.
 
 ---
 
-## Cấu trúc repo (M1)
+## Cấu trúc repo
 
 ```
 .
 ├── README.md
 ├── requirements.txt
 ├── config.yaml
-├── docs/SPEC_V2.md
+├── docs/
+│   ├── SPEC_V2.md
+│   └── WEB_DASHBOARD.md
 ├── scripts/
-│   └── camera_probe.py        # dò và in bảng thiết bị quay hình
+│   ├── camera_probe.py        # dò và in bảng thiết bị quay hình
+│   └── hw_selftest.py         # tự kiểm tra LED/buzzer/rung/siêu âm
 ├── src/posture_monitor/
 │   ├── __main__.py            # CLI: run | calibrate | replay | benchmark
 │   ├── config.py              # đọc + kiểm tra config.yaml
 │   ├── logging_setup.py       # logging dùng chung
 │   ├── capture.py             # OpenCVSource, PiCameraSource, FileSource, probe
-│   ├── pose.py                # nạp model + detect() → PoseResult (hợp đồng M2)
+│   ├── pose.py                # nạp model + detect() → PoseResult
 │   ├── overlay.py             # vẽ 17 keypoint + xương theo kp_conf_min
-│   └── hardware/
-│       ├── base.py            # giao diện Hardware
-│       ├── gpio_mock.py       # MockFactory của gpiozero (chỉ log)
-│       └── gpio_real.py       # LED/buzzer/rung thật
+│   ├── features.py            # trích đặc trưng tư thế
+│   ├── calibration.py         # baseline tư thế chuẩn ⇄ calibration.json
+│   ├── classifier.py          # gán nhãn tư thế
+│   ├── state.py               # máy trạng thái GOOD/WARN/BAD/ABSENT
+│   ├── alerts.py              # quyết định cảnh báo
+│   ├── sensors.py             # HC-SR04, cảm biến phụ
+│   ├── storage.py             # SQLite: phiên, sự kiện, lịch sử
+│   ├── benchmark.py           # đo FPS/độ trễ/nhiệt/RAM/throttle
+│   ├── hardware/
+│   │   ├── base.py            # giao diện Hardware
+│   │   ├── gpio_mock.py       # MockFactory của gpiozero (chỉ log)
+│   │   └── gpio_real.py       # LED/buzzer/rung thật
+│   └── web/                   # dashboard Flask (CHƯA nối vào lệnh run)
+│       ├── app.py             # DashboardState, create_app, run_server
+│       ├── templates/
+│       └── static/
 └── tests/
-    ├── test_capture.py
-    ├── test_config.py
-    ├── test_pose.py
-    └── test_overlay.py
 ```
 
-Các module của M2 trở đi (`features.py`, `classifier.py`, `state.py`,
-`alerts.py`, `sensors.py`, `storage.py`, `web/`) chưa có.
+Các module của M2 trở đi (`features.py`, `calibration.py`, `classifier.py`,
+`state.py`, `alerts.py`, `sensors.py`, `storage.py`, `benchmark.py`, `web/`)
+đều đã có mã và test. Phần còn thiếu là **dây nối** giữa vòng lặp của `run`
+với `web/` và `storage.py`; cho tới khi nối xong, `run` chỉ suy luận pose và
+vẽ khung hình, không mở dashboard và không ghi SQLite.
 
 ---
 
