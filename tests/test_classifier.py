@@ -253,6 +253,35 @@ def test_front_ignores_neck_angle():
     assert GOOD in labels_of(features)
 
 
+def test_side_ignores_head_height_rule():
+    """Ở góc nghiêng hai vai chồng nhau nên ``head_height`` suy biến.
+
+    Spec §5.5 ghi cột điều kiện là "(front)"; side chỉ dùng ``neck_angle``
+    (§5.3). Đầu không đổi mà vai rộng ra không được sinh HEAD_DOWN giả.
+    """
+    ratio = THRESHOLDS.head_down_ratio
+    limit = BASELINE_VALUES["head_height"] * ratio
+    very_low = limit / 4.0  # thấp hơn hẳn ngưỡng, như bảng tái hiện của Lead
+
+    side = make_features(view="side", head_height=very_low, neck_angle=170.0)
+    assert HEAD_DOWN not in labels_of(side)
+    assert labels_of(side) == frozenset({GOOD})
+
+    front = make_features(view="front", head_height=very_low)
+    assert HEAD_DOWN in labels_of(front)
+
+
+def test_side_head_down_still_comes_from_neck_angle():
+    """Chặn luật head_height không được làm mất nguồn HEAD_DOWN của side."""
+    limit = THRESHOLDS.neck_angle_drop_deg
+    base = BASELINE_VALUES["neck_angle"]
+    features = make_features(
+        view="side", head_height=0.0, neck_angle=base - limit - 1.0
+    )
+    result = classify(features, FakeBaseline(), THRESHOLDS)
+    assert HEAD_DOWN in result.labels
+
+
 # ---------------------------------------------------------------------------
 # Nhiều nhãn, điểm số
 # ---------------------------------------------------------------------------

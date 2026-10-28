@@ -19,6 +19,10 @@ Quy tắc theo spec §5.6:
   thống **không** phát hiện nhắm mắt — README phải ghi rõ).
 - Ngồi liên tục ``break_after_min`` phút → ``BREAK_REMINDER``.
 - Vắng mặt liên tục ``absent_reset_s`` → đặt lại bộ đếm.
+- Vắng mặt ngắn hơn ``absent_reset_s`` không xóa đợt đang mở, nhưng mọi mốc
+  thời gian đang mở được dời qua đúng khoảng vắng khi người quay lại: các
+  ngưỡng ``bad_hold_s`` / ``escalate_after_s`` / ``drowsy_hold_s`` chỉ đo
+  thời gian sai **có quan sát**, không đo thời gian người dùng đi vắng.
 
 Module không phụ thuộc camera, model hay GPIO.
 """
@@ -252,6 +256,13 @@ class StateMachine:
             return self._build(now, STATE_ABSENT, current, score, events)
 
         # Có người trở lại: kết thúc đợt vắng, bộ đếm ngồi chạy tiếp.
+        # Đồng hồ của mọi đợt/đếm đang mở phải nhảy qua khoảng vắng: nhãn chỉ
+        # được coi là duy trì "liên tục" khi thực sự có khung quan sát, nên
+        # ``now - start`` phải đo thời gian sai đã quan sát, không đo thời
+        # gian người dùng đi vắng (spec §5.6). Cảnh báo đang mở vẫn giữ
+        # nguyên (không phát ``alert_end`` chỉ vì vắng chốc lát).
+        if self._absent_since is not None:
+            self._shift_open_clocks(now - self._absent_since)
         self._absent_since = None
         self._absent_reset_done = False
         self._sitting_s += max(0.0, delta)
@@ -351,6 +362,24 @@ class StateMachine:
                 )
 
         return events
+
+    def _shift_open_clocks(self, gap: float) -> None:
+        """Dời mọi mốc thời gian đang mở tiến thêm ``gap`` giây.
+
+        Dùng khi người dùng quay lại sau một khoảng vắng: ``now - start`` sau
+        đó chỉ còn đo phần thời gian sai **có quan sát**, nhờ vậy một người đi
+        vắng 90 giây rồi quay lại với tư thế sai không bị báo leo thang hay
+        buồn ngủ ngay lập tức.
+        """
+        if gap <= 0.0:
+            return
+        for episode in self._active.values():
+            episode.start += gap
+        for label in list(self._bad_since):
+            self._bad_since[label] += gap
+        # ``_good_since`` và ``_last_alert`` không cần dời: khung vắng mặt đã
+        # xóa ``_good_since``, còn cooldown cố ý để trôi theo thời gian thật
+        # để buổi học mới sau khi quay lại vẫn được nhắc.
 
     def _cooldown_allows(self, label: str, at: float) -> bool:
         last = self._last_alert.get(label)

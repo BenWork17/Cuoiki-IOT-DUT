@@ -385,6 +385,91 @@ def test_absence_keeps_open_alert_when_it_ends_before_reset():
     assert machine.active_labels == (HEAD_DOWN,)
 
 
+def test_returning_after_absence_does_not_escalate_or_report_drowsy():
+    """Vắng lâu rồi quay lại không được leo thang/báo buồn ngủ ngay.
+
+    Tái hiện của Lead: cảnh báo mở ở giây 5, vắng tới giây 100, quay lại vẫn
+    HEAD_DOWN. Trước khi sửa, ``escalate`` (60 s) và ``DROWSY_SUSPECT`` (10 s)
+    bắn ngay ở khung đầu tiên sau khi quay lại vì chúng đo cả 94 giây vắng
+    mặt là "sai liên tục" (spec §5.6). Sau khi sửa, đồng hồ của đợt và của
+    ``_bad_since`` dời qua khoảng vắng (từ khung vắng đầu tiên tới lúc quay
+    lại), nên ở khung quay lại chúng chỉ mới đo 6 giây sai đã quan sát:
+    đồng hồ hiệu dụng dừng ở mốc khung vắng đầu tiên (giây 6) rồi mới chạy
+    tiếp. Phải quan sát thêm 4 giây nữa mới đủ ``drowsy_hold_s``.
+    """
+    machine, clock = make_machine()
+    run_for(machine, clock, BAD, TIMING.bad_hold_s + 1)  # cảnh báo ở giây 5
+    assert machine.active_labels == (HEAD_DOWN,)
+
+    update, during_absence = run_collecting(
+        machine, clock, ABSENT_SET, 94, score=0.0
+    )
+    assert update.state == STATE_ABSENT
+    # Cảnh báo đang mở vẫn mở: vắng chốc lát không phải alert_end.
+    assert [e for e in during_absence if e.type == EVENT_ALERT_END] == []
+    assert machine.active_labels == (HEAD_DOWN,)
+
+    # Khung quay lại (giây 100): không escalate, không DROWSY ngay dù đồng hồ
+    # thật đã trôi 100 giây.
+    update = machine.update(clock.now, BAD, 30.0)
+    assert update.state == STATE_BAD
+    assert events_of(update, EVENT_ESCALATE) == []
+    assert events_of(update, EVENT_DROWSY) == []
+
+    # Quan sát thêm các giây 101..103: vẫn chưa đủ 10 giây sai liên tục.
+    for _ in range(3):
+        clock.advance(1.0)
+        update = machine.update(clock.now, BAD, 30.0)
+        assert events_of(update, EVENT_DROWSY) == []
+        assert events_of(update, EVENT_ESCALATE) == []
+
+    # Giây 104: đúng 10 giây sai liên tục (6 quan sát trước khi vắng + 4 sau
+    # khi về) → DROWSY một lần, vẫn chưa leo thang (60 s chưa tới).
+    clock.advance(1.0)
+    update = machine.update(clock.now, BAD, 30.0)
+    drowsy = events_of(update, EVENT_DROWSY)
+    assert len(drowsy) == 1
+    assert drowsy[0].duration_s == pytest.approx(TIMING.drowsy_hold_s)
+    assert events_of(update, EVENT_ESCALATE) == []
+
+
+def test_continuous_bad_posture_still_escalates_and_reports_drowsy():
+    """Ghim hành vi hiện tại: không vắng mặt thì mốc cũ vẫn đúng."""
+    machine, clock = make_machine()
+    raise_alert(machine, clock)  # cảnh báo ở giây 6
+
+    _, events = run_collecting(
+        machine, clock, BAD, int(TIMING.escalate_after_s) + 1
+    )
+    escalations = [e for e in events if e.type == EVENT_ESCALATE]
+    drowsy = [e for e in events if e.type == EVENT_DROWSY]
+    assert len(escalations) == 1
+    assert len(drowsy) == 1
+    # DROWSY ở 10 s liên tục, escalate ở 60 s liên tục tính từ lúc mở đợt.
+    assert drowsy[0].duration_s == pytest.approx(TIMING.drowsy_hold_s)
+    assert escalations[0].duration_s == pytest.approx(TIMING.escalate_after_s)
+
+
+def test_absence_long_enough_still_resets_after_return():
+    """Vắng >= absent_reset_s vẫn đặt lại bộ đếm như cũ, không dời mốc."""
+    machine, clock = make_machine(TimingConfig(absent_reset_s=10.0))
+    run_for(machine, clock, BAD, TIMING.bad_hold_s + 1)
+    assert machine.active_labels == (HEAD_DOWN,)
+
+    # Vắng từ giây 6; reset rơi đúng giây 16 (đủ 10 s) — nạp 11 khung 6..16.
+    update, during_absence = run_collecting(
+        machine, clock, ABSENT_SET, 11, score=0.0
+    )
+    assert update.state == STATE_ABSENT
+    resets = [e for e in during_absence if e.type == EVENT_ABSENT_RESET]
+    assert len(resets) == 1
+    assert machine.active_labels == ()
+
+    update = run_for(machine, clock, BAD, 1)
+    assert update.state == STATE_WARN
+    assert events_of(update, EVENT_ALERT_START) == []
+
+
 # ---------------------------------------------------------------------------
 # Hợp đồng đồng hồ
 # ---------------------------------------------------------------------------

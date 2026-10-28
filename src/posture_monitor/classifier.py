@@ -151,15 +151,25 @@ def classify(
 
     def add(label: str, value: float) -> None:
         if value > 0.0:
-            excess[label] = value
+            # Lấy mức vượt lớn nhất, không để luật sau ghi đè mức nặng hơn
+            # của luật trước. Hiện tại mỗi nhãn chỉ có đúng một nguồn ghi
+            # (HEAD_DOWN tách hẳn theo view, xem bên dưới), nên đây là phòng
+            # thủ: không có đường nào qua API công khai chạm tới nhánh
+            # ``max`` khi hai nguồn cùng bắn, vì vậy chưa có test cho nó.
+            excess[label] = max(excess.get(label, 0.0), value)
 
-    # ---- HEAD_DOWN: đầu thấp hơn baseline quá tỉ lệ cho phép --------------
-    base_head_height = baseline.get("head_height")
-    head_height = features.get("head_height")
-    if base_head_height is not None and head_height is not None:
-        limit = float(base_head_height) * float(thresholds.head_down_ratio)
-        if limit > 0 and head_height < limit:
-            add(HEAD_DOWN, (limit - head_height) / limit)
+    # ---- HEAD_DOWN (front): đầu thấp hơn baseline quá tỉ lệ cho phép ------
+    # Chỉ áp ở front: ``head_height`` chuẩn hóa theo ``shoulder_width``, mà ở
+    # góc nghiêng hai vai chồng nhau nên mẫu số co lại và phép chuẩn hóa suy
+    # biến — đầu không đổi vẫn tụt "độ cao" khi người xoay/vai rộng ra. Spec
+    # §5.5 ghi rõ cột điều kiện là "(front)"; side dùng ``neck_angle`` (§5.3).
+    if features.view == "front":
+        base_head_height = baseline.get("head_height")
+        head_height = features.get("head_height")
+        if base_head_height is not None and head_height is not None:
+            limit = float(base_head_height) * float(thresholds.head_down_ratio)
+            if limit > 0 and head_height < limit:
+                add(HEAD_DOWN, (limit - head_height) / limit)
 
     # ---- TOO_CLOSE: vai rộng hơn baseline quá tỉ lệ -----------------------
     closeness = features.get("closeness")
@@ -200,6 +210,8 @@ def classify(
     # ---- Chế độ side: cổ gập quá ngưỡng coi là HEAD_DOWN ------------------
     # Spec §5.3 chỉ định nghĩa ngưỡng cho neck_angle ở chế độ side; dùng
     # HEAD_DOWN làm nhãn gần nhất thay vì thêm nhãn ngoài danh sách §5.5.
+    # Ở side đây là **nguồn duy nhất** của HEAD_DOWN: luật head_height phía
+    # trên bị chặn theo view, nên mỗi nhãn chỉ có một nguồn ghi.
     if features.view == "side":
         base_neck = baseline.get("neck_angle")
         neck_angle = features.get("neck_angle")
