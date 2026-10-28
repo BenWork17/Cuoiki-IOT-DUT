@@ -918,9 +918,18 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     elif args.command == "benchmark":
-        # Mã thoát do ``benchmark.main`` quyết định (0/1/2/130); không bọc
-        # thêm để hai đường vào giữ đúng một bộ quy ước.
-        return cmd_benchmark(args)
+        # ``benchmark.main`` tự đổi lỗi trong lúc đo thành 1/2/130, nhưng phần
+        # in báo cáo và ghi file nằm **sau** khối try của nó, nên một lỗi ở đó
+        # vẫn thoát ra ngoài. Bọc ở đây để ``benchmark`` có cùng mức xử lý với
+        # ba lệnh kia; các mã thoát đã có (0/1/2/130) vẫn giữ nguyên.
+        try:
+            return cmd_benchmark(args)
+        except KeyboardInterrupt:
+            print("\nĐã dừng theo yêu cầu.", file=sys.stderr)
+            return 130
+        except Exception as exc:  # noqa: BLE001 - lỗi cuối cùng phải có thông báo
+            print(f"Lỗi không mong muốn: {exc}", file=sys.stderr)
+            return 1
     elif args.command == "calibrate":
         try:
             return cmd_calibrate(args)
