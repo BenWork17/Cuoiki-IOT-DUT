@@ -19,14 +19,29 @@ camera:
   view: front            # front | side
   # Điều khiển PTZ qua ONVIF (tuỳ chọn, tắt mặc định). Bật xong thì dashboard
   # có nút xoay camera; route POST /api/ptz gọi xuống đây.
+  # LƯU Ý: 'port' ở mục này là cổng HTTP ONVIF (mặc định 80), KHÔNG phải cổng
+  # RTSP. Loa của camera nằm ở mục 'speaker' bên dưới, dùng cổng 554.
   onvif:
     enabled: false
     host: ""             # ví dụ "192.168.1.50"; để trống khi chưa dùng
-    port: 80
+    port: 80             # cổng HTTP ONVIF (không phải RTSP)
     user: "admin"
     # Mật khẩu KHÔNG nằm trong file này (file được commit). Đặt biến môi trường
     # POSTURE_ONVIF_PASSWORD trước khi chạy; enabled: true mà thiếu biến này
     # thì chương trình báo lỗi cấu hình ngay lúc nạp.
+  # Loa của camera IP, phát qua RTSP backchannel (route POST /api/speak).
+  # Đây là một TÀI NGUYÊN KHÁC với mục 'onvif' ở trên và dùng cổng khác:
+  #   - onvif.port   = cổng HTTP ONVIF (80) để điều khiển PTZ
+  #   - speaker.port = cổng RTSP (554) để mở backchannel phát tiếng
+  # Gộp hai mục làm một sẽ khiến cấu hình bên này ghi đè bên kia.
+  speaker:
+    enabled: false       # true thì /api/speak mới phát được
+    host: ""             # ví dụ "192.168.1.50"; để trống khi chưa dùng
+    port: 554            # cổng RTSP (không phải cổng HTTP ONVIF)
+    user: ""
+    stream_path: "/1/2"  # luồng phụ đã kiểm chứng cho backchannel
+    # Mật khẩu cũng KHÔNG nằm ở đây: dùng chung biến môi trường
+    # POSTURE_ONVIF_PASSWORD (một mật khẩu cho cả hai tài nguyên của camera).
 
 model:
   name: yolo11n-pose     # dự phòng: yolov8n-pose

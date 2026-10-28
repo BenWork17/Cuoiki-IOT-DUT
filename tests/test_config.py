@@ -242,3 +242,79 @@ def test_parse_camera_source_file_with_windows_path() -> None:
 def test_parse_camera_source_rejects_unknown_kind() -> None:
     with pytest.raises(ConfigError):
         parse_camera_source("rtsp://camera")
+
+
+# --------------------------------------------------------------------------
+# camera.onvif (PTZ, cổng HTTP) và camera.speaker (loa, cổng RTSP)
+# --------------------------------------------------------------------------
+def test_speaker_section_defaults_to_off_with_rtsp_port(tmp_path: Path) -> None:
+    """Mặc định: tắt, cổng 554 — **khác** ``camera.onvif.port`` = 80."""
+    config = load_config(_write(tmp_path, VALID_YAML))
+
+    speaker = config.camera.speaker
+    assert speaker.enabled is False
+    assert speaker.host == ""
+    assert speaker.port == 554
+    assert speaker.stream_path == "/1/2"
+    assert config.camera.onvif.port == 80
+
+
+def test_speaker_and_onvif_ports_do_not_share_one_key(tmp_path: Path) -> None:
+    """Đặt ``onvif.port: 80`` không được làm ``speaker.port`` thành 80.
+
+    Đây chính là lỗi mà việc tách schema sửa: trước đây cả hai đọc chung
+    ``camera.onvif.port``, nên loa nhận cổng HTTP và không mở được backchannel.
+    """
+    text = (
+        "camera:\n"
+        "  source: usb:0\n"
+        "  onvif:\n"
+        "    port: 80\n"
+        "  speaker:\n"
+        "    port: 554\n"
+    )
+    config = load_config(_write(tmp_path, text))
+
+    assert config.camera.onvif.port == 80
+    assert config.camera.speaker.port == 554
+
+
+def test_speaker_enabled_without_host_raises_config_error(tmp_path: Path) -> None:
+    text = (
+        "camera:\n"
+        "  source: usb:0\n"
+        "  speaker:\n"
+        "    enabled: true\n"
+        '    host: ""\n'
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "camera.speaker.host" in str(excinfo.value)
+
+
+def test_speaker_port_out_of_range_raises_config_error(tmp_path: Path) -> None:
+    text = "camera:\n  source: usb:0\n  speaker:\n    port: 70000\n"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "camera.speaker.port" in str(excinfo.value)
+
+
+def test_speaker_host_with_rtsp_url_is_rejected_and_redacted(
+    tmp_path: Path,
+) -> None:
+    """Dán cả URL RTSP vào ``host`` → lỗi, và mật khẩu trong URL phải bị che."""
+    text = (
+        "camera:\n"
+        "  source: usb:0\n"
+        "  speaker:\n"
+        "    enabled: true\n"
+        '    host: "rtsp://admin:mat-khau-gia@192.0.2.55:554/1/2"\n'
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+
+    message = str(excinfo.value)
+    assert "camera.speaker.host" in message
+    assert "mat-khau-gia" not in message
+
+

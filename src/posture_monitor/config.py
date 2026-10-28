@@ -63,12 +63,36 @@ class OnvifConfig:
 
 
 @dataclass
+class CameraSpeakerConfig:
+    """Loa của camera IP, phát qua RTSP backchannel (tuỳ chọn, mặc định tắt).
+
+    **Tách khỏi ``camera.onvif`` có chủ đích**: hai mục dùng hai cổng khác
+    nhau cho hai tài nguyên khác nhau. ``camera.onvif.port`` là cổng **HTTP
+    ONVIF** (mặc định 80) để điều khiển PTZ; ``camera.speaker.port`` là cổng
+    **RTSP** (mặc định 554) để mở backchannel. Gộp chung một mục thì cấu hình
+    một bên làm hỏng bên kia — đúng lỗi mà việc tách này sửa.
+
+    **Không có trường mật khẩu** (giống :class:`OnvifConfig`): mật khẩu đọc từ
+    biến môi trường :data:`ONVIF_PASSWORD_ENV` qua :func:`onvif_password`, nên
+    ``repr`` của cấu hình, log và ``config.yaml`` (file được commit) không bao
+    giờ chứa nó.
+    """
+
+    enabled: bool = False
+    host: str = ""
+    port: int = 554
+    user: str = ""
+    stream_path: str = "/1/2"
+
+
+@dataclass
 class CameraConfig:
     source: str = "usb:0"
     width: int = 640
     height: int = 480
     view: str = "front"
     onvif: OnvifConfig = field(default_factory=OnvifConfig)
+    speaker: CameraSpeakerConfig = field(default_factory=CameraSpeakerConfig)
 
 
 @dataclass
@@ -321,6 +345,56 @@ def _parse_onvif(raw: Any) -> OnvifConfig:
     return cfg
 
 
+def _parse_speaker(raw: Any) -> CameraSpeakerConfig:
+    """Nạp mục ``camera.speaker`` (tuỳ chọn; thiếu mục = tắt).
+
+    Mật khẩu **không** đọc từ YAML, giống ``camera.onvif``: chỉ biến môi
+    trường :data:`ONVIF_PASSWORD_ENV`. Ở đây **không** đòi mật khẩu lúc nạp dù
+    ``enabled: true`` — camera của dự án không bắt buộc đăng nhập cho
+    backchannel, và ``speaker_config_from_config`` mới là nơi quyết định một
+    lần phát có đủ điều kiện hay không. Đòi ở hai nơi sẽ khoá cứng cấu hình
+    vào một giả định về camera.
+
+    Mọi chỗ chèn ``host`` vào thông điệp lỗi đều đi qua
+    :func:`redact_camera_source`, giống ``_parse_onvif`` — người dùng hay dán
+    cả URL RTSP có mật khẩu vào ô ``host``.
+    """
+    data = _as_dict(raw, "camera.speaker")
+    cfg = CameraSpeakerConfig(
+        enabled=_get_bool(
+            data, "enabled", CameraSpeakerConfig.enabled, "camera.speaker"
+        ),
+        host=_get_str(data, "host", CameraSpeakerConfig.host, "camera.speaker"),
+        port=_get_int(data, "port", CameraSpeakerConfig.port, "camera.speaker"),
+        user=_get_str(data, "user", CameraSpeakerConfig.user, "camera.speaker"),
+        stream_path=_get_str(
+            data,
+            "stream_path",
+            CameraSpeakerConfig.stream_path,
+            "camera.speaker",
+        ),
+    )
+    if not 0 < cfg.port < 65536:
+        raise ConfigError(
+            "'camera.speaker.port' phải nằm trong khoảng 1..65535."
+        )
+    if cfg.enabled and not cfg.host.strip():
+        raise ConfigError(
+            "'camera.speaker.enabled' là true nhưng 'camera.speaker.host' "
+            "đang trống. Điền địa chỉ camera IP (ví dụ 192.168.1.50)."
+        )
+    if "://" in cfg.host:
+        # Lỗi hay gặp: dán cả URL RTSP (có mật khẩu) vào ô host. Thông điệp
+        # phải che userinfo — URL đó chứa mật khẩu thật.
+        safe_host = redact_camera_source(cfg.host)
+        raise ConfigError(
+            f"'camera.speaker.host' = {safe_host!r} phải là tên máy hoặc IP, "
+            "không kèm 'rtsp://' hay thông tin đăng nhập. Đặt phần đường dẫn "
+            "vào 'camera.speaker.stream_path'."
+        )
+    return cfg
+
+
 def _parse_camera(raw: Any) -> CameraConfig:
     data = _as_dict(raw, "camera")
     cfg = CameraConfig(
@@ -329,6 +403,7 @@ def _parse_camera(raw: Any) -> CameraConfig:
         height=_get_int(data, "height", CameraConfig.height, "camera"),
         view=_get_choice(data, "view", CameraConfig.view, VIEWS, "camera"),
         onvif=_parse_onvif(data.get("onvif")),
+        speaker=_parse_speaker(data.get("speaker")),
     )
     # Nguồn ảnh có thể ghi đè bằng biến môi trường để đặt URL camera IP kèm
     # mật khẩu mà không phải ghi mật khẩu vào bất kỳ file cấu hình nào.

@@ -46,7 +46,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from .config import REDACTED, redact_camera_source
+from .config import ONVIF_PASSWORD_ENV, REDACTED, redact_camera_source
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -57,11 +57,8 @@ LIBRARY_NAME = "rtsp-backchannel"
 #: Phiên bản đã đọc mã nguồn và đối chiếu API (xem docs/SPEC_V2.md §11.3).
 LIBRARY_PIN = "0.5.2"
 
-#: Biến môi trường chứa mật khẩu ONVIF (không nằm trong file được commit).
-ONVIF_PASSWORD_ENV = "POSTURE_ONVIF_PASSWORD"
-
 #: Đường dẫn luồng PHỤ của camera IP của dự án. Đường đã kiểm chứng cho
-#: backchannel là ``rtsp://<host>:554/1/2``; đổi được qua ``camera.onvif``.
+#: backchannel là ``rtsp://<host>:554/1/2``; đổi được qua ``camera.speaker``.
 DEFAULT_STREAM_PATH = "/1/2"
 
 #: Thời lượng tối đa của một lần phát, tính bằng giây.
@@ -102,7 +99,7 @@ class CameraAudioInputError(CameraAudioError):
 
 
 class CameraAudioConfigError(CameraAudioError):
-    """Chưa cấu hình đủ để mở backchannel (thiếu mục ``camera.onvif``...)."""
+    """Chưa cấu hình đủ để mở backchannel (thiếu mục ``camera.speaker``...)."""
 
 
 class CameraAudioUnavailable(CameraAudioError):
@@ -134,16 +131,16 @@ class SpeakerConfig:
         host = str(self.host or "").strip()
         if not host:
             raise CameraAudioConfigError(
-                "Thiếu địa chỉ camera cho loa (camera.onvif.host)."
+                "Thiếu địa chỉ camera cho loa (camera.speaker.host)."
             )
         if "://" in host:
             raise CameraAudioConfigError(
-                "camera.onvif.host phải là tên máy hoặc IP, không kèm "
-                "'rtsp://'. Dùng camera.onvif.stream_uri nếu cần URL đầy đủ."
+                "camera.speaker.host phải là tên máy hoặc IP, không kèm "
+                "'rtsp://'. Dùng camera.speaker.stream_uri nếu cần URL đầy đủ."
             )
         if not 1 <= int(self.port) <= 65535:
             raise CameraAudioConfigError(
-                f"camera.onvif.port = {self.port!r} không hợp lệ "
+                f"camera.speaker.port = {self.port!r} không hợp lệ "
                 "(phải trong khoảng 1..65535)."
             )
         path = str(self.stream_path or "").strip() or DEFAULT_STREAM_PATH
@@ -177,11 +174,11 @@ class SpeakerConfig:
             port = parts.port or 554
         except ValueError as exc:
             raise CameraAudioConfigError(
-                "camera.onvif.stream_uri không phải URL RTSP hợp lệ."
+                "camera.speaker.stream_uri không phải URL RTSP hợp lệ."
             ) from exc
         if parts.scheme.lower() not in ("rtsp", "rtsps") or not host:
             raise CameraAudioConfigError(
-                "camera.onvif.stream_uri phải bắt đầu bằng 'rtsp://' và có host."
+                "camera.speaker.stream_uri phải bắt đầu bằng 'rtsp://' và có host."
             )
         return cls(
             host=host,
@@ -202,61 +199,67 @@ def _section_value(section: Any, name: str, default: Any = None) -> Any:
 
 
 def speaker_config_from_config(config: Any) -> SpeakerConfig:
-    """Đọc mục ``camera.onvif`` của :class:`posture_monitor.config.Config`.
+    """Đọc mục ``camera.speaker`` của :class:`posture_monitor.config.Config`.
 
-    Mục này do Peer khác thêm song song, nên mọi truy cập đều phòng thủ bằng
+    Vì sao là ``camera.speaker`` chứ không phải ``camera.onvif``: hai mục phục
+    vụ hai tài nguyên khác nhau trên cùng camera. ``camera.onvif.port`` là cổng
+    **HTTP ONVIF** (80) cho PTZ; backchannel RTSP cần cổng **554**. Dùng chung
+    một mục thì một bên ghi đè cấu hình của bên kia — đúng lỗi mà việc tách
+    này sửa.
+
+    Mục này do module khác khai báo, nên mọi truy cập đều phòng thủ bằng
     ``getattr``/``dict.get``: thiếu mục → :class:`CameraAudioConfigError` tiếng
     Việt, không ``AttributeError``.
 
-    Mật khẩu: biến môi trường :data:`ONVIF_PASSWORD_ENV` **thắng** mọi giá trị
-    trong file cấu hình. Trường ``camera.onvif.password`` vẫn được đọc như
-    đường dự phòng (Peer khác có thể nạp nó từ biến môi trường), nhưng nếu phải
-    dùng tới nó thì ghi cảnh báo — ``config.yaml`` được commit, nên mật khẩu
-    thật không được nằm ở đó.
+    Tôn trọng ``enabled``: ``False`` thì báo lỗi cấu hình kèm tên khóa cần bật,
+    không lặng lẽ mở phiên tới camera mà người dùng chưa muốn.
+
+    Mật khẩu **chỉ** đọc từ biến môi trường :data:`ONVIF_PASSWORD_ENV`. Không
+    còn nhánh đọc ``password`` từ file cấu hình: ``config.yaml`` được commit,
+    nên mật khẩu thật không được nằm ở đó.
     """
-    onvif = _section_value(getattr(config, "camera", None), "onvif", None)
-    if onvif is None:
+    speaker = _section_value(getattr(config, "camera", None), "speaker", None)
+    if speaker is None:
         raise CameraAudioConfigError(
-            "Chưa cấu hình loa camera: thiếu mục 'camera.onvif' trong "
-            "config.yaml (host, port, user; mật khẩu đặt ở biến môi trường "
-            f"{ONVIF_PASSWORD_ENV})."
+            "Chưa cấu hình loa camera: thiếu mục 'camera.speaker' trong "
+            "config.yaml (enabled, host, port, user, stream_path; mật khẩu "
+            f"đặt ở biến môi trường {ONVIF_PASSWORD_ENV})."
         )
 
-    user = str(_section_value(onvif, "user", "") or "")
-    environment_password = os.environ.get(ONVIF_PASSWORD_ENV, "")
-    configured_password = str(_section_value(onvif, "password", "") or "")
-    if not environment_password and configured_password:
-        logger.warning(
-            "Đang dùng mật khẩu ONVIF từ file cấu hình. config.yaml được "
-            "commit, nên hãy chuyển mật khẩu sang biến môi trường %s.",
-            ONVIF_PASSWORD_ENV,
+    if not bool(_section_value(speaker, "enabled", False)):
+        raise CameraAudioConfigError(
+            "Loa camera đang tắt. Bật 'camera.speaker.enabled: true' trong "
+            "config.yaml (kèm 'camera.speaker.host') rồi thử lại."
         )
-    password = environment_password or configured_password
 
-    stream_uri = _section_value(onvif, "stream_uri", None)
+    user = str(_section_value(speaker, "user", "") or "")
+    password = os.environ.get(ONVIF_PASSWORD_ENV, "")
+
+    stream_uri = _section_value(speaker, "stream_uri", None)
     if not stream_uri:
-        stream_uri = _section_value(onvif, "url", None)
+        stream_uri = _section_value(speaker, "url", None)
     if stream_uri:
         return SpeakerConfig.from_uri(str(stream_uri), user=user, password=password)
 
-    host = _section_value(onvif, "host", None)
+    host = _section_value(speaker, "host", None)
     if not host:
         raise CameraAudioConfigError(
-            "Thiếu 'camera.onvif.host' nên chưa biết phát tiếng vào camera nào."
+            "Thiếu 'camera.speaker.host' nên chưa biết phát tiếng vào camera "
+            "nào."
         )
 
     if user and not password:
         raise CameraAudioConfigError(
-            f"Đã đặt 'camera.onvif.user' nhưng chưa có mật khẩu. Đặt biến môi "
-            f"trường {ONVIF_PASSWORD_ENV} rồi chạy lại (đừng ghi mật khẩu vào "
-            "config.yaml vì file đó được commit)."
+            f"Đã đặt 'camera.speaker.user' nhưng chưa có mật khẩu. Đặt biến "
+            f"môi trường {ONVIF_PASSWORD_ENV} rồi chạy lại (đừng ghi mật khẩu "
+            "vào config.yaml vì file đó được commit)."
         )
 
     return SpeakerConfig(
         host=str(host),
-        port=int(_section_value(onvif, "port", 554) or 554),
+        port=int(_section_value(speaker, "port", 554) or 554),
         stream_path=str(
-            _section_value(onvif, "stream_path", DEFAULT_STREAM_PATH)
+            _section_value(speaker, "stream_path", DEFAULT_STREAM_PATH)
             or DEFAULT_STREAM_PATH
         ),
         user=user,

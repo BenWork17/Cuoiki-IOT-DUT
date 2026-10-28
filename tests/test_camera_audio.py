@@ -488,18 +488,43 @@ def test_lock_released_when_playback_raises():
 # --------------------------------------------------------------------------
 # Cấu hình
 # --------------------------------------------------------------------------
-def test_speaker_config_from_config_requires_onvif_section():
-    """Config không có ``camera.onvif`` → lỗi tiếng Việt, không AttributeError."""
+def test_speaker_config_from_config_requires_speaker_section():
+    """Config không có ``camera.speaker`` → lỗi tiếng Việt, không AttributeError."""
+    config = Config()
+    del config.camera.speaker
+
     with pytest.raises(CameraAudioConfigError) as info:
-        speaker_config_from_config(Config())
-    assert "camera.onvif" in str(info.value)
+        speaker_config_from_config(config)
+    assert "camera.speaker" in str(info.value)
+
+
+def test_speaker_disabled_raises_config_error(monkeypatch):
+    """``enabled: false`` → lỗi cấu hình nêu rõ khóa cần bật, không mở phiên.
+
+    Tắt là mặc định trong ``config.yaml``; nếu hàm này vẫn dựng ra
+    ``SpeakerConfig`` thì một request ``/api/speak`` sẽ mở kết nối tới camera
+    dù người dùng chưa hề bật loa.
+    """
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, FAKE_PASSWORD)
+    config = Config()
+    config.camera = _camera_with_speaker(
+        {"host": FAKE_HOST, "port": 554, "user": "admin"}
+    )
+    config.camera.speaker["enabled"] = False
+
+    with pytest.raises(CameraAudioConfigError) as info:
+        speaker_config_from_config(config)
+
+    message = str(info.value)
+    assert "camera.speaker.enabled" in message
+    assert "true" in message
 
 
 def test_speaker_config_reads_password_from_environment(monkeypatch):
     """Mật khẩu chỉ đến từ biến môi trường, không từ file cấu hình."""
     monkeypatch.setenv(ONVIF_PASSWORD_ENV, FAKE_PASSWORD)
     config = Config()
-    config.camera = _camera_with_onvif(
+    config.camera = _camera_with_speaker(
         {"host": FAKE_HOST, "port": 554, "user": "admin", "stream_path": "/1/2"}
     )
 
@@ -513,42 +538,44 @@ def test_speaker_config_reads_password_from_environment(monkeypatch):
     assert FAKE_PASSWORD not in repr(speaker), "repr() lọt vào log — phải che"
 
 
-def test_environment_password_wins_over_config_file(monkeypatch, caplog):
-    """Biến môi trường thắng mật khẩu trong file — file cấu hình được commit."""
-    monkeypatch.setenv(ONVIF_PASSWORD_ENV, "mat-khau-tu-moi-truong")
-    config = Config()
-    config.camera = _camera_with_onvif(
-        {"host": FAKE_HOST, "user": "admin", "password": FAKE_PASSWORD}
-    )
-
-    with caplog.at_level("WARNING", logger="posture_monitor.camera_audio"):
-        speaker = speaker_config_from_config(config)
-
-    assert speaker.password == "mat-khau-tu-moi-truong"
-    assert FAKE_PASSWORD not in caplog.text
-    assert not [r for r in caplog.records if "file cấu hình" in r.getMessage()]
-
-
-def test_password_taken_from_config_file_is_flagged(monkeypatch, caplog):
-    """Không có biến môi trường → dùng được nhưng phải cảnh báo rõ."""
+def test_speaker_port_is_rtsp_not_onvif_http(monkeypatch):
+    """``camera.speaker.port`` mặc định 554, tách hẳn khỏi ``onvif.port`` = 80."""
     monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
     config = Config()
-    config.camera = _camera_with_onvif(
-        {"host": FAKE_HOST, "user": "admin", "password": FAKE_PASSWORD}
+    config.camera.speaker.enabled = True
+    config.camera.speaker.host = FAKE_HOST
+
+    speaker = speaker_config_from_config(config)
+
+    assert speaker.port == 554
+    assert speaker.stream_uri == "rtsp://camera.test:554/1/2"
+    assert config.camera.onvif.port == 80, "onvif.port là cổng HTTP, không đổi"
+
+
+def test_password_in_config_file_is_ignored(monkeypatch, caplog):
+    """Mật khẩu ghi trong file cấu hình bị **bỏ qua** hoàn toàn.
+
+    ``config.yaml`` được commit nên mật khẩu thật không bao giờ được đọc từ
+    đó. Đây là thay đổi bảo mật có chủ đích: đường dự phòng cũ (dùng mật khẩu
+    trong file kèm cảnh báo) đã bị bỏ.
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    config = Config()
+    config.camera = _camera_with_speaker(
+        {"host": FAKE_HOST, "user": "", "password": FAKE_PASSWORD}
     )
 
     with caplog.at_level("WARNING", logger="posture_monitor.camera_audio"):
         speaker = speaker_config_from_config(config)
 
-    assert speaker.password == FAKE_PASSWORD
-    assert any("biến môi trường" in r.getMessage() for r in caplog.records)
-    assert FAKE_PASSWORD not in caplog.text, "cảnh báo không được chứa mật khẩu"
+    assert speaker.password == ""
+    assert FAKE_PASSWORD not in caplog.text
 
 
 def test_speaker_config_requires_password_when_user_is_set(monkeypatch):
     monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
     config = Config()
-    config.camera = _camera_with_onvif({"host": FAKE_HOST, "user": "admin"})
+    config.camera = _camera_with_speaker({"host": FAKE_HOST, "user": "admin"})
 
     with pytest.raises(CameraAudioConfigError) as info:
         speaker_config_from_config(config)
@@ -557,7 +584,7 @@ def test_speaker_config_requires_password_when_user_is_set(monkeypatch):
 
 def test_speaker_config_from_stream_uri_strips_credentials():
     config = Config()
-    config.camera = _camera_with_onvif(
+    config.camera = _camera_with_speaker(
         {"stream_uri": "rtsp://admin:mat-khau-gia@camera.test:554/1/2"}
     )
 
@@ -574,10 +601,11 @@ def test_speaker_config_rejects_scheme_in_host():
     assert "host" in str(info.value)
 
 
-def _camera_with_onvif(onvif: dict):
-    """Gắn object ``onvif`` kiểu dict vào ``config.camera`` như Peer kia làm."""
+def _camera_with_speaker(speaker: dict):
+    """Gắn object ``speaker`` kiểu dict vào ``config.camera`` (bật sẵn)."""
     camera = Config().camera
-    camera.onvif = dict(onvif)
+    camera.speaker = dict(speaker)
+    camera.speaker.setdefault("enabled", True)
     return camera
 
 
@@ -588,8 +616,8 @@ def _app_without_config():
     return create_app().test_client()
 
 
-def test_speak_route_returns_4xx_without_onvif_config():
-    """Thiếu ``camera.onvif`` → 403 tiếng Việt, không sập app.
+def test_speak_route_returns_4xx_without_speaker_config():
+    """Thiếu ``camera.speaker`` → 403 tiếng Việt, không sập app.
 
     403 (không phải 503) để khớp cách ``/stream`` báo "tính năng chưa bật
     trong config", và vì đây là cấu hình thiếu chứ không phải máy chủ hỏng.
@@ -601,7 +629,7 @@ def test_speak_route_returns_4xx_without_onvif_config():
     assert response.status_code == 403
     body = response.get_json()
     assert body["ok"] is False
-    assert "camera.onvif" in body["message"]
+    assert "camera.speaker" in body["message"]
 
 
 @requires_library

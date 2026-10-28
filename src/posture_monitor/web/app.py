@@ -255,14 +255,15 @@ def create_app(
 
     Args:
         config: :class:`posture_monitor.config.Config`; chỉ đọc ``web`` (cổng,
-            stream), ``sensors`` (ngưỡng hiển thị) và ``camera.onvif`` (loa
-            camera). Có thể là ``None`` khi test, dùng mặc định của spec.
+            stream), ``sensors`` (ngưỡng hiển thị), ``camera.onvif`` (điều
+            khiển PTZ) và ``camera.speaker`` (loa camera). Có thể là ``None``
+            khi test, dùng mặc định của spec.
         state: :class:`DashboardState` dùng chung với vòng lặp chính; ``None``
             thì tạo mới (tiện cho test và cho ``/stream`` bị tắt).
         storage: :class:`posture_monitor.storage.Storage`; ``None`` thì
             ``/api/history`` trả kết quả rỗng thay vì lỗi.
         speak_controller: :class:`posture_monitor.camera_audio.SpeakController`
-            cho ``POST /api/speak``. ``None`` thì dựng từ ``config.camera.onvif``
+            cho ``POST /api/speak``. ``None`` thì dựng từ ``config.camera.speaker``
             ở lần gọi đầu tiên (để thiếu cấu hình không làm sập lúc khởi động).
             Tham số thêm ở cuối, có mặc định — lời gọi cũ không phải đổi.
         ptz: :class:`posture_monitor.camera_control.PtzController` (hoặc đối
@@ -298,9 +299,9 @@ def create_app(
     _speak_state: dict[str, SpeakController | None] = {"controller": speak_controller}
 
     def _resolve_speak_controller() -> SpeakController:
-        """Controller cho ``/api/speak``; dựng một lần từ ``camera.onvif``.
+        """Controller cho ``/api/speak``; dựng một lần từ ``camera.speaker``.
 
-        Cố ý trễ: thiếu mục ``camera.onvif`` phải làm hỏng **một** request
+        Cố ý trễ: thiếu mục ``camera.speaker`` phải làm hỏng **một** request
         với lỗi tiếng Việt, không làm sập dashboard lúc khởi động. Khóa chỉ
         bảo vệ việc dựng, không giữ trong lúc phát (controller tự lo việc đó).
         """
@@ -468,6 +469,7 @@ def create_app(
         payload = {"ok": True, "message": "Đã phát tiếng ra loa camera."}
         payload.update(result.as_dict())
         return jsonify(payload)
+
     @app.post("/api/ptz")
     def api_ptz() -> Response:
         """Xoay camera theo một hướng trong một khoảng ngắn.
