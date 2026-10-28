@@ -108,9 +108,46 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument("--save-report", default=None)
 
     benchmark = subparsers.add_parser(
-        "benchmark", help="Đo hiệu năng trên máy đích (chưa triển khai)."
+        "benchmark", help="Đo hiệu năng trên máy đích (spec §8)."
     )
-    benchmark.add_argument("--seconds", type=int, default=60)
+    # Cờ dưới đây giữ đúng bộ cờ của ``python -m posture_monitor.benchmark``
+    # để ``cmd_benchmark`` chuyển thẳng được sang ``benchmark.main``.
+    benchmark.add_argument(
+        "--seconds",
+        type=float,
+        default=60.0,
+        help="Thời lượng đo, giây (mặc định: 60).",
+    )
+    benchmark.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Đường dẫn file cấu hình (mặc định: config.yaml).",
+    )
+    benchmark.add_argument(
+        "--source",
+        default=None,
+        metavar="NGUON",
+        help=(
+            "Ghi đè nguồn ảnh: usb:0 | picamera | file:anh.jpg | "
+            "file:video.mp4. Trên Pi chưa có camera, dùng ảnh tĩnh."
+        ),
+    )
+    benchmark.add_argument(
+        "--json",
+        default=None,
+        metavar="DUONG_DAN",
+        help="Ghi báo cáo JSON ra file (ngoài bảng in trên màn hình).",
+    )
+    benchmark.add_argument(
+        "--no-gpio",
+        action="store_true",
+        help="Tương thích CLI chung; benchmark không dùng GPIO.",
+    )
+    benchmark.add_argument(
+        "--log-level",
+        default="INFO",
+        help="Mức log: DEBUG, INFO, WARNING, ERROR (mặc định: INFO).",
+    )
 
     return parser
 
@@ -317,6 +354,29 @@ def cmd_run(args: argparse.Namespace) -> int:
         hardware.close()
 
 
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    """Xử lý lệnh ``benchmark``: chuyển tiếp sang :func:`benchmark.main`.
+
+    Chọn **chuyển tiếp** thay vì gọi ``run_benchmark``/``format_report`` trực
+    tiếp: ``benchmark.main`` đã giữ toàn bộ quy ước của bài đo (nạp cấu hình,
+    kiểm ``--seconds``, in bảng, ghi JSON UTF-8, ánh xạ mã thoát 2/1/130/0).
+    Chép lại thân hàm đó sẽ tạo bản thứ hai dễ lệch nhau; dựng lại ``argv``
+    giữ cho ``python -m posture_monitor benchmark`` và
+    ``python -m posture_monitor.benchmark`` chạy đúng **một** thân code.
+    """
+    from . import benchmark as bench  # noqa: PLC0415 - import muộn (kéo model)
+
+    argv: list[str] = ["--seconds", str(args.seconds), "--config", args.config]
+    if args.source is not None:
+        argv += ["--source", args.source]
+    if args.json is not None:
+        argv += ["--json", args.json]
+    if args.no_gpio:
+        argv.append("--no-gpio")
+    argv += ["--log-level", args.log_level]
+    return bench.main(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Hàm chính; trả mã thoát của tiến trình."""
     parser = build_parser()
@@ -331,6 +391,11 @@ def main(argv: list[str] | None = None) -> int:
         except Exception as exc:  # noqa: BLE001 - lỗi cuối cùng phải có thông báo
             print(f"Lỗi không mong muốn: {exc}", file=sys.stderr)
             return 1
+
+    elif args.command == "benchmark":
+        # Mã thoát do ``benchmark.main`` quyết định (0/1/2/130); không bọc
+        # thêm để hai đường vào giữ đúng một bộ quy ước.
+        return cmd_benchmark(args)
 
     print(NOT_IMPLEMENTED.format(name=args.command))
     return 0
