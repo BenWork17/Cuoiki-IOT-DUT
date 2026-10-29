@@ -182,9 +182,16 @@ class PhoneConfig:
 
     Model pose ``yolo11n-pose`` chỉ có lớp ``person`` nên không bao giờ trả hộp
     ``cell phone``; muốn có hộp đó phải chạy thêm ``yolo11n`` (80 lớp COCO) và
-    lấy lớp 67. Trên Pi 4 đo được 98,6 ms/khung cho một lần detect, vì vậy
-    ``detect_every_n_frames`` mặc định là **2**: chạy detect mỗi 2 khung đạt
-    6,18 FPS (≥ 5), chạy mỗi khung chỉ còn 4,74–4,90 FPS (không đạt).
+    lấy lớp 67. Trên Pi 4 đo được 98,6 ms cho **một lần detect**, trên khung
+    **tổng hợp** 640x480 — chỉ inference, không gồm capture và không phải
+    khung camera thật.
+
+    Con số đó **không** phải chi phí detect trong pipeline, nên không suy ra
+    được FPS cho cấu hình có detect. Phép đo pipeline thật duy nhất của dự án
+    là pose-only: 199,25 ms/khung → 5,02 FPS. Vì vậy
+    ``detect_every_n_frames: 2`` **chưa được biện minh bằng phép đo FPS nào** —
+    nó chỉ là lựa chọn tạm thời, phải đo lại trên Pi bằng
+    ``benchmark --profile pose_phone`` (SPEC_V3 §4.3, §8.1).
 
     ``enabled: false`` tắt sạch sẽ: không nạp model, không gọi detect, không
     tạo cảnh báo điện thoại.
