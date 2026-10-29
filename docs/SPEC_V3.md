@@ -574,6 +574,11 @@ Ngoài bốn trường hợp trên, trả `AlertDecision(kind, reason)` cho **lo
 - **Kiểm tra lệch đồng hồ NTP.** Spec trước có nêu `clock_skew_warn_s`; code đã ACCEPT **không** có khoá này và `_parse_schedule` không đọc nó. Vì vậy việc kiểm tra đồng hồ là **việc cần làm** ở tầng gọi (không thuộc module thuần này), và tiêu chí nghiệm thu tương ứng ở §8.2 mục 9 phải hiểu là *"đúng khi đồng hồ đúng"*, không phải hệ thống tự phát hiện đồng hồ sai.
 - Không có khoá `schedule.timezone`; timezone do **người gọi** quyết định qua dạng của `now`.
 
+**Đã nối vào vòng lặp `run` — trạng thái từng loại cảnh báo:**
+
+- `leave_frame` và `phone` **đã có người sản xuất**: `_monitor_loop` giữ một `PresenceTracker` và một `PhoneSignal`, dựng `held` mỗi khung rồi gọi `should_alert`. Test khoá ở `tests/test_wire_alert_gate.py`.
+- **`stranger` CHƯA có người sản xuất, tức chưa bật được.** `git grep -n "FaceWorker" -- src/` chỉ khớp chính `face_worker.py`; không tầng nào import nó, và `_create_people_service` trả `None` khi `face.enabled: false` (giá trị đang dùng). Vì vậy không khung nào đặt `held["stranger"]`, và `schedule.kinds.stranger.enabled: true` trong `config.yaml` là khoá **không có tác dụng** cho tới khi có tầng nối `FaceWorker`. Đừng đọc mục đó như thể cảnh báo người lạ đang chạy.
+
 ### 5.15 speaker_alert.py (mới)
 
 Đưa cảnh báo ra **loa của camera IP** (chức năng 2).
