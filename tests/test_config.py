@@ -291,7 +291,7 @@ def test_parse_camera_source_rejects_unknown_kind() -> None:
 
     Đổi 29/10/2026: trước đây bài này dùng ``"rtsp://camera"`` làm ví dụ "loại
     không hỗ trợ", nhưng từ khi URL RTSP trần được chấp nhận (xem
-    ``test_parse_bare_rtsp_url_is_accepted``) thì nó là cú pháp **hợp lệ**.
+    ``test_parse_bare_rtsp_url_keeps_url_intact``) thì nó là cú pháp **hợp lệ**.
     Dùng ``tcp:`` làm ví dụ thật cho loại không hỗ trợ.
     """
     with pytest.raises(ConfigError):
