@@ -34,7 +34,12 @@ if str(_SRC) not in sys.path:
 from posture_monitor import __main__ as cli  # noqa: E402
 from posture_monitor import calibration  # noqa: E402
 from posture_monitor.calibration import Baseline  # noqa: E402
-from posture_monitor.config import Config  # noqa: E402
+from posture_monitor.config import (  # noqa: E402
+    CAMERA_SOURCE_ENV,
+    Config,
+    load_config,
+    redact_camera_source,
+)
 from posture_monitor.features import ALL_NAMES  # noqa: E402
 from posture_monitor.pose import PoseResult  # noqa: E402
 
@@ -599,10 +604,53 @@ class TestDuongLoi:
         assert report_path.is_file()
 
 
-def test_khong_ro_ri_mat_khau_trong_file_bao_cao(
+#: Thông tin đăng nhập **bịa hoàn toàn**, không liên quan camera thật nào.
+#: Viết thẳng dạng literal là chủ ý: nếu ai đó dán mật khẩu thật vào đây lần
+#: nữa thì ``git grep`` phải tìm ra ngay.
+_FAKE_USER = "nguoidung-gia"
+_FAKE_PASSWORD = "matkhau-gia-123"
+_FAKE_RTSP_URL = (
+    f"rtsp://{_FAKE_USER}:{_FAKE_PASSWORD}@192.0.2.10:554/Streaming/Channels/101"
+)
+
+
+def test_redact_camera_source_che_thong_tin_dang_nhap() -> None:
+    """URL có thông tin đăng nhập giả: che cả user lẫn mật khẩu, có ``***``."""
+    redacted = redact_camera_source(_FAKE_RTSP_URL)
+
+    assert redacted == "rtsp://***:***@192.0.2.10:554/Streaming/Channels/101"
+    assert _FAKE_PASSWORD not in redacted
+    assert _FAKE_USER not in redacted
+    assert "***:***@" in redacted
+
+
+def test_redact_camera_source_giu_nguyen_url_khong_dang_nhap() -> None:
+    """URL không có thông tin đăng nhập: giữ nguyên từng ký tự."""
+    plain = "rtsp://192.0.2.10:554/Streaming/Channels/101"
+
+    assert redact_camera_source(plain) == plain
+    assert "***" not in redact_camera_source(plain)
+
+
+def test_bao_cao_replay_khong_mang_nguon_camera(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Bảo mật: nội dung báo cáo không bao giờ chứa mật khẩu camera."""
+    """Báo cáo replay không được chứa nguồn camera, dù cấu hình có mật khẩu.
+
+    Nguồn mang thông tin đăng nhập giả được đẩy vào qua
+    ``POSTURE_CAMERA_SOURCE`` — đúng đường mà người dùng thật dùng để đặt URL
+    RTSP kèm mật khẩu. Trước hết phải chứng minh biến môi trường **thật sự**
+    đã đi vào cấu hình (nếu không, phần sau chỉ đúng vì báo cáo chưa bao giờ
+    nhìn tới nguồn). Báo cáo replay chỉ mô tả đường dẫn video, nên nó phải
+    sạch: không mật khẩu, không user, không cả dấu ``***`` (không có trường
+    nguồn camera nào để mà che).
+    """
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, _FAKE_RTSP_URL)
+    config = load_config(_REPO_ROOT / "config.yaml")
+    assert _FAKE_PASSWORD in config.camera.source, (
+        "tiền đề hỏng: biến môi trường chưa đi vào cấu hình, phép thử vô nghĩa"
+    )
+
     _isolate_cwd(monkeypatch, tmp_path)
     _patch_probe(monkeypatch, fps=10.0)
     _patch_estimator(monkeypatch, _good_pose())
@@ -610,9 +658,11 @@ def test_khong_ro_ri_mat_khau_trong_file_bao_cao(
     report_path = tmp_path / "out.json"
 
     assert _run_replay(video, report_path) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
     text = report_path.read_text(encoding="utf-8")
-    # Ghép chuỗi lúc chạy: mật khẩu không được xuất hiện dạng literal trong
-    # mã nguồn, nên grep toàn repo không bao giờ khớp chính test này.
-    secret = "chuong" + "123456"
-    assert secret not in text
+
+    assert _FAKE_PASSWORD not in text
+    assert _FAKE_USER not in text
     assert "***" not in text
+    assert "camera" not in report
+    assert "source" not in report
