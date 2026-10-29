@@ -27,5 +27,13 @@ Không mở cổng ra Internet: ``web.host`` mặc định ``0.0.0.0`` chỉ đ�
 from __future__ import annotations
 
 from .app import DashboardState, create_app, run_server
+from .people_service import ENROLL_STEPS, PeopleService, PeopleServiceError
 
-__all__ = ["DashboardState", "create_app", "run_server"]
+__all__ = [
+    "DashboardState",
+    "ENROLL_STEPS",
+    "PeopleService",
+    "PeopleServiceError",
+    "create_app",
+    "run_server",
+]

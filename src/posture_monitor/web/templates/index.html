@@ -11,12 +11,13 @@
   <link rel="icon" type="image/png" sizes="32x32"
         href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR42u3XQQrAIAwEQN/TF/al/YxCPRdBjJvFtUbI1Z1DCElKu73rft5eLQmlYmbDYQQaDEG8w00IVvgwYinA8lEp+VMwAgl3QZwNmGkmJLxBsDv/fwCPHghAAKBZEKOYArAgUEBsRNpLqcRaLnGYyJxmEscp81V7I1uuByPDxQAAAABJRU5ErkJggg==">
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <!-- Chart.js nằm cục bộ trong static/ (spec §5.10): Pi có thể không có
-       Internet, nên tuyệt đối không nạp từ máy chủ ngoài. -->
-  <script src="{{ url_for('static', filename='chart.umd.min.js') }}" defer></script>
+  <!-- Không nạp Chart.js nữa: đề tài đã bỏ nhận diện tư thế nên không còn
+       biểu đồ. File static/chart.umd.min.js vẫn để nguyên trong repo (bộ
+       tham chiếu cục bộ, không kéo từ Internet), chỉ là trang này không dùng. -->
   <script src="{{ url_for('static', filename='app.js') }}" defer></script>
 </head>
 <body data-stream-enabled="{{ '1' if stream_enabled else '0' }}"
+      data-people-enabled="{{ '1' if people_enabled else '0' }}"
       data-min-distance="{{ min_distance_cm }}">
   <main class="page">
     <header class="head">
@@ -52,32 +53,51 @@
     </section>
     {% endif %}
 
-    <!-- Thẻ trạng thái: màu + biểu tượng + nhãn chữ, không dựa vào màu đơn
-         thuần để truyền đạt. -->
-    <section id="status-card" class="card status status--unknown" aria-live="polite">
-      <div class="status__row">
-        <span id="status-icon" class="status__icon" aria-hidden="true">•</span>
-        <div>
-          <p class="label">Trạng thái hiện tại</p>
-          <p id="status-text" class="status__value">Không thấy người</p>
-        </div>
-      </div>
-      <p id="labels-text" class="status__labels">Đang chờ dữ liệu từ camera.</p>
+    <!-- Thẻ "Trạng thái học" (spec v3 §5.16): ba dòng tín hiệu — Có mặt,
+         Điện thoại, Danh tính. Mỗi dòng có biểu tượng + nhãn chữ + tuổi tín
+         hiệu, nên màu không bao giờ là kênh truyền đạt duy nhất.
 
-      <div class="metrics">
-        <div class="metric">
-          <span class="metric__label">Điểm tư thế</span>
-          <span id="score" class="metric__value">—</span>
+         Chống hiểu nhầm (spec §5.16): khi tín hiệu không mới (fresh = false),
+         dòng đó phải nói "chưa có dữ liệu mới" thay vì lặp lại kết luận cũ
+         như vừa đo được. app.js lo phần đổi chữ; khung ở đây có sẵn chỗ và
+         nhãn id cho từng mẩu. -->
+    <section id="status-card" class="card signs" aria-live="polite"
+             data-people-enabled="{{ '1' if people_enabled else '0' }}">
+      <h2 class="signs__title">Trạng thái học</h2>
+
+      <div class="sign" id="sign-presence" data-sign="presence" data-fresh="unknown">
+        <span id="sign-presence-icon" class="sign__icon" aria-hidden="true">•</span>
+        <div class="sign__body">
+          <p class="sign__label">Có mặt</p>
+          <p id="sign-presence-text" class="sign__value">Chưa có dữ liệu mới</p>
         </div>
-        <div class="metric">
-          <span class="metric__label">Thời gian ngồi</span>
-          <span id="sitting" class="metric__value">—</span>
-        </div>
-        <div class="metric">
-          <span class="metric__label">Khoảng cách</span>
-          <span id="distance" class="metric__value">—</span>
-        </div>
+        <span id="sign-presence-age" class="sign__age">—</span>
       </div>
+
+      <div class="sign" id="sign-phone" data-sign="phone" data-fresh="unknown">
+        <span id="sign-phone-icon" class="sign__icon" aria-hidden="true">•</span>
+        <div class="sign__body">
+          <p class="sign__label">Điện thoại</p>
+          <p id="sign-phone-text" class="sign__value">Chưa có dữ liệu mới</p>
+        </div>
+        <span id="sign-phone-age" class="sign__age">—</span>
+      </div>
+
+      <div class="sign" id="sign-identity" data-sign="identity" data-fresh="unknown">
+        <span id="sign-identity-icon" class="sign__icon" aria-hidden="true">•</span>
+        <div class="sign__body">
+          <p class="sign__label">Danh tính</p>
+          <p id="sign-identity-text" class="sign__value">Chưa có dữ liệu mới</p>
+        </div>
+        <span id="sign-identity-age" class="sign__age">—</span>
+      </div>
+
+      {% if not people_enabled %}
+      <p id="signals-disabled" class="signs__disabled">
+        {{ people_disabled_message }}
+      </p>
+      {% endif %}
+
       <p id="stale-warning" class="stale" hidden>
         Không nhận được dữ liệu mới. Kiểm tra chương trình giám sát còn chạy
         không.
@@ -114,39 +134,69 @@
       <p class="ptz__hint">Bấm giữ để xoay liên tục.</p>
     </section>
 
-    <section class="card chart-card">
-      <div class="chart-head">
-        <h2>Tỉ lệ tư thế đúng</h2>
-        <div class="tabs" role="tablist" aria-label="Khoảng thời gian">
-          <button id="tab-today" class="tab tab--active" type="button"
-                  role="tab" aria-selected="true" data-range="today">Hôm nay</button>
-          <button id="tab-7d" class="tab" type="button"
-                  role="tab" aria-selected="false" data-range="7d">7 ngày</button>
-        </div>
-      </div>
-      <p id="chart-caption" class="caption">
-        Phần trăm thời gian có người ngồi đúng tư thế trong mỗi giờ.
-      </p>
-      <div class="chart-wrap">
-        <canvas id="chart" role="img"
-                aria-label="Biểu đồ cột tỉ lệ tư thế đúng theo thời gian"></canvas>
-        <p id="chart-empty" class="chart-empty" hidden>Chưa có số liệu.</p>
+    <!-- Người học (spec v3 §5.16): thêm người, chọn người đang học, xoá.
+         Không có thẻ ảnh nào ở đây: Pi tự thu mẫu, trang chỉ hiện tiến độ
+         và hướng dẫn bằng chữ (spec §5.13.1 — không lưu ảnh). -->
+    <section id="people-card" class="card people"
+             aria-labelledby="people-title"
+             data-people-enabled="{{ '1' if people_enabled else '0' }}">
+      <h2 id="people-title" class="people__title">Người học</h2>
+
+      {% if people_enabled %}
+      <div class="people__actions">
+        <button id="add-person-btn" type="button" class="btn">
+          Thêm người
+        </button>
+        <button id="pick-person-btn" type="button" class="btn btn--quiet">
+          Chọn người đang học
+        </button>
       </div>
 
-      <details class="table-view">
-        <summary>Xem dạng bảng</summary>
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">Mốc</th>
-              <th scope="col">Đúng (%)</th>
-              <th scope="col">Điểm</th>
-              <th scope="col">Vắng (giây)</th>
-            </tr>
-          </thead>
-          <tbody id="chart-table"></tbody>
-        </table>
-      </details>
+      <p id="selected-person" class="people__selected" role="status">
+        Chưa chọn người đang học.
+      </p>
+
+      <!-- Form nhập tên; chỉ hiện khi người dùng bấm "Thêm người". -->
+      <form id="add-person-form" class="people__form" hidden>
+        <label for="new-person-name" class="people__label">Tên người học</label>
+        <input id="new-person-name" name="name" type="text"
+               class="people__input" autocomplete="off" maxlength="60"
+               placeholder="Ví dụ: Minh">
+        <div class="people__actions">
+          <button id="add-person-submit" type="submit" class="btn">
+            Bắt đầu đăng ký
+          </button>
+          <button id="add-person-cancel" type="button" class="btn btn--quiet">
+            Đóng
+          </button>
+        </div>
+      </form>
+
+      <!-- Tiến độ đăng ký: hiện từng bước hướng dẫn + số mẫu đã thu. -->
+      <div id="enroll-panel" class="enroll" hidden>
+        <p class="people__label">Đang đăng ký: <span id="enroll-name">—</span></p>
+        <p id="enroll-step" class="enroll__step" role="status">—</p>
+        <p id="enroll-samples" class="enroll__samples">—</p>
+        <button id="enroll-cancel-btn" type="button" class="btn btn--quiet">
+          Huỷ
+        </button>
+      </div>
+
+      <!-- Danh sách người đã đăng ký; chỉ hiện khi bấm "Chọn người đang học". -->
+      <div id="people-list-wrap" class="people__list-wrap" hidden>
+        <p id="people-list-empty" class="people__empty" hidden>
+          Chưa có người học nào. Bấm "Thêm người" để đăng ký.
+        </p>
+        <ul id="people-list" class="people__list"></ul>
+      </div>
+
+      <!-- Khung giờ học: chỉ đọc, không cần trình sửa đầy đủ (§5.16). -->
+      <p id="schedule-summary" class="people__schedule">Giờ học: —</p>
+      {% else %}
+      <p id="people-disabled" class="people__disabled">
+        {{ people_disabled_message }}
+      </p>
+      {% endif %}
     </section>
 
     <section class="card hints">
