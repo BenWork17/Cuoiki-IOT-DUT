@@ -388,7 +388,9 @@ def _create_people_service(config, logger):
             logger=logger,
         )
         service.set_processor(
-            _build_face_processor(recognizer, face, logger)
+            _build_face_processor(
+                recognizer, face, logger, skip_gate=service.is_enrolling
+            )
         )
         return service
     except Exception:  # noqa: BLE001 - thiếu model kho không được giết dashboard
@@ -399,7 +401,7 @@ def _create_people_service(config, logger):
         return None
 
 
-def _build_face_processor(recognizer, face, logger):
+def _build_face_processor(recognizer, face, logger, *, skip_gate=None):
     """Đóng gói đường ống khuôn mặt **thật** cho :meth:`PeopleService.set_processor`.
 
     Hai việc:
@@ -413,6 +415,24 @@ def _build_face_processor(recognizer, face, logger):
        cho cả hai bước nên toạ độ hộp mặt nhất quán, không cần ánh xạ ngược.
        Không thấy mặt → ``None`` (UNKNOWN, đúng nghĩa). Lỗi model →
        ``OBSERVATION_SKIPPED`` kèm cảnh báo: lỗi không phải "vắng mặt".
+
+    **Ngoại lệ của cổng: đang đăng ký khuôn mặt thì detect MỖI khung.**
+    ``skip_gate`` (thường là ``PeopleService.is_enrolling``) được hỏi **trước**
+    phép so cổng; trả True thì chạy detect ngay và vẫn cập nhật nhịp, để sau
+    khi đăng ký xong cổng không bị "nợ" một lượt. Lý do là đo thật: cửa sổ
+    đăng ký chỉ dài ``len(steps) * step_s`` = 7,5 s và mỗi bước chỉ nhận một
+    mẫu, nên hai lần trượt detect rơi đúng nhịp cổng 2 s là đủ làm phiên thất
+    bại. Bảng đo (5 FPS, ``samples_needed=3``, ``step_s=1.5``, kết quả
+    ``(state, số mẫu, giây)``)::
+
+        kịch bản                          có cổng 2 s        bỏ cổng
+        không rơi khung nào              ('done', 3, 4.0)    ('done', 3, 3.0)
+        miss 1 khung @2.0                ('done', 3, 6.0)    ('done', 3, 3.0)
+        miss 2 khung @2.0,4.0            ('failed', 0, 7.6)  ('done', 3, 3.0)
+        miss 2 khung @4.0,6.0            ('failed', 0, 7.6)  ('done', 3, 3.0)
+        miss 2 khung ngoài nhịp @2.2,4.2 ('done', 3, 4.0)    ('done', 3, 3.0)
+
+    ``failed`` kèm log "Đăng ký 'A' thất bại: chỉ có 2/3 mẫu."
 
     **Cố ý KHÔNG thu nhỏ khung về ``face.detect_width``.** Spec §5.13 yêu cầu
     bước thu nhỏ, nhưng đo thật (OpenCV 4.13.0, model và ảnh thật) cho thấy
@@ -434,9 +454,14 @@ def _build_face_processor(recognizer, face, logger):
 
     def processor(frame):
         now = time.monotonic()
-        if now - state["last_at"] < interval_s:
+        if skip_gate is not None and skip_gate():
+            # Đang đăng ký: bỏ cổng, detect mỗi khung; vẫn ghi nhịp để cổng
+            # không "nợ" một lượt khi phiên kết thúc.
+            state["last_at"] = now
+        elif now - state["last_at"] < interval_s:
             return OBSERVATION_SKIPPED
-        state["last_at"] = now
+        else:
+            state["last_at"] = now
         try:
             prepared = frame  # KHÔNG thu nhỏ — xem docstring ở trên.
             faces = recognizer.detect(prepared)
