@@ -95,6 +95,32 @@ def _frames(count: int = 3, size: int = 64) -> list[np.ndarray]:
     ]
 
 
+def _gia_lap_thieu_phone_detector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ép ``import posture_monitor.phone_detector`` ném ``ImportError``.
+
+    Dùng chung cho các bài cần chạm nhánh "hồ sơ cần module chưa có". Ép ở
+    tầng ``builtins.__import__`` để kết quả **không** phụ thuộc nhánh nào đã
+    merge trên máy đang chạy test.
+
+    Chỉ so **tên module**, không so ``str(args[0])``: đối số đó là dict
+    ``globals`` của nơi gọi, và chuỗi của nó chứa tên mọi thứ định nghĩa trong
+    module — kể cả chính hàm này. So kiểu đó sẽ chặn nhầm import nội bộ của
+    pytest (``from _pytest.fixtures import ...``) và làm cả phiên sập giữa
+    chừng. ``from .phone_detector import ...`` gọi ``__import__`` với
+    ``name='phone_detector'``, nên so tên là đủ.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):  # noqa: ANN001, ANN202
+        if name == "phone_detector" or name.endswith(".phone_detector"):
+            raise ImportError("giả lập thiếu module cho test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
 # --------------------------------------------------------------------------
 # Tên hồ sơ: sai thì dừng, không đoán
 # --------------------------------------------------------------------------
@@ -173,18 +199,7 @@ class TestHoSoChuaHoTro:
         _patch(monkeypatch)
 
         # Ép điều kiện "không có module" bất kể máy chạy test có nhánh kia.
-        import builtins
-
-        real_import = builtins.__import__
-
-        def fake_import(name, *args, **kwargs):  # noqa: ANN001, ANN202
-            if name.endswith("phone_detector") or (
-                args and args[0] and "phone_detector" in str(args[0])
-            ):
-                raise ImportError("giả lập thiếu module cho test")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "__import__", fake_import)
+        _gia_lap_thieu_phone_detector(monkeypatch)
 
         with pytest.raises(bench.BenchmarkError) as info:
             bench.run_benchmark(
@@ -212,10 +227,26 @@ class TestHoSoChuaHoTro:
         assert str(info.value).strip()
 
     def test_main_tra_ma_khac_0_khi_ho_so_chua_ho_tro(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
-        """Qua đường CLI thật: phải là mã lỗi, tuyệt đối không phải 0."""
+        """Qua đường CLI thật: mã lỗi, **và** lý do từ chối phải nêu đúng thứ thiếu.
+
+        Bản trước chỉ khẳng định ``code != 0``. Bài đó **xanh vì lý do sai**
+        khi máy có camera: ``phone_detector`` đã có mặt sau merge và
+        ``PhoneConfig.enabled`` mặc định ``True``, nên ``pose_phone`` được hỗ
+        trợ và trả ``0`` — chỉ trên máy KHÔNG có camera thì mã mới khác 0, do
+        lỗi mở nguồn chứ không phải do hồ sơ bị từ chối. Vì vậy ở đây ép đúng
+        nhánh từ chối (``ImportError`` cho ``phone_detector``, giống bài
+        ``test_pose_phone_thieu_module_thi_tu_choi``) và kiểm cả ba điều:
+        mã thoát, thông điệp tiếng Việt nêu tên thứ thiếu, và không có báo cáo
+        FPS nào được in ra. Không mở thiết bị thật: ``_build_extras`` chạy
+        trước ``_resolve_source`` nên camera không bao giờ được đụng tới.
+        """
         _patch(monkeypatch)
+        _gia_lap_thieu_phone_detector(monkeypatch)
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             "camera:\n  source: usb:0\n", encoding="utf-8"
@@ -228,7 +259,21 @@ class TestHoSoChuaHoTro:
                 "--profile", "pose_phone",
             ]
         )
+
+        captured = capsys.readouterr()
         assert code != 0
+        # ``main`` trả 2 cho ``BenchmarkError`` (benchmark.py:1824). Kiểm đúng
+        # mã đó để một lỗi khác — ví dụ mở camera hỏng — không lọt qua.
+        assert code == 2
+        assert "phone_detector" in captured.err, (
+            "thông điệp từ chối phải nêu tên module thiếu; stderr nhận được: "
+            f"{captured.err!r}"
+        )
+        assert "r3-phone" in captured.err
+        # Chứng minh làn đường camera không hề chạy.
+        assert "Đã mở camera" not in captured.err
+        assert "BÁO CÁO BENCHMARK" not in captured.out
+        assert "FPS pipeline" not in captured.out
 
     def test_khong_in_bao_cao_khi_ho_so_bi_tu_choi(
         self,
