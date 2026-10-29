@@ -554,3 +554,62 @@ def test_presence_state_doi_dung_hang_so():
     assert cli._presence_state("ABSENT") == STATE_ABSENT
     for state_text in ("GOOD", "WARN", "BAD"):
         assert cli._presence_state(state_text) == STATE_PRESENT
+
+# ---------------------------------------------------------------------------
+# Lỗ hổng C: ``put_schedule`` phải đổi được khung giờ mà VÒNG LẶP đang dùng
+# ---------------------------------------------------------------------------
+def test_put_schedule_doi_duoc_khung_gio_cua_vong_lap(tmp_path):
+    """``PUT /api/schedule`` phải tới được đối tượng ``_monitor_loop`` đang giữ.
+
+    ``_monitor_loop`` chụp ``config.schedule`` **một lần** trước vòng lặp rồi
+    truyền chính đối tượng đó vào ``should_alert`` mỗi khung. Nếu
+    ``put_schedule`` chỉ rebind ``self._schedule`` thì ``svc.get_schedule()``
+    trả khung mới trong khi vòng lặp vẫn quyết định theo khung cũ — route
+    thành công nhưng không có tác dụng gì.
+
+    Vì vậy bài này khẳng định **góc nhìn của vòng lặp**, qua
+    ``schedule.is_active`` trên đúng đối tượng mà vòng lặp giữ, chứ không chỉ
+    ``svc.get_schedule()``.
+    """
+    from datetime import datetime
+
+    from posture_monitor import schedule as schedule_mod
+    from posture_monitor.schedule import ScheduleConfig, TimeWindow
+
+    loop_schedule = ScheduleConfig()          # tắt: mọi thời điểm đều "trong giờ"
+    service = PeopleService(
+        FaceStore(tmp_path, clock=lambda: 100.0),
+        FakeRecognizer(),
+        clock=lambda: 100.0,
+        schedule=loop_schedule,               # đúng đối tượng vòng lặp sẽ giữ
+    )
+    # Một thời điểm bất kỳ; chọn thứ Bảy 03:00 để nằm ngoài khung 08:00-11:00.
+    moment = datetime(2026, 10, 31, 3, 0)     # thứ Bảy
+
+    service.put_schedule(
+        {
+            "enabled": True,
+            "windows": [{"days": ["sat"], "start": "08:00", "end": "11:00"}],
+        }
+    )
+    assert loop_schedule.enabled is True
+    assert schedule_mod.is_active(loop_schedule, moment) is False
+
+    # Khung 00:00-23:59: mọi thời điểm đều trong giờ, kể cả 03:00 thứ Bảy.
+    service.put_schedule(
+        {
+            "enabled": True,
+            "windows": [{"days": ["sat"], "start": "00:00", "end": "23:59"}],
+        }
+    )
+    assert schedule_mod.is_active(loop_schedule, moment) is True, (
+        "vòng lặp vẫn dùng khung cũ: put_schedule chỉ rebind, không sửa tại chỗ"
+    )
+    # "00:00-23:59" là khung gần như cả ngày, không phải khung rỗng — nhưng
+    # cần khẳng định nó vẫn là khung thật mà ``TimeWindow`` chấp nhận.
+    assert isinstance(loop_schedule.windows[0], TimeWindow)
+    # Payload trả về ``app.js`` vẫn đúng định dạng cũ.
+    payload = service.get_schedule()
+    assert payload["windows"] == [
+        {"days": ["sat"], "start": "00:00", "end": "23:59"}
+    ]

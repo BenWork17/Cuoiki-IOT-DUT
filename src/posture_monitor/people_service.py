@@ -259,8 +259,10 @@ class PeopleService:
         step_s: thời gian mỗi tư thế.
         samples_needed: số embedding hợp lệ tối thiểu để ghi.
         schedule: khung giờ học ban đầu cho :meth:`get_schedule`; ``None``
-            thì dùng ``ScheduleConfig()`` (tắt, không khung giờ). Đây là bản
-            sao **trong bộ nhớ** — xem :meth:`put_schedule`.
+            thì dùng ``ScheduleConfig()`` (tắt, không khung giờ). Đối tượng
+            được **giữ nguyên tham chiếu** (không sao chép) và
+            :meth:`put_schedule` sửa tại chỗ, để mọi bên đã chia sẻ nó —
+            nhất là ``_monitor_loop`` — thấy thay đổi ngay.
         logger: logger dùng riêng (mặc định logger của module).
 
     Raises:
@@ -311,7 +313,10 @@ class PeopleService:
         self._enrollments: dict[str, dict[str, Any]] = {}
         self._selected: str | None = None
 
-        # Khung giờ học sống **trong bộ nhớ** (xem ``put_schedule``).
+        # Khung giờ học sống **trong bộ nhớ** (xem ``put_schedule``). Giữ
+        # đúng đối tượng được truyền vào (thường là ``config.schedule``) chứ
+        # không sao chép — vòng lặp giám sát cũng giữ chính đối tượng đó, nên
+        # ``put_schedule`` phải sửa tại chỗ mới tới được nó.
         self._schedule: ScheduleConfig = (
             schedule if schedule is not None else ScheduleConfig()
         )
@@ -787,9 +792,9 @@ class PeopleService:
             "end": "HH:MM"}, ...], "kinds": {name: {"enabled": ...,
             "cooldown_s": ..., "hold_s": ...}}}``.
 
-        **Không lưu qua lần khởi động lại.** Bản sao này chỉ sống trong bộ
-        nhớ của đối tượng dịch vụ; khởi động lại ``run`` sẽ đọc lại
-        ``config.yaml``. Module này cố ý không có helper ghi YAML nào.
+        **Không lưu qua lần khởi động lại.** Thay đổi từ
+        :meth:`put_schedule` chỉ sống trong bộ nhớ; khởi động lại ``run`` sẽ
+        đọc lại ``config.yaml``. Module này cố ý không có helper ghi YAML nào.
         """
         with self._lock:
             return _schedule_payload(self._schedule)
@@ -810,6 +815,17 @@ class PeopleService:
         thì sửa ``config.yaml`` tay. Ghi ngầm vào ``config.yaml`` sẽ làm hỏng
         định dạng/ghi chú người dùng tự viết — quyết định có chủ ý.
 
+        **Sửa tại chỗ chứ không rebind.** Vòng lặp giám sát
+        (``_monitor_loop``) lấy ``config.schedule`` **một lần** trước vòng
+        lặp rồi truyền đúng đối tượng đó vào ``should_alert`` mỗi khung. Gán
+        ``self._schedule = schedule`` chỉ đổi thuộc tính của dịch vụ, nên
+        vòng lặp vẫn giữ đối tượng cũ và không bao giờ thấy khung giờ mới.
+        Vì vậy ở đây chép nội dung mới **vào chính đối tượng** mà dịch vụ
+        đang giữ (cũng là đối tượng ``config.schedule`` chia sẻ cho mọi bên).
+
+        Thứ tự ghi: ``kinds``/``windows`` trước, ``enabled`` sau, để trạng
+        thái trung gian khi bật giờ học không phải là "bật mà chưa có khung".
+
         Raises:
             PeopleServiceError: payload sai (không phải ánh xạ, khóa lạ,
                 giờ/thứ sai, khung rỗng khi ``enabled``).
@@ -820,13 +836,17 @@ class PeopleService:
             )
         schedule = _parse_schedule_payload(payload)
         with self._lock:
-            self._schedule = schedule
+            # ``ScheduleConfig`` là dataclass thường (không frozen), nên sửa
+            # tại chỗ được. Không thay ``self._schedule`` bằng đối tượng mới.
+            self._schedule.kinds = schedule.kinds
+            self._schedule.windows = schedule.windows
+            self._schedule.enabled = schedule.enabled
         self._log.info(
             "Đã cập nhật giờ học trong bộ nhớ: enabled=%s, %d khung giờ.",
             schedule.enabled,
             len(schedule.windows),
         )
-        return _schedule_payload(schedule)
+        return _schedule_payload(self._schedule)
 
     # ------------------------------------------------------------------
     # tín hiệu cho web
