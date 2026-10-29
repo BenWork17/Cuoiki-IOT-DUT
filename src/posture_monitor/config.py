@@ -235,6 +235,10 @@ class TimingConfig:
 class AlertsConfig:
     buzzer_enabled: bool = True
     vibration_enabled: bool = True
+    #: Cho phép cảnh báo bằng GPIO (kêu/rung). Mặc định TẮT vì chủ đề đã đổi
+    #: sang theo dõi người học, không chấm điểm tư thế; bật lên chỉ khi thực sự
+    #: muốn cảnh báo bằng phần cứng. LED vẫn cập nhật trạng thái khi tắt.
+    gpio_alert_enabled: bool = False
 
 
 @dataclass
@@ -293,6 +297,9 @@ class Config:
     face: FaceConfig = field(default_factory=FaceConfig)
     #: Giờ học quy định (``schedule``); mặc định tắt.
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    #: Nhãn tư thế vẫn được tính (để hiển thị/debug) nhưng mặc định KHÔNG
+    #: được đưa vào tập nhãn sinh cảnh báo. ``ABSENT`` không bị ảnh hưởng.
+    posture_labels_enabled: bool = False
 
     #: Đường dẫn file cấu hình đã nạp (rỗng nếu tạo bằng tay).
     path: str = ""
@@ -830,6 +837,12 @@ def _parse_alerts(raw: Any) -> AlertsConfig:
             AlertsConfig.vibration_enabled,
             "alerts",
         ),
+        gpio_alert_enabled=_get_bool(
+            data,
+            "gpio_alert_enabled",
+            AlertsConfig.gpio_alert_enabled,
+            "alerts",
+        ),
     )
 
 
@@ -1291,5 +1304,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         web=_parse_web(raw.get("web")),
         face=_parse_face(raw.get("face")),
         schedule=_parse_schedule(raw.get("schedule")),
+        posture_labels_enabled=_get_bool(
+            raw, "posture_labels_enabled", Config.posture_labels_enabled, ""
+        ),
         path=str(config_path),
     )

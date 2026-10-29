@@ -425,6 +425,25 @@ def _presence_state(state_text: str) -> str:
     return presence_mod.STATE_PRESENT
 
 
+def _loc_nhan_tu_the(labels, enabled: bool):
+    """Lọc nhãn tư thế khỏi tập nhãn sinh cảnh báo.
+
+    Chủ đề của sản phẩm là theo dõi người học, không chấm điểm tư thế, nên
+    khi ``enabled`` là ``False`` mọi nhãn tư thế (``HEAD_DOWN``, ``LEAN``,
+    ``LOOK_AWAY``, ...) bị bỏ khỏi tập nhãn đi tiếp. ``classify`` vẫn được
+    gọi như cũ — nhãn vẫn được tính để hiển thị/debug, chỉ là không sinh
+    cảnh báo.
+
+    ``ABSENT`` **luôn được giữ**, kể cả khi ``enabled`` là ``False``: cảnh
+    báo "đi ra khỏi khung hình" phụ thuộc vào nó.
+    """
+    from .classifier import ABSENT  # noqa: PLC0415 - tránh vòng import
+
+    if enabled:
+        return frozenset(labels)
+    return frozenset(label for label in labels if label == ABSENT)
+
+
 def _monitor_loop(
     estimator,
     source,
@@ -445,9 +464,10 @@ def _monitor_loop(
     - ``state.update(...)`` mỗi khung, ``state.set_frame(jpeg)`` **chỉ khi**
       ``stream_enabled`` (không mã hoá JPEG để vứt đi).
     - ``storage.record(update, distance_cm)`` mỗi khung.
-    - ``dispatcher.dispatch(update)``; khi dashboard đang tắt tiếng thì đẩy
-      bản sao có ``alerts=()`` để phần cứng không kêu, còn sự kiện vẫn được
-      ghi vào DB và hiện trên web.
+    - ``dispatcher.dispatch(update)``; khi dashboard đang tắt tiếng, hoặc khi
+      ``alerts.gpio_alert_enabled`` tắt (mặc định), đẩy bản sao có
+      ``alerts=()`` để phần cứng không kêu, còn sự kiện vẫn được ghi vào DB
+      và hiện trên web.
     - Yêu cầu hiệu chỉnh từ web **không** tự chạy ở đây: chỉ log hướng dẫn
       chạy lệnh ``calibrate`` rồi khởi động lại, vì hiệu chỉnh cần một cửa sổ
       thu riêng và người dùng phải ngồi đúng tư thế.
@@ -595,6 +615,7 @@ def _monitor_loop(
             labels = apply_distance(
                 classification.labels, distance_cm, min_distance_cm
             )
+            labels = _loc_nhan_tu_the(labels, config.posture_labels_enabled)
             update = machine.update(now, labels, classification.score)
 
             for event in update.events:
@@ -665,8 +686,13 @@ def _monitor_loop(
                         )
 
             if dispatcher is not None:
-                if state is not None and state.muted:
+                if (state is not None and state.muted) or not (
+                    config.alerts.gpio_alert_enabled
+                ):
                     # Chỉ chặn tiếng; sự kiện vẫn đi vào DB và lên dashboard.
+                    # Công tắc `gpio_alert_enabled` tắt (mặc định) cũng đi
+                    # đường im lặng này: LED vẫn cập nhật trạng thái nhưng
+                    # không kêu/không rung.
                     dispatcher.dispatch(replace(update, alerts=()))
                 else:
                     dispatcher.dispatch(update)
