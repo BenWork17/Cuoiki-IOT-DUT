@@ -416,3 +416,136 @@ def test_vong_loop_song_sot_khi_module_nguoi_hoc_nem_loi(
     assert "người học" in joined and "module mới hỏng" in joined, (
         "lỗi phải được ghi log, không bị nuốt im lặng"
     )
+
+
+def test_loi_nguoi_hoc_chi_ghi_log_mot_lan(monkeypatch, tmp_path):
+    """Nhiều khung lỗi liên tiếp chỉ sinh **một** cảnh báo, không ngập log.
+
+    Ở 5 FPS, ghi mỗi lỗi sẽ đẩy 5 dòng/giây và che mất log thật. Đếm số lần
+    cảnh báo là cách duy nhất bắt được việc gỡ điều kiện "chỉ lần đầu".
+    """
+    import posture_monitor.__main__ as cli
+    import posture_monitor.calibration as calibration_mod
+    from posture_monitor.calibration import Baseline
+    from posture_monitor.config import Config, StorageConfig
+    from posture_monitor.features import ALL_NAMES
+
+    config = Config()
+    config.storage = StorageConfig(db_path=str(tmp_path / "posture.db"))
+    monkeypatch.setattr(
+        calibration_mod,
+        "load",
+        lambda _path: Baseline(
+            values={name: None for name in ALL_NAMES},
+            view="front",
+            width=640,
+            height=480,
+            created_at="",
+            frames=0,
+        ),
+    )
+    monkeypatch.setattr(cli.cv2, "namedWindow", lambda *a, **k: None)
+    monkeypatch.setattr(cli.cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda *a, **k: None)
+    monkeypatch.setattr(cli.cv2, "getWindowProperty", lambda *a, **k: 1.0)
+    monkeypatch.setattr(cli.cv2, "waitKey", lambda *a, **k: ord("q"))
+
+    people = _BoomPeople()
+    logger = _RecordingLogger()
+
+    exit_code = cli._monitor_loop(
+        _FakeEstimator(),
+        _FakeSource(frames=3),
+        config,
+        logger,
+        people=people,
+    )
+
+    assert exit_code == 0
+    assert people.observe_calls == 3, "mọi khung phải được đưa qua dịch vụ"
+    assert len(logger.warnings) == 1, logger.warnings
+
+
+class _RecordingPeople:
+    """Dịch vụ giả ghi lại ``presence`` mà vòng lặp đẩy sang."""
+
+    def __init__(self) -> None:
+        self.presence: list[str] = []
+        self.observed: list[float] = []
+
+    def update_signals(self, presence=None, phone=None, now=None) -> None:
+        if presence is not None:
+            self.presence.append(presence)
+
+    def observe(self, _frame, now) -> None:
+        self.observed.append(now)
+
+
+def test_vong_loop_day_presence_dung_ten_cua_presence_py(
+    monkeypatch, tmp_path
+):
+    """Presence gửi sang dịch vụ là đúng hằng số của ``presence.py``.
+
+    ``update_signals`` chỉ nhận *chuỗi*, nên gõ sai tên hằng (ví dụ
+    ``"PRESENT"`` thay vì ``"co_mat"``) sẽ không có test nào khác bắt được:
+    web vẫn trả 200, chỉ có UI hiển thị sai. Khung không có người → ``ABSENT``,
+    người ``None`` nên máy trạng thái báo ``ABSENT`` ngay khung đầu.
+    """
+    import posture_monitor.__main__ as cli
+    import posture_monitor.calibration as calibration_mod
+    from posture_monitor.calibration import Baseline
+    from posture_monitor.config import Config, StorageConfig
+    from posture_monitor.features import ALL_NAMES
+    from posture_monitor.presence import STATE_ABSENT, STATE_PRESENT
+
+    assert (STATE_PRESENT, STATE_ABSENT) == ("co_mat", "vang_mat")
+
+    config = Config()
+    config.storage = StorageConfig(db_path=str(tmp_path / "posture.db"))
+    monkeypatch.setattr(
+        calibration_mod,
+        "load",
+        lambda _path: Baseline(
+            values={name: None for name in ALL_NAMES},
+            view="front",
+            width=640,
+            height=480,
+            created_at="",
+            frames=0,
+        ),
+    )
+    monkeypatch.setattr(cli.cv2, "namedWindow", lambda *a, **k: None)
+    monkeypatch.setattr(cli.cv2, "imshow", lambda *a, **k: None)
+    monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda *a, **k: None)
+    monkeypatch.setattr(cli.cv2, "getWindowProperty", lambda *a, **k: 1.0)
+    monkeypatch.setattr(cli.cv2, "waitKey", lambda *a, **k: ord("q"))
+
+    people = _RecordingPeople()
+    exit_code = cli._monitor_loop(
+        _FakeEstimator(),
+        _FakeSource(frames=1),
+        config,
+        _RecordingLogger(),
+        people=people,
+    )
+
+    assert exit_code == 0
+    assert people.presence == [STATE_ABSENT], people.presence
+    # ``now`` gửi sang dịch vụ là ``time.monotonic()`` tuyệt đối, không phải
+    # số giây kể từ lúc vào vòng lặp (gần 0). Trộn hai gốc thời gian làm tuổi
+    # tín hiệu sai hàng nghìn giây; so với ``time.monotonic()`` hiện tại là
+    # cách bắt lỗi đó.
+    import time as time_mod
+
+    assert people.observed, "khung phải được đưa qua ``observe``"
+    assert abs(people.observed[0] - time_mod.monotonic()) < 60.0
+
+
+def test_presence_state_doi_dung_hang_so():
+    """``_presence_state``: chỉ ``ABSENT`` là vắng, mọi trạng thái khác là có mặt."""
+    import posture_monitor.__main__ as cli
+    from posture_monitor.presence import STATE_ABSENT, STATE_PRESENT
+
+    assert cli._presence_state("ABSENT") == STATE_ABSENT
+    for state_text in ("GOOD", "WARN", "BAD"):
+        assert cli._presence_state(state_text) == STATE_PRESENT
