@@ -14,6 +14,7 @@ Quy tắc:
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -48,6 +49,9 @@ ONVIF_PASSWORD_ENV = "POSTURE_ONVIF_PASSWORD"
 VIEWS = ("front", "side")
 MODEL_FORMATS = ("ncnn", "onnx", "pt")
 MOCK_MODES = ("auto", True, False)
+
+#: Logger riêng của module; chỉ dùng cho cảnh báo cấu hình không chặn nạp.
+_LOGGER = logging.getLogger(__name__)
 
 
 class ConfigError(ValueError):
@@ -135,9 +139,12 @@ class FaceConfig:
     đo**. Spec §5.13 cấm chép ngưỡng từ tài liệu hay repo khác vào làm mặc
     định: chưa đo thì tính năng phải **không chạy**, chứ không được chạy với
     một con số bịa. Vì vậy ``enabled: true`` cùng ``match_threshold: null`` là
-    tổ hợp **không hợp lệ về nghiệp vụ** và :func:`_parse_face` báo
-    :class:`ConfigError` ngay lúc nạp — im lặng chạy tiếp sẽ khiến người vận
-    hành tưởng nhận diện đã bật.
+    **hợp lệ**: người vận hành đã bật tính năng, còn ngưỡng sẽ được **tự suy
+    ra** từ chính các mẫu đăng ký của người dùng (xem
+    ``AUTO_THRESHOLD_MARGIN`` trong :mod:`posture_monitor.people_service`).
+    Cho tới khi đăng ký đủ ``enroll_min_samples`` mẫu, mọi quan sát vẫn là
+    ``UNKNOWN`` — không có ngưỡng bịa nào được dùng; :func:`_parse_face` ghi
+    log một dòng nhắc điều đó.
 
     ``enabled`` để trống/``null`` nghĩa là **tự động**: bật khi đã có ngưỡng,
     tắt khi chưa (cùng tinh thần ``camera.onvif.enabled``). Ghi rõ ``false``
@@ -1081,13 +1088,13 @@ def _get_optional_float(
 def _parse_face(raw: Any) -> FaceConfig:
     """Nạp mục ``face`` (tuỳ chọn; thiếu mục = tắt).
 
-    Quyết định ở mục 1 của nhiệm vụ: ``enabled: true`` cùng
-    ``match_threshold: null`` **báo lỗi lúc nạp**, không lặng lẽ chạy với ngưỡng
-    mặc định. Lý do: người dùng ghi ``enabled: true`` nghĩa là họ tin nhận
-    diện đang bật; chạy với một con số bịa sẽ tạo ra nhãn MATCH/MISMATCH không
-    có cơ sở đo, đúng điều spec §5.13 cấm ("không chép ngưỡng từ tài liệu hay
-    repo khác"). Một lỗi cấu hình rõ ràng ở thời điểm nạp rẻ hơn nhiều so với
-    một nhãn sai lúc chạy.
+    ``enabled: true`` cùng ``match_threshold: null`` là **hợp lệ** (đổi ngày
+    2026-10-29): người dùng bật tính năng và ngưỡng sẽ được **tự suy ra** từ
+    chính các mẫu đăng ký của họ, chứ không lấy số bịa. Spec §5.13 cấm *chép*
+    ngưỡng từ tài liệu/repo khác; nó không cấm suy ngưỡng từ dữ liệu của
+    chính người dùng. Cho tới khi đủ ``enroll_min_samples`` mẫu, mọi quan sát
+    vẫn là ``UNKNOWN``; :func:`_parse_face` chỉ ghi log một dòng nhắc điều đó
+    chứ không chặn nạp.
 
     ``enabled`` để trống/``null`` là tự động: bật khi có ngưỡng, tắt khi chưa.
     """
@@ -1165,12 +1172,14 @@ def _parse_face(raw: Any) -> FaceConfig:
         # Tự động: chưa có ngưỡng thì tắt, có rồi thì bật.
         cfg.enabled = cfg.match_threshold is not None
     elif cfg.enabled and cfg.match_threshold is None:
-        raise ConfigError(
-            "'face.enabled' là true nhưng 'face.match_threshold' đang null. "
-            "Ngưỡng nhận diện phải được ĐO trên dữ liệu thật của dự án rồi "
-            "điền vào (spec V3 §5.13, §14 bước H) — không dùng ngưỡng mặc "
-            "định. Hoặc điền 'face.match_threshold', hoặc đặt "
-            "'face.enabled: false'."
+        # Hợp lệ: người dùng bật tính năng, ngưỡng sẽ được TỰ SUY RA từ chính
+        # các mẫu đăng ký (people_service, xem AUTO_THRESHOLD_MARGIN). Không
+        # dùng số mặc định nào; trước khi đủ mẫu mọi quan sát vẫn UNKNOWN.
+        _LOGGER.warning(
+            "'face.enabled' là true nhưng 'face.match_threshold' đang null: "
+            "ngưỡng sẽ được tự suy ra từ dữ liệu đăng ký khi có đủ %d mẫu; "
+            "trước đó mọi quan sát là UNKNOWN. Muốn đặt tay, đo rồi điền vào.",
+            cfg.enroll_min_samples,
         )
     return cfg
 

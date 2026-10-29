@@ -492,18 +492,24 @@ def test_match_threshold_null_thi_tinh_nang_khong_chay(
         worker.stop()
 
 
-def test_config_enabled_true_ma_threshold_null_la_loi_cau_hinh(
-    tmp_path: Path,
-) -> None:
-    """Tổ hợp vô nghĩa bị chặn ngay ở ``config.py`` (không lọt tới worker)."""
-    from posture_monitor.config import ConfigError, _parse_face
+def test_config_enabled_true_va_threshold_null_la_hop_le() -> None:
+    """Hợp đồng ĐỔI ngày 2026-10-29: ``enabled: true`` + ``match_threshold: null``.
 
-    with pytest.raises(ConfigError) as excinfo:
-        _parse_face({"enabled": True, "match_threshold": None})
-    message = str(excinfo.value)
-    assert "face.enabled" in message
-    assert "match_threshold" in message
-    assert "đo" in message.lower()
+    Trước đây tổ hợp này bị :func:`_parse_face` coi là lỗi cấu hình. Nay nó
+    **hợp lệ**: người dùng bật tính năng, còn ngưỡng được **tự suy ra** từ
+    chính các mẫu đăng ký (``people_service.derive_threshold``), nên không có
+    con số bịa nào được dùng. Trước khi đủ ``enroll_min_samples`` mẫu mọi
+    quan sát vẫn là ``UNKNOWN``; :func:`_parse_face` chỉ ghi log một dòng.
+
+    Vì sao đổi: người dùng chốt "tính năng phải chạy được thật" — chặn cứng
+    ở config khiến tính năng chưa bao giờ chạy. Không hạ ngưỡng nào: ngưỡng
+    vẫn chỉ đến từ dữ liệu đăng ký hoặc từ số người dùng đặt tay.
+    """
+    from posture_monitor.config import _parse_face
+
+    cfg = _parse_face({"enabled": True, "match_threshold": None})
+    assert cfg.enabled is True
+    assert cfg.match_threshold is None
 
 
 def test_cau_hinh_face_mac_dinh_la_tat_va_threshold_null() -> None:
@@ -560,7 +566,9 @@ def test_repo_config_yaml_co_khoi_face_hop_le() -> None:
     from posture_monitor.config import load_config
 
     config = load_config(_REPO_ROOT / "config.yaml")
-    assert config.face.enabled is False
+    # Từ 2026-10-29 khối ``face`` bật sẵn với ``match_threshold: null``: ngưỡng
+    # được tự suy ra từ dữ liệu đăng ký của người dùng, không có số bịa nào.
+    assert config.face.enabled is True
     assert config.face.match_threshold is None
     assert config.face.detect_width == 320
 
