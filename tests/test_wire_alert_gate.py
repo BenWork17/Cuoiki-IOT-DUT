@@ -198,7 +198,7 @@ _WALL_TIME = datetime(2026, 10, 28, 19, 30)  # thứ Tư
 
 
 def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
-         phone_script):
+         phone_script, people=None, logger=None):
     """Chạy ``_monitor_loop`` thật với các seam đã thay, trả kết quả quan sát."""
     import posture_monitor.__main__ as cli
     import posture_monitor.calibration as calibration_mod
@@ -251,7 +251,8 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
         estimator,
         _FakeSource(frames),
         config,
-        _QuietLogger(),
+        logger if logger is not None else _QuietLogger(),
+        people=people,
         clock=clock,
         wall_clock=wall_clock,
     )
@@ -259,11 +260,14 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
 
 
 class _QuietLogger:
+    def __init__(self) -> None:
+        self.warnings: list[str] = []
+
     def info(self, *a, **k) -> None:
         pass
 
     def warning(self, fmt, *args) -> None:
-        pass
+        self.warnings.append(fmt % args if args else str(fmt))
 
     def error(self, *args, **kwargs) -> None:
         pass
@@ -450,3 +454,204 @@ def test_presence_config_duoc_nap_va_anh_xa_vao_tracker():
             encoding="utf-8",
         )
         assert load_config(custom).presence.absent_grace_s == pytest.approx(4.5)
+
+class _FakePeople:
+    """``PeopleService`` giả: chỉ trả tín hiệu danh tính, không chạy model.
+
+    ``update_signals`` và ``observe`` của bản thật chỉ cất dữ liệu rồi trả về
+    ngay (xem docstring ``PeopleService``), nên ở đây chúng không làm gì.
+    ``signals()`` trả đúng ``identity`` mà bài test muốn — kể cả ``fresh`` —
+    để khoá việc vòng lặp **có đọc** trường đó.
+    """
+
+    def __init__(self, *, state: str, fresh: bool, selected: str | None):
+        self._identity = {
+            "state": state,
+            "age_s": 0.0 if fresh else 99.0,
+            "age_limit_s": 10.0,
+            "fresh": fresh,
+            "name": None,
+            "reason": "kịch bản test",
+        }
+        self._selected = selected
+        self.observe_calls = 0
+        self.signals_calls = 0
+
+    def update_signals(self, **_kwargs) -> None:
+        pass
+
+    def observe(self, _frame, _now) -> None:
+        self.observe_calls += 1
+
+    def selected_person(self) -> str | None:
+        return self._selected
+
+    def signals(self) -> dict:
+        self.signals_calls += 1
+        no_data = {
+            "state": "NO_DATA",
+            "age_s": None,
+            "age_limit_s": 3.0,
+            "fresh": False,
+        }
+        return {
+            "presence": dict(no_data),
+            "phone": dict(no_data),
+            "identity": dict(self._identity),
+        }
+
+
+def _schedule_chi_stranger() -> ScheduleConfig:
+    """Lịch trong giờ nhưng nâng ``hold_s`` của leave_frame/phone lên rất cao.
+
+    Nhờ vậy khung nào cũng chỉ có thể phát cảnh báo ``stranger``; nếu loại
+    khác lọt vào thì ``alerter.calls`` sẽ lộ ra ngay.
+    """
+    schedule = _schedule(inside=True)
+    schedule.kinds["leave_frame"] = KindSettings(
+        enabled=True, cooldown_s=60.0, hold_s=1000.0
+    )
+    schedule.kinds["phone"] = KindSettings(
+        enabled=True, cooldown_s=120.0, hold_s=1000.0
+    )
+    schedule.kinds["stranger"] = KindSettings(
+        enabled=True, cooldown_s=300.0, hold_s=5.0
+    )
+    return schedule
+
+
+def test_mismatch_giu_du_lau_thi_co_quyet_dinh_stranger(monkeypatch, tmp_path):
+    """``MISMATCH`` + ``fresh: True`` + đã chọn người → ``held["stranger"]`` tích lũy.
+
+    Bốn khung ở ``alert_now`` = 0, 2, 4, 6 s. Mismatch bắt đầu từ khung 0 nên
+    khung cuối có ``held["stranger"] == 6.0 >= hold_s 5.0`` và loa nhận đúng
+    loại ``stranger``.
+
+    Mutation: bỏ dòng gán ``held["stranger"]`` thì khung cuối không còn khoá
+    này (assert nói rõ ``stranger``), và loa không kêu.
+    """
+    frames = 4
+    # Mỗi khung đọc ``alert_now`` một lần và PresenceTracker đọc thêm một lần.
+    clock = _QueueClock([0, 0, 2, 2, 4, 4, 6, 6])
+    people = _FakePeople(state="MISMATCH", fresh=True, selected="an")
+    config = _config(_schedule_chi_stranger())
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator([_pose(True)] * frames),
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        people=people,
+    )
+
+    assert exit_code == 0
+    assert len(observed) == frames, observed
+    assert people.signals_calls >= frames, (
+        "vòng lặp phải đọc signals() mỗi khung để tích lũy thời gian giữ"
+    )
+    last_held = observed[-1]
+    assert last_held.get("stranger", 0.0) >= 5.0, (
+        f"held['stranger'] phải tích lũy đủ hold_s; nhận {last_held!r}"
+    )
+    assert [kind for kind, _ in alerter.calls] == ["stranger"], alerter.calls
+
+
+def test_identity_cu_thi_khong_tich_luy_stranger(monkeypatch, tmp_path):
+    """``fresh: False`` nghĩa là hết dữ liệu → **không** được coi là mismatch.
+
+    Cùng bộ cảnh với bài trên, chỉ đổi ``fresh`` thành ``False``. Nếu bỏ điều
+    kiện ``fresh`` thì ``state`` cũ bị đọc như kết luận hiện tại và
+    ``held["stranger"]`` lớn dần tới ngưỡng — đúng cái bẫy trong docstring
+    ``PeopleService.signals``.
+    """
+    frames = 4
+    clock = _QueueClock([0, 0, 2, 2, 4, 4, 6, 6])
+    people = _FakePeople(state="MISMATCH", fresh=False, selected="an")
+    config = _config(_schedule_chi_stranger())
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator([_pose(True)] * frames),
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        people=people,
+    )
+
+    assert exit_code == 0
+    assert len(observed) == frames, observed
+    assert all(held.get("stranger", 0.0) == 0.0 for held in observed), (
+        f"tín hiệu cũ không được tích lũy thành held['stranger']: {observed!r}"
+    )
+    assert alerter.calls == [], "tín hiệu cũ không được sinh cảnh báo"
+
+
+def test_mismatch_khi_chua_chon_nguoi_thi_khong_bao(monkeypatch, tmp_path):
+    """``MISMATCH`` lúc **chưa chọn** người đang học → không cảnh báo.
+
+    Đây là quyết định ở mục 6 của brief: ``_classify`` trả ``MISMATCH`` khi
+    ``_selected is None`` nghĩa là "khuôn mặt không khớp ai trong kho" — xảy
+    ra cả khi kho rỗng hoặc đang hiệu chỉnh. Đề tài yêu cầu báo "người khác
+    vào học hộ", tức phải có một người đang học để bị thay thế; báo lúc chưa
+    chọn là báo nhầm. Bài này khoá lựa chọn đó.
+    """
+    frames = 4
+    clock = _QueueClock([0, 0, 2, 2, 4, 4, 6, 6])
+    people = _FakePeople(state="MISMATCH", fresh=True, selected=None)
+    config = _config(_schedule_chi_stranger())
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator([_pose(True)] * frames),
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        people=people,
+    )
+
+    assert exit_code == 0
+    assert len(observed) == frames, observed
+    assert all(held.get("stranger", 0.0) == 0.0 for held in observed), observed
+    assert alerter.calls == [], "chưa chọn người học thì chưa thể có ai học hộ"
+
+
+def test_khong_co_dich_vu_nguoi_hoc_thi_khong_co_stranger(monkeypatch, tmp_path):
+    """``people is None`` (``face.enabled: false``) → không có ``stranger``, không lỗi.
+
+    Mặc định của ``config.yaml`` là tắt nhận diện khuôn mặt. Khối cảnh báo
+    vẫn chạy cho leave_frame/phone, nhưng ``held`` không được có khoá
+    ``stranger`` và không được ném lỗi (không có cảnh báo ``alert_errors``).
+    """
+    frames = 3
+    clock = _QueueClock([0, 0, 1, 1, 2, 2])
+    logger = _QuietLogger()
+    config = _config(_schedule(inside=True))
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator([_pose(True)] * frames),
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        people=None,
+        logger=logger,
+    )
+
+    assert exit_code == 0
+    assert len(observed) == frames, observed
+    assert all("stranger" not in held for held in observed), observed
+    assert alerter.calls == [], alerter.calls
+    assert logger.warnings == [], logger.warnings

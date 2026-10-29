@@ -458,9 +458,10 @@ def _monitor_loop(
     - ``people`` (dịch vụ người học) nhận khung qua ``observe`` và tín hiệu
       presence/phone qua ``update_signals``; mỗi lời gọi được bọc ``try`` và
       chỉ **ghi log**, vì lỗi của tính năng mới không được làm chết camera.
-    - Cảnh báo trong giờ học: ``PresenceTracker`` + ``PhoneSignal`` →
-      ``held`` → ``schedule.should_alert`` → ``SpeakerAlerter``. Toàn bộ khối
-      nằm trong ``try`` vì cùng lý do trên.
+    - Cảnh báo trong giờ học: ``PresenceTracker`` + ``PhoneSignal`` + tín
+      hiệu danh tính của ``PeopleService`` → ``held`` →
+      ``schedule.should_alert`` → ``SpeakerAlerter``. Toàn bộ khối nằm trong
+      ``try`` vì cùng lý do trên.
 
     Args:
         clock: hàm trả giây đơn điệu (mặc định ``time.monotonic``). Dùng cho
@@ -551,6 +552,7 @@ def _monitor_loop(
         DEFAULT_ABSENT_HOLD_S,
         PresenceTracker,
     )  # noqa: PLC0415
+    from .people_service import IDENTITY_MISMATCH  # noqa: PLC0415
     from .phone_detector import PhoneSignal  # noqa: PLC0415
     from .speaker_alert import SpeakerAlerter  # noqa: PLC0415
 
@@ -607,6 +609,14 @@ def _monitor_loop(
     #: ``now``. ``schedule.should_alert`` chỉ áp cooldown khi khóa này có mặt;
     #: thiếu nó thì mỗi khung đều đủ điều kiện và loa kêu liên tục.
     last_alert_at: dict[str, datetime] = {}
+
+    #: Mốc ``alert_now`` (giây monotonic) của lần đầu tín hiệu danh tính là
+    #: ``MISMATCH`` liên tục; ``None`` khi khung trước không phải mismatch
+    #: (hoặc chưa có người được chọn). Đây là **float cùng gốc với
+    #: ``alert_now``** — cố ý không dùng datetime và cố ý không nằm chung
+    #: ``last_alert_at``: ``held`` là khoảng thời gian, ``last_alert_at`` là
+    #: mốc ``datetime`` cho cooldown.
+    stranger_since: float | None = None
 
     def _keypoints_array(pose_result):
         """Ghép ``(17, 3)`` [x, y, conf] từ ``pose.xy``/``pose.conf``.
@@ -769,13 +779,14 @@ def _monitor_loop(
                             exc,
                         )
 
-            # Cảnh báo trong giờ học: presence + phone → ``held`` →
-            # ``schedule.should_alert`` → loa. Mọi lỗi ở đây bị nuốt và chỉ
+            # Cảnh báo trong giờ học: presence + phone + danh tính → ``held``
+            # → ``schedule.should_alert`` → loa. Mọi lỗi ở đây bị nuốt và chỉ
             # ghi log lần đầu, đúng lý do của khối ``people`` phía trên.
             if schedule_cfg is not None and (
                 presence_tracker is not None
                 or phone_signal is not None
                 or speaker_alerter is not None
+                or people is not None
             ):
                 try:
                     alert_now = alert_clock()
@@ -798,6 +809,44 @@ def _monitor_loop(
                             if phone_result is not None
                             else 0.0
                         )
+
+                    # "Người khác ngồi học hộ": chỉ tin ``identity`` khi nó
+                    # còn MỚI. ``PeopleService.signals`` ghi rõ ``fresh is
+                    # False`` nghĩa là hết dữ liệu, không phải "vẫn đúng như
+                    # lần trước"; đọc thẳng ``state`` sẽ biến một kết luận
+                    # cũ thành kết luận hiện tại (spec §5.16). Và chỉ báo
+                    # khi **đã có người được chọn**: ``MISMATCH`` lúc chưa
+                    # chọn nghĩa là "khuôn mặt không khớp ai trong kho", xảy
+                    # ra cả khi kho rỗng/đang hiệu chỉnh — báo nhầm. Yêu cầu
+                    # của đề tài là "người khác vào học hộ", tức phải có một
+                    # người đang học để bị thay thế.
+                    #
+                    # Thời gian giữ tự tích lũy bằng ``alert_now`` (float,
+                    # gốc monotonic, là một DURATION); **không** dùng
+                    # ``alert_wall_clock()`` ở đây — đó là datetime và chỉ
+                    # dành cho ``last_alert_at``.
+                    # Tín hiệu danh tính đọc trong ``try`` riêng: một dịch vụ
+                    # nửa vời (thiếu ``signals``) không được làm rơi cả khối
+                    # và mất luôn cảnh báo rời khung/điện thoại của khung
+                    # này. Lỗi ở đây coi như "chưa có dữ liệu danh tính".
+                    if people is not None:
+                        try:
+                            identity = people.signals().get("identity") or {}
+                            selected = people.selected_person()
+                        except Exception:  # noqa: BLE001 - spec §11.3
+                            identity, selected = {}, None
+                        if (
+                            identity.get("fresh") is True
+                            and identity.get("state") == IDENTITY_MISMATCH
+                            and selected is not None
+                        ):
+                            if stranger_since is None:
+                                stranger_since = alert_now
+                            held["stranger"] = max(
+                                0.0, alert_now - stranger_since
+                            )
+                        else:
+                            stranger_since = None
 
                     decision = schedule_mod.should_alert(
                         schedule_cfg,
