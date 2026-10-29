@@ -434,6 +434,28 @@ Bằng chứng hai chiều (đo trên Pi, khung thật, 2026-10-29):
 - **Không được cam kết** "nhờ CLAHE là luôn thấy mặt". Một khung cứu được không chứng minh được điều đó.
 - Độ chính xác của CLAHE trên nhiều điều kiện chiếu sáng khác nhau (tối, đèn vàng, có bóng đổ, ngược sáng vừa) **là câu hỏi mở cần đo** — xem §15.
 
+> **Ghi nhận sai lệch (2026-10-29): (1) và (3) CHƯA được nối vào đường chạy thật.**
+>
+> `face.detect_width` và `face.clahe_enabled` **chưa có người đọc nào** trên
+> đường chạy thật. `face_worker.py` — nơi duy nhất gọi thu nhỏ và CLAHE —
+> **không được khởi tạo ở đâu trong `src/`**; đường chạy thật là
+> `_build_face_processor` trong `src/posture_monitor/__main__.py`, và nó
+> **cố ý detect trên khung gốc** (`prepared = frame  # KHÔNG thu nhỏ`), không
+> gọi CLAHE. Docstring ở đó ghi lý do.
+>
+> Số đo mới hơn, trên Pi với 20 khung thật ở ngưỡng detector `0.9`:
+> khung gốc **704x576 thấy mặt 20/20**, còn ảnh đã thu nhỏ về 320 thì
+> **0–3/20** (320x320, OpenCV 5.0.0) và **0 mặt** (320x262, OpenCV 4.13.0).
+> Nghĩa là ở ngưỡng đang dùng, bước thu nhỏ **làm mất mặt**, nên câu "thu nhỏ
+> là bắt buộc, không thu nhỏ thì chỉ chậm hơn mà không được thêm gì" ở (1)
+> **không còn đúng**. Muốn bật lại thu nhỏ thì phải hạ ngưỡng điểm của YuNet
+> trước; hiện `config.yaml` **không có khoá nào** cho ngưỡng đó, và hạ ngưỡng
+> sẽ thêm mặt giả — mỗi mặt giả là một vector rác vào bộ phân loại danh tính.
+> Vì vậy việc "không thu nhỏ" hiện là lựa chọn có căn cứ, không phải thiếu sót.
+>
+> Số 99,9 ms / 19,3 ms ở trên vẫn là số đo hợp lệ về **chi phí**, chỉ là nó
+> đánh đổi bằng số mặt phát hiện được — hai thứ phải đọc cùng nhau.
+
 **Hai lớp tách biệt, không trộn:**
 
 1. **`FaceMatcher`** — thuần số học: cho một embedding, so cosine với gallery, trả `(person_id | None, score)`. Không đọc ảnh, không cầm camera. Test được bằng vector tổng hợp.
@@ -667,8 +689,8 @@ face:
   impostor_hold_s: 5.0
   enroll_step_s: 1.5
   enroll_min_samples: 3
-  detect_width: 320             # BẮT BUỘC thu nhỏ trước khi detect (§5.13)
-  clahe_enabled: true           # phòng ngừa ngược sáng, 11,4 ms — rẻ
+  detect_width: 320             # CHƯA nối: đường chạy thật detect khung gốc (§5.13 sai lệch)
+  clahe_enabled: true           # CHƯA nối: face_worker.py không được khởi tạo
 
 phone:
   box_ttl_s: 0.5                # hộp bao detect còn dùng được bao lâu
