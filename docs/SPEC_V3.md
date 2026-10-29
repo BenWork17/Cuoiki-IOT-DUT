@@ -453,7 +453,7 @@ Bằng chứng hai chiều (đo trên Pi, khung thật, 2026-10-29):
 
 **Đăng ký người mới (chức năng 6):**
 
-- Một nút trên dashboard → `POST /api/enroll/start {"name": "..."}`.
+- Một nút trên dashboard → `POST /api/people` với thân `{"name": "..."}` (route này **đã có**; tên cũ `POST /api/enroll/start` **không tồn tại**).
 - Trình tự hướng dẫn (5 tư thế): nhìn thẳng → quay phải → quay trái → ngẩng → cúi. Mỗi tư thế `enroll_step_s` (mặc định 1,5 s), tổng ~7,5 s.
 - Hướng dẫn phát **ra loa camera** bằng giọng tiếng Việt (espeak-ng sinh WAV → `speak_file`), đồng thời hiện chữ trên web. Phát giọng là để người đứng xa màn hình vẫn làm đúng, không phải để trang trí.
 - Với mỗi tư thế, lấy các khung có `conf` YuNet trên ngưỡng, tính embedding, **giữ lại vector**; khung hình bị **vứt ngay** trong cùng lần lặp.
@@ -717,17 +717,66 @@ Mọi giá trị trên đều **đặt được**, không viết cứng trong co
 
 ## 7. Giao diện dòng lệnh (thêm vào v2)
 
+**Trạng thái thật, kiểm ngày 2026-10-29:** `src/posture_monitor/__main__.py` chỉ
+đăng ký **bốn** lệnh con — `run` (dòng 65), `calibrate` (dòng 99), `replay`
+(dòng 132), `benchmark` (dòng 158). Bộ lệnh từng được hứa ở mục 7.2 **chưa
+được hiện thực**; mục 7.3 ghi cách làm thật đang có để người đọc không phải
+gõ một lệnh không tồn tại.
+
+Ba module v3 — `phone_detector.py` (583 dòng), `faces.py` (1097), `face_worker.py`
+(541) — **có tồn tại** nhưng `__main__.py` **không** import module nào trong
+chúng; `presence.py` (245), `schedule.py` (440), `speaker_alert.py` (611) cũng
+vậy. Vì thế không chỉ "cờ chưa có": cả ba tín hiệu mới **chưa được nối vào vòng
+lặp `run`**. Cờ `--no-face`/`--no-phone` chỉ có nghĩa sau khi việc nối đó xong.
+
+### 7.1 Lệnh chạy được hôm nay
+
 ```
-python -m posture_monitor run            # thêm cờ --no-face, --no-phone
-python -m posture_monitor faces list
-python -m posture_monitor faces add TEN                # đăng ký qua camera, có hướng dẫn
-python -m posture_monitor faces remove ID
-python -m posture_monitor schedule check               # in cổng mở/đóng 7 ngày tới
-python -m posture_monitor speak-test                   # phát thử câu tiếng Việt ra loa camera
-python -m posture_monitor replay video.mp4 --signals   # replay cho cả 3 tín hiệu
+python -m posture_monitor run [--config config.yaml] [--no-gpio] [--view front|side] [--save-overlay out.jpg]
+python -m posture_monitor calibrate [--config config.yaml] [--output calibration.json]
+python -m posture_monitor replay video.mp4 [--config config.yaml] [--save-report out.json]
+python -m posture_monitor benchmark [--seconds 60] [--config config.yaml] [--source ...] [--json out.json] [--profile pose|pose_phone|pose_phone_face]
 ```
 
-Giữ nguyên v2: `calibrate`, `replay`, `benchmark`. `benchmark` được mở rộng để đo **ba cấu hình** (xem §8) và in rõ cấu hình nào chạy model nào.
+Cả bốn lệnh đều có nhánh xử lý riêng trong `main()`. `benchmark` được mở rộng
+để đo **ba cấu hình** (xem §8) và báo cáo ghi rõ hồ sơ nào chạy model nào.
+
+### 7.2 Lệnh đã hứa nhưng **CHƯA HIỆN THỰC** (giữ nguyên văn để đối chiếu)
+
+Khối dưới đây giữ nguyên văn lời hứa cũ. **Không dòng nào chạy được** trên mã
+hiện tại; mỗi dòng ghi rõ lý do ngay trên dòng đó.
+
+```
+python -m posture_monitor run --no-face --no-phone        # chưa hiện thực: parser `run` không có hai cờ này
+python -m posture_monitor faces list                      # chưa hiện thực: không có parser `faces`
+python -m posture_monitor faces add TEN                   # chưa hiện thực: không có parser `faces`; đăng ký qua camera chưa có
+python -m posture_monitor faces remove ID                 # chưa hiện thực: không có parser `faces`
+python -m posture_monitor schedule check                  # chưa hiện thực: không có parser `schedule`
+python -m posture_monitor speak-test                      # chưa hiện thực: không có parser `speak-test`
+python -m posture_monitor replay video.mp4 --signals      # chưa hiện thực: `replay` không có cờ `--signals`
+```
+
+`git grep` cho `no-face|no-phone|--signals` trong `src/` trả về **0** kết quả;
+không có parser nào tên `faces`, `schedule`, `speak-test`.
+
+### 7.3 Cách làm thật cho từng việc (dùng cái đang có)
+
+**Cảnh báo quan trọng, kiểm ngày 2026-10-29:** các route dưới đây **có đăng ký**
+trong `src/posture_monitor/web/app.py`, nhưng `run` **chưa nối chúng vào**: 
+`_Dashboard` gọi `create_app(config, state=..., storage=...)` **không** truyền
+`people=`, nên `people is None` và mọi route `/api/people*`, `/api/enroll*`,
+`/api/select`, `/api/schedule`, `/api/signals` trả **503** (`PEOPLE_DISABLED_MESSAGE`,
+`web/app.py:99`). Bản thật `PeopleService` có ở `src/posture_monitor/people_service.py`
+nhưng **chưa có chỗ nào khởi tạo nó**. Đã thử bằng `create_app(state=...)` +
+`test_client`: `/api/people`, `/api/schedule`, `/api/signals` → 503;
+`/api/speak` → 403 vì `camera.audio` chưa cấu hình.
+
+| Việc từng hứa | Cách làm thật hôm nay |
+| --- | --- |
+| Đăng ký / liệt kê / xoá người | Route web **đã đăng ký nhưng chưa dùng được khi chạy `run`**: `POST /api/people` (bắt đầu đăng ký, thân `{"name": "..."}`), `GET /api/people`, `DELETE /api/people/<id>` — tất cả trả 503 vì `run` không truyền `people=`. **Không** có đường dòng lệnh. Việc phải làm: nối `people_service.PeopleService` vào `_Dashboard` (`__main__.py:326`). |
+| Xem khung giờ học | `GET /api/schedule` / `PUT /api/schedule` **đã đăng ký nhưng cũng trả 503** cùng lý do. **Không** có lệnh in 7 ngày tới. |
+| Phát thử ra loa camera | `POST /api/speak` — route này **dùng được thật** (không phụ thuộc `people`), thân JSON `{"tone_hz": 880, "duration": 0.5}` (bíp, không cần ffmpeg) hoặc `{"file": "duong_dan.wav"}`. Cần `camera.audio` cấu hình, nếu không trả 403. **Không** có lệnh `speak-test`. |
+| Xem cả tín hiệu khi replay | `replay` xuất JSON có `labels`/`states` từng khung. Cờ `--signals` **chưa có**; `GET /api/signals` chỉ có tín hiệu khi `people` được nối — hiện **chưa** (503). |
 
 ---
 
@@ -795,9 +844,9 @@ Giữ nguyên v2: `calibrate`, `replay`, `benchmark`. `benchmark` được mở 
   - `test_faces.py`: `FaceMatcher` với vector tổng hợp (khớp, không khớp, gallery rỗng, ngưỡng biên); **ánh xạ hộp từ hệ 320 về hệ khung gốc** (kể cả khung không phải bội số của 320); **khẳng định đầu vào YuNet đúng rộng 320**; **test quét thư mục để khẳng định không có file ảnh sinh ra**; vòng `tobytes()`/`frombuffer()` giữ nguyên vector.
   - `test_schedule.py`: **đã có ở `00ce781`** — đồng hồ giả, vắt nửa đêm, tên thứ, biên `start` trong/`end` ngoài, `enabled: false` không giới hạn giờ, `should_alert` bốn đường trả `None`, cooldown theo từng loại, trộn naive/aware. Chỉ cần bổ sung khi nối vào vòng lặp.
   - `test_speaker_alert.py`: chọn câu theo loại sự kiện, thứ tự ưu tiên, tôn trọng `muted`, loa bận thì bỏ, thiếu ffmpeg thì rơi về bíp (dùng controller giả).
-  - `test_enroll_api.py`: đủ mẫu mới ghi, ngắt giữa chừng không ghi, tên rỗng bị từ chối.
-- **Tích hợp bằng `replay`:** clip mẫu có dùng điện thoại / không dùng / hai người / ra khỏi khung. Kỳ vọng ghi trong `tests/data/expected_v3.json`.
-- **Trên Pi (bắt buộc, người triển khai chạy):** `benchmark` cho ba cấu hình; `speak-test`; đăng ký người thật; chạy 30 phút trong giờ học để đếm báo nhầm.
+  - `test_enroll_api.py`: đủ mẫu mới ghi, ngắt giữa chừng không ghi, tên rỗng bị từ chối. **CHƯA CÓ** — file này chưa tồn tại; phần API đăng ký hiện được kiểm trong `tests/test_web_people.py`.
+- **Tích hợp bằng `replay`:** clip mẫu có dùng điện thoại / không dùng / hai người / ra khỏi khung. Kỳ vọng ghi trong `tests/data/expected_v3.json` — **CHƯA CÓ**: cả file kỳ vọng lẫn thư mục `tests/data/` chưa tồn tại; đây là việc phải làm, không phải thứ đã có.
+- **Trên Pi (bắt buộc, người triển khai chạy):** `benchmark` cho ba cấu hình; **phát thử bằng `POST /api/speak`** (lệnh `speak-test` **chưa hiện thực**, xem §7.2); đăng ký người thật; chạy 30 phút trong giờ học để đếm báo nhầm.
 - Mọi test trừ phần âm thanh/PTZ phải chạy được trên PC (giữ nguyên v2 §9).
 
 ---
@@ -808,8 +857,8 @@ Tiếp sau v2 (M0–M5 đã xong). Thứ tự bắt buộc vì phụ thuộc ng�
 
 | Mốc | Nội dung | Tiêu chí hoàn thành |
 | --- | --- | --- |
-| **M7** | `presence.py` + nhãn `ABSENT` vào state machine + tắt bộ luật tư thế | Presence đúng trên clip replay; `--no-face --no-phone` chạy như cũ |
-| **M8** | `schedule.py` — **đã xong ở `00ce781`** (đã ACCEPT); còn lại là nối `should_alert` vào vòng lặp và lệnh `schedule check` | `should_alert` được gọi từ vòng lặp với `held`/`last_alert_at` thật; `schedule check` in 7 ngày tới |
+| **M7** | `presence.py` + nhãn `ABSENT` vào state machine + tắt bộ luật tư thế | Presence đúng trên clip replay; hai cờ `--no-face`/`--no-phone` **chưa hiện thực** — parser `run` hiện không có chúng (§7.2), nên tiêu chí "chạy như cũ" chỉ kiểm được bằng cách tắt bộ luật trong cấu hình |
+| **M8** | `schedule.py` — **đã xong ở `00ce781`** (đã ACCEPT); còn lại là nối `should_alert` vào vòng lặp và lệnh `schedule check` | `should_alert` được gọi từ vòng lặp với `held`/`last_alert_at` thật; **CHƯA KIỂM ĐƯỢC** tiêu chí "`schedule check` in 7 ngày tới" vì lệnh đó chưa hiện thực (§7.2) — kiểm tạm bằng `GET /api/schedule` |
 | **M9** | `phone.py` + `PhoneDetector` + ngân sách FPS 2 model | Đo lại FPS **có** detect điện thoại; quy tắc khoảng cách = 0 có unit test; bảng TP/FP trên clip |
 | **M10** | `faces.py` (thu nhỏ 320 + CLAHE + ánh xạ hộp) + gallery + chọn ngưỡng bằng đo | Bảng confusion trên bộ mẫu thật; hộp khuôn mặt ở hệ khung gốc; không có file ảnh |
 | **M11** | `speaker_alert.py` + espeak-ng + hướng dẫn đăng ký bằng giọng nói | Nghe được trên loa camera; thiếu ffmpeg vẫn bíp; mất mạng không crash |
@@ -839,7 +888,7 @@ Kế thừa nguyên vẹn 8 quy tắc của v2 §11. Bổ sung:
 | Báo nhầm "dùng điện thoại" khi tay đặt lên bàn cạnh máy | Cao | Quy tắc đòi cổ tay **trong** hộp bao + `hold_s`; đo FP trên clip thật; nếu vẫn cao, nới `touching_slack_px` **không** cứu được — phải xem lại quy tắc và báo người dùng |
 | Báo nhầm "học hộ" do nhận diện khuôn mặt kém (ánh sáng, khẩu trang) | **Cao** | Ba kết quả `MATCH`/`MISMATCH`/`UNKNOWN`; `UNKNOWN` không bao giờ báo; ngưỡng đo bằng thực nghiệm; `impostor_hold_s` dài |
 | Người học **giả** bằng ảnh/video trên điện thoại | Trung bình | **Không** xử lý trong v3. Phải ghi rõ trong README: hệ thống không chống giả mạo. Thêm phát hiện liveness là đề tài khác |
-| Loa camera không mở backchannel trên một số firmware | Trung bình | Đã kiểm chứng trên **đúng camera của dự án**; camera khác phải chạy `speak-test` trước. Thiếu thì rơi về bíp, thiếu nữa thì ghi `SPEAK_FAILED` |
+| Loa camera không mở backchannel trên một số firmware | Trung bình | Đã kiểm chứng trên **đúng camera của dự án**; camera khác phải phát thử trước bằng `POST /api/speak` (lệnh `speak-test` **chưa hiện thực**, §7.2). Thiếu thì rơi về bíp, thiếu nữa thì ghi `SPEAK_FAILED` |
 | `espeak-ng` giọng tiếng Việt khó nghe | Trung bình | **Chưa đo chất lượng**; nếu không đủ rõ thì dùng tiếng bíp + chữ trên dashboard. Không tự ý thêm dịch vụ TTS cloud (vi phạm "không truyền ra ngoài") |
 | Mất mạng làm rơi cảnh báo đúng lúc cần | Trung bình | Ghi sự kiện; dashboard hiện trạng thái "loa không phản hồi"; không có kênh dự phòng tự động trong v3 |
 | Đồng hồ Pi sai → cảnh báo ngoài giờ | Trung bình | **Chưa có trong code**: `00ce781` không có `clock_skew_warn_s` và module cố ý thuần. Việc kiểm tra lệch NTP thuộc tầng gọi, cần làm thêm; lệch nhiều thì tắt phát và cảnh báo trên dashboard |
@@ -960,7 +1009,7 @@ Toàn bộ đo ngày **2026-10-29, trên Pi 4 của dự án, với camera thậ
 
 | Kiểm tra | Kết quả |
 | --- | --- |
-| `POST /api/ptz` có trong `web/app.py` | **Có** — `src/posture_monitor/web/app.py:474` |
+| `POST /api/ptz` có trong `web/app.py` | **Có** — `src/posture_monitor/web/app.py:497` |
 | Có test cho route | **Có** — `tests/test_web_ptz.py` |
 | `index.html` có nút PTZ | **Không.** Chỉ có `mute-btn` và `calibrate-btn` |
 | `app.js` có gọi `/api/ptz` | **Không.** Không có một dòng nào |
