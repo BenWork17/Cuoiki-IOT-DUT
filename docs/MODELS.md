@@ -43,3 +43,39 @@ Ghi chú đo được trên cv2 4.13.0: `FaceDetectorYN.detect()` trả `(retval
 trong đó `retval` là **cờ thành công** (luôn `1`), không phải số khuôn mặt;
 không phát hiện được mặt nào thì `faces` là `None`. Vector đặc trưng của
 `FaceRecognizerSF.feature()` có **128 chiều** (spec §4.2).
+
+## Đo ngưỡng nhận diện — `scripts/face_threshold_probe.py`
+
+`face.match_threshold` trong `config.yaml` vẫn là **`null`**. Spec V3 §5.13 và
+§14 bước H cấm chép ngưỡng từ tài liệu OpenCV hay repo khác, nên phải **đo trên
+camera thật** trước khi bật nhận diện. Công cụ `scripts/face_threshold_probe.py`
+làm đúng việc đó: thu mẫu trực tiếp từ camera, in phân bố cosine trong-cùng-người
+và khác-người, bảng ngưỡng ứng viên, rồi một dòng gợi ý để **người dùng tự dán**
+vào `config.yaml`.
+
+Công cụ chỉ đọc và in số — không ghi ảnh, không ghi embedding ra đĩa, không sửa
+`config.yaml`, không in mật khẩu camera.
+
+Chạy trên Pi, ở gốc repo, sau khi đã tải `yunet.onnx`/`sface.onnx` (xem bảng
+trên) và đã đặt `POSTURE_CAMERA_SOURCE`:
+
+```bash
+cd ~/Cuoiki   # hoặc thư mục repo trên Pi
+python scripts/face_threshold_probe.py \
+    --name "Chính chủ" --name2 "Người khác" --samples 10
+```
+
+Người thứ nhất ngồi đúng chỗ học, nhìn thẳng camera; khi công cụ báo chuyển
+người, người thứ hai ngồi vào **đúng chỗ đó**. Khung có 0 khuôn mặt hoặc hơn 1
+khuôn mặt bị bỏ (khung nhiều mặt làm hỏng phép đo).
+
+- Không có `--name2`: chỉ in phân bố trong cùng một người và nói rõ **chưa đủ
+  để chọn ngưỡng**, mã thoát `2`.
+- Hai phân bố **chồng lấn**: in cảnh báo "không có ngưỡng nào tách sạch", không
+  in dòng gợi ý.
+- Mã thoát `0` khi in được bảng; `2` khi thiếu mẫu/người thứ hai/không mở được
+  camera, kèm lý do tiếng Việt cụ thể.
+
+Con số đo được chỉ đúng với camera, ánh sáng và vị trí đo hôm đó; đổi chỗ ngồi
+hoặc đổi camera thì phải đo lại. Spec §14 bước H còn cần thêm nhóm "che mặt" và
+"ngược sáng" — công cụ này **không** thay thế hai nhóm đó.
