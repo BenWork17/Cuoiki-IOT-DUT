@@ -183,7 +183,13 @@ def _coerce_embedding(value: Any) -> np.ndarray | None:
         return None
     try:
         return normalise_embedding(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # ``OverflowError`` không phải ``ValueError`` (nó là ``ArithmeticError``):
+        # ``np.asarray(..., dtype=np.float32)`` ném lỗi này khi embedding chứa
+        # số nguyên quá lớn để đổi sang float (ví dụ ``[10**400]*8``). Không
+        # bắt riêng thì nó thoát khỏi ``_apply_observation`` và **giết luồng
+        # worker** — nhận diện khuôn mặt tắt hẳn tới khi restart tiến trình.
+        # Một embedding không dùng được chỉ là ``None``, giống mọi ca hỏng khác.
         return None
 
 
@@ -560,6 +566,10 @@ class PeopleService:
         #: Thông điệp lỗi processor gần nhất, để chỉ log khi lỗi ĐỔI (thiếu
         #: tệp mô hình lặp lại mỗi khung; log hết sẽ ngập).
         self._processor_error: str | None = None
+        #: Thông điệp lỗi gần nhất ở tầng áp dụng kết quả trong ``_worker_loop``
+        #: (khác ``_processor_error`` chỉ bọc phần ``processor``). Giữ ở đây để
+        #: chống ngập log và để test đọc được.
+        self._apply_error: str | None = None
 
     # ------------------------------------------------------------------
     # processor / luồng worker
@@ -580,11 +590,22 @@ class PeopleService:
         return self._recognizer.embed_largest(frame)
 
     def _ensure_worker(self) -> None:
-        if self._worker is not None:
-            return
         with self._lock:
-            if self._worker is not None or self._stop:
+            worker = self._worker
+            if worker is not None and worker.is_alive():
                 return
+            if self._stop:
+                return
+            if worker is not None:
+                # Luồng cũ đã chết mà không ai bắt được lỗi (ví dụ lỗi ở tầng
+                # dữ liệu thoát khỏi ``process_frame``). Trước đây
+                # ``self._worker`` vẫn khác ``None`` nên **không bao giờ** có
+                # luồng mới: nhận diện mặt tắt hẳn tới khi restart tiến trình,
+                # dashboard vẫn 200 và trả dữ liệu cũ. Dựng lại luồng mới để
+                # khung đang chờ không bị mất vĩnh viễn.
+                self._log.warning(
+                    "Luồng nhận diện khuôn mặt đã dừng; khởi động lại luồng mới."
+                )
             thread = threading.Thread(
                 target=self._worker_loop,
                 name="people-service-worker",
@@ -612,7 +633,26 @@ class PeopleService:
                     return
                 frame, now = self._pending
                 self._pending = None
-            self.process_frame(frame, now=now)
+            try:
+                self.process_frame(frame, now=now)
+            except Exception as exc:  # noqa: BLE001 - không được để luồng chết
+                # Một lỗi ở tầng áp dụng kết quả (ví dụ kho khuôn mặt ném lỗi
+                # ngoài ``FaceStoreError``) mà không bắt sẽ thoát khỏi vòng
+                # lặp → thread chết im lặng, ``threading.excepthook`` in
+                # traceback ra stderr còn logger của dự án thì không có dòng
+                # nào. Bắt ở đây, ghi qua ``self._log`` và **tiếp tục** chờ
+                # khung kế tiếp. Khung bị lỗi coi như bỏ.
+                #
+                # Chống ngập: lỗi lặp lại mỗi khung chỉ log khi thông điệp
+                # ĐỔI, cùng mẫu với ``self._processor_error``.
+                message = str(exc)
+                if message != self._apply_error:
+                    self._apply_error = message
+                    self._log.warning(
+                        "Không áp dụng được kết quả nhận diện khuôn mặt: %s", exc
+                    )
+            else:
+                self._apply_error = None
 
     def _current_processor(self) -> Callable[[Any], Any]:
         with self._lock:
