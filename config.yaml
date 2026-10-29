@@ -68,6 +68,24 @@ tracking:
   enabled: true          # chọn người theo track id (spec §5.6)
   tracker: botsort.yaml
 
+# Phát hiện "đang dùng điện thoại" (spec §5).
+# Model pose yolo11n-pose CHỈ có lớp 'person' nên không bao giờ trả hộp điện
+# thoại; mục này nạp thêm một model detect COCO 80 lớp và lấy lớp 'cell phone'.
+# Đo thật trên Pi 4 (2026-10-29): yolo11n ncnn @320 = 98,6 ms/khung.
+#   pose mỗi khung + detect mỗi 2 khung = 6,18 FPS  (đạt mục tiêu >= 5)
+#   chạy cả hai mỗi khung            = 4,74-4,90 FPS (KHÔNG đạt)
+# nên detect_every_n_frames mặc định là 2. Đừng đặt 1 trên Pi.
+phone:
+  enabled: true
+  detect_model: yolo11n        # model COCO 80 lớp (có 'cell phone' = lớp 67)
+  detect_weights: ""           # trống = "<detect_model>.pt"
+  detect_every_n_frames: 2     # ĐO THẬT: 2 mới đạt >= 5 FPS trên Pi
+  imgsz: 320
+  conf_threshold: 0.25
+  box_ttl_s: 0.5               # hộp detect còn dùng được bao lâu (giây)
+  hold_s: 2.0                  # chạm liên tục bao lâu thì thành sự kiện
+  touching_slack_px: 0         # 0 = đúng yêu cầu "khoảng cách = 0"
+
 thresholds:
   head_down_ratio: 0.70
   too_close_ratio: 1.25
