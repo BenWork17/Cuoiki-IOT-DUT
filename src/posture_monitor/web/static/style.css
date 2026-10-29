@@ -164,6 +164,191 @@ body {
   font-size: 0.9rem;
 }
 
+/* ---- Thẻ "Trạng thái học" ------------------------------------------ */
+
+.signs { display: grid; gap: 4px; }
+
+.signs__title {
+  margin: 0 0 8px;
+  font-size: 1.05rem;
+}
+
+.sign {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--grid);
+}
+
+.sign:first-of-type { border-top: 0; }
+
+/* Mỗi trạng thái có màu + biểu tượng + chữ. Màu chỉ là lớp trang trí thứ
+   ba, không phải kênh truyền đạt duy nhất (spec v2 giữ nguyên ở v3 §5.16). */
+.sign__icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 1.15rem;
+  background: var(--grid);
+  color: var(--ink);
+}
+
+.sign[data-state="present"] .sign__icon { background: var(--good); color: #fff; }
+.sign[data-state="absent"] .sign__icon { background: var(--axis); color: #0b0b0b; }
+.sign[data-state="none"] .sign__icon { background: var(--good); color: #fff; }
+.sign[data-state="use"] .sign__icon { background: var(--critical); color: #fff; }
+.sign[data-state="match"] .sign__icon { background: var(--good); color: #fff; }
+.sign[data-state="mismatch"] .sign__icon { background: var(--critical); color: #fff; }
+.sign[data-state="unknown"] .sign__icon { background: var(--warning); color: #0b0b0b; }
+
+/* Dữ liệu cũ: làm mờ và đổi sang tông trung tính. Chữ "Chưa có dữ liệu mới"
+   do app.js đặt; đây chỉ là tín hiệu thị giác phụ. */
+.sign[data-fresh="false"] .sign__value { color: var(--ink-2); font-weight: 600; }
+.sign[data-fresh="false"] .sign__icon {
+  background: var(--grid);
+  color: var(--ink-2);
+}
+
+.sign__body { min-width: 0; }
+
+.sign__label {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sign__value {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+
+.sign__age {
+  color: var(--ink-2);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.signs__disabled {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--grid);
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
+/* ---- Người học ------------------------------------------------------ */
+
+.people { display: grid; gap: 12px; }
+
+.people__title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.people__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.people__selected {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.95rem;
+}
+
+.people__form { display: grid; gap: 8px; }
+
+.people__form[hidden] { display: none; }
+
+.people__label {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.85rem;
+}
+
+.people__input {
+  min-height: var(--tap);
+  padding: 10px 12px;
+  border: 1px solid var(--ring);
+  border-radius: var(--radius);
+  background: var(--page);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 1rem;
+}
+
+.enroll {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--series-1) 10%, transparent);
+}
+
+.enroll[hidden] { display: none; }
+
+.enroll__step {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 650;
+}
+
+.enroll__samples {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.people__list-wrap[hidden] { display: none; }
+
+.people__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.people__item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--grid);
+}
+
+.people__name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.people__pick, .people__delete {
+  min-height: 44px;
+  padding: 8px 14px;
+  font-size: 0.9rem;
+}
+
+.people__empty, .people__disabled, .people__schedule {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
+.people__empty[hidden] { display: none; }
+
 /* ---- Nút bấm ------------------------------------------------------- */
 
 .actions {
