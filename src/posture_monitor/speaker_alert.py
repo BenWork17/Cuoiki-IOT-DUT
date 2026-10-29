@@ -347,12 +347,22 @@ class SpeakerAlerter:
             )
 
     # -- phát ------------------------------------------------------------
-    def alert(self, kind: str, *, now: float | None = None) -> AlertOutcome:
+    def alert(
+        self,
+        kind: str,
+        *,
+        now: float | None = None,
+        muted: bool = False,
+    ) -> AlertOutcome:
         """Phát cảnh báo một loại. Tương đương ``alert_many([kind])``."""
-        return self.alert_many((kind,), now=now)
+        return self.alert_many((kind,), now=now, muted=muted)
 
     def alert_many(
-        self, kinds: Iterable[str], *, now: float | None = None
+        self,
+        kinds: Iterable[str],
+        *,
+        now: float | None = None,
+        muted: bool = False,
     ) -> AlertOutcome:
         """Chọn **một** loại theo :data:`PRIORITY` rồi phát nó.
 
@@ -364,6 +374,11 @@ class SpeakerAlerter:
             now: mốc thời gian để ghi vào kết quả/log; ``None`` thì đọc
                 ``clock``. **Chỉ để ghi**, không dùng để chặn phát — cooldown
                 thuộc ``schedule``.
+            muted: ``True`` khi dashboard đang tắt tiếng. Spec v3 §3.3: tắt
+                tiếng thì **không phát ra loa** nhưng sự kiện vẫn được ghi.
+                Trả ``mode="skipped"``, ``error=None`` **trước khi** chạm
+                controller (kể cả trước nhánh ``busy``): tắt tiếng là lựa
+                chọn của người dùng, không phải lỗi loa.
 
         Returns:
             :class:`AlertOutcome`. Không bao giờ ném lỗi, kể cả khi loa chết.
@@ -380,6 +395,16 @@ class SpeakerAlerter:
             )
 
         text = ALERT_TEXT[chosen]
+        if muted:
+            # Spec v3 §3.3: dashboard tắt tiếng thì không phát ra loa nhưng
+            # vẫn ghi sự kiện. Chặn **trước** mọi lần chạm ``controller`` —
+            # kể cả nhánh ``busy`` — để tắt tiếng không bị báo thành lỗi loa.
+            return self._skipped(
+                chosen,
+                text,
+                "Dashboard đang tắt tiếng nên không phát cảnh báo ra loa.",
+                moment,
+            )
         if self._controller is None:
             return self._skipped(
                 chosen,

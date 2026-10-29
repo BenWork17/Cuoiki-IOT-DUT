@@ -504,6 +504,9 @@ def _monitor_loop(
     from .state import (  # noqa: PLC0415
         EVENT_ALERT_END,
         EVENT_ALERT_START,
+        EVENT_SPEAK_FAILED,
+        EVENT_SPEAK_OK,
+        Event,
         Smoother,
         StateMachine,
     )
@@ -876,11 +879,58 @@ def _monitor_loop(
                         last_alert_at=last_alert_at,
                     )
                     if decision is not None:
+                        # Spec v3 §3.3: dashboard tắt tiếng thì **không phát ra
+                        # loa** nhưng vẫn ghi sự kiện. Giá trị này phải đọc ở
+                        # ĐÂY, trước lời gọi loa; cổng GPIO phía dưới chỉ chặn
+                        # tiếng của dispatcher, không chặn loa camera.
+                        muted = bool(state is not None and state.muted)
                         if speaker_alerter is not None:
-                            speaker_alerter.alert(decision.kind, now=alert_now)
-                        # Chỉ cập nhật sau khi đã phát: ``should_alert`` không
-                        # có cooldown nào nếu ``last_alert_at`` rỗng, nên quên
-                        # dòng này nghĩa là loa kêu ở MỌI khung.
+                            # ``speaker_alerter is None`` nghĩa là chưa cấu
+                            # hình loa: không có gì để nói, nên cũng không ghi
+                            # sự kiện loa giả.
+                            outcome = speaker_alerter.alert_many(
+                                (decision.kind,), now=alert_now, muted=muted
+                            )
+                            if outcome.spoken:
+                                logger.info(
+                                    "SPEAK_OK: đã phát cảnh báo '%s' ra loa "
+                                    "camera.",
+                                    decision.kind,
+                                )
+                                if storage is not None:
+                                    storage.record_event(
+                                        Event(
+                                            ts=float(alert_now),
+                                            type=EVENT_SPEAK_OK,
+                                            label=decision.kind,
+                                            alert=False,
+                                        )
+                                    )
+                            if outcome.error is not None:
+                                # Tầng ``_failure`` đã log một lần; dòng này
+                                # giữ đúng từ khoá ``SPEAK_FAILED`` mà spec
+                                # §5.15/§6 yêu cầu để grep được trong log.
+                                logger.warning(
+                                    "SPEAK_FAILED: cảnh báo '%s' không phát "
+                                    "được ra loa (%s); vẫn giám sát tiếp.",
+                                    decision.kind,
+                                    outcome.error,
+                                )
+                                if storage is not None:
+                                    storage.record_event(
+                                        Event(
+                                            ts=float(alert_now),
+                                            type=EVENT_SPEAK_FAILED,
+                                            label=decision.kind,
+                                            alert=False,
+                                        )
+                                    )
+                        # VÔ ĐIỀU KIỆN sau mỗi quyết định: ``should_alert``
+                        # không có cooldown nào nếu ``last_alert_at`` rỗng, nên
+                        # quên dòng này nghĩa là loa kêu/log kín ở MỌI khung.
+                        # Gắn nó vào ``outcome.spoken`` biến mỗi lần cảnh báo
+                        # thành log storm (~18 000 dòng/giờ) ở cấu hình mặc
+                        # định (``camera.speaker.enabled: false``).
                         last_alert_at[decision.kind] = alert_wall_clock()
                 except Exception as exc:  # noqa: BLE001 - spec §11.3
                     alert_errors += 1

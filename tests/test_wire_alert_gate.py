@@ -112,10 +112,19 @@ class _StepWallClock:
 
 
 class _RecordingAlerter:
-    """Loa giả: ghi lại loại cảnh báo thay vì phát ra loa."""
+    """Loa giả: ghi lại loại cảnh báo thay vì phát ra loa.
+
+    Vòng lặp gọi ``alert_many(..., muted=...)`` và đọc ``outcome``, nên bản
+    giả phải trả một :class:`AlertOutcome` thật. ``spoken``/``error`` là kịch
+    bản do từng bài test đặt; ``muted=True`` luôn cho kết quả "bỏ, không lỗi"
+    đúng như :class:`SpeakerAlerter` thật.
+    """
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, float | None]] = []
+        self.muted_values: list[bool] = []
+        self.spoken = False
+        self.error: str | None = None
 
     @property
     def available(self) -> bool:
@@ -124,9 +133,38 @@ class _RecordingAlerter:
     def prepare(self) -> None:
         pass
 
-    def alert(self, kind, *, now=None):
-        self.calls.append((kind, now))
-        return None
+    def alert(self, kind, *, now=None, muted=False):
+        return self.alert_many((kind,), now=now, muted=muted)
+
+    def alert_many(self, kinds, *, now=None, muted=False):
+        from posture_monitor.speaker_alert import (
+            MODE_SKIPPED,
+            MODE_SPEECH,
+            AlertOutcome,
+        )
+
+        chosen = next(iter(kinds), None)
+        self.calls.append((chosen, now))
+        self.muted_values.append(bool(muted))
+        if muted:
+            return AlertOutcome(
+                kind=chosen,
+                text=None,
+                spoken=False,
+                mode=MODE_SKIPPED,
+                reason="Dashboard đang tắt tiếng nên không phát cảnh báo ra loa.",
+                error=None,
+                at=float(now or 0.0),
+            )
+        return AlertOutcome(
+            kind=chosen,
+            text=None,
+            spoken=self.spoken,
+            mode=MODE_SPEECH if self.spoken else MODE_SKIPPED,
+            reason="kịch bản test",
+            error=self.error,
+            at=float(now or 0.0),
+        )
 
     @classmethod
     def from_config(cls, _config, **_kwargs):
@@ -197,8 +235,23 @@ def _schedule(inside: bool, phone_enabled: bool = True) -> ScheduleConfig:
 _WALL_TIME = datetime(2026, 10, 28, 19, 30)  # thứ Tư
 
 
+class _FakeStorage:
+    """``Storage`` giả: ghi lại ``record`` (theo khung) và ``record_event``."""
+
+    def __init__(self) -> None:
+        self.records: list[tuple[object, float | None]] = []
+        self.events: list[object] = []
+
+    def record(self, update, distance_cm=None) -> None:
+        self.records.append((update, distance_cm))
+
+    def record_event(self, event, now=None) -> None:
+        self.events.append(event)
+
+
 def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
-         phone_script, people=None, logger=None):
+         phone_script, people=None, logger=None, state=None, storage=None,
+         spoken=False, error=None):
     """Chạy ``_monitor_loop`` thật với các seam đã thay, trả kết quả quan sát."""
     import posture_monitor.__main__ as cli
     import posture_monitor.calibration as calibration_mod
@@ -232,6 +285,8 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
         phone_mod, "PhoneSignal", _make_phone_signal_fake(phone_script)
     )
     alerter = _RecordingAlerter()
+    alerter.spoken = spoken
+    alerter.error = error
     _AlerterHolder.instance = alerter
     monkeypatch.setattr(speaker_mod, "SpeakerAlerter", _RecordingAlerter)
 
@@ -252,6 +307,8 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
         _FakeSource(frames),
         config,
         logger if logger is not None else _QuietLogger(),
+        state=state,
+        storage=storage,
         people=people,
         clock=clock,
         wall_clock=wall_clock,
@@ -655,3 +712,181 @@ def test_khong_co_dich_vu_nguoi_hoc_thi_khong_co_stranger(monkeypatch, tmp_path)
     assert all("stranger" not in held for held in observed), observed
     assert alerter.calls == [], alerter.calls
     assert logger.warnings == [], logger.warnings
+
+
+# ---------------------------------------------------------------------------
+# Tắt tiếng + sự kiện SPEAK_OK / SPEAK_FAILED (spec v3 §3.3, §5.15, §6, §8.2)
+# ---------------------------------------------------------------------------
+def _muted_state():
+    from posture_monitor.web import DashboardState
+
+    state = DashboardState()
+    state.set_muted(True)
+    return state
+
+
+def test_tat_tieng_khong_phat_loa_nhung_van_giu_cooldown(monkeypatch, tmp_path):
+    """Dashboard tắt tiếng: loa nhận ``muted=True``, và cooldown vẫn tiến.
+
+    Hai khung liên tiếp đều vượt ``hold_s``; vì ``last_alert_at`` vẫn được
+    cập nhật VÔ ĐIỀU KIỆN nên chỉ có **một** quyết định. Gắn việc cập nhật
+    vào ``outcome.spoken`` (mutation c) thì khung thứ hai lại sinh quyết định
+    và ``alerter.calls`` thành 2.
+    """
+    frames = 6
+    clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
+    estimator = _ScriptedEstimator(
+        [_pose(True), _pose(True), None, None, None, None]
+    )
+    config = _config(_schedule(inside=True))
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=estimator,
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        state=_muted_state(),
+    )
+
+    assert exit_code == 0
+    assert len(alerter.calls) == 1, alerter.calls
+    assert all(alerter.muted_values), alerter.muted_values
+
+
+def test_tat_tieng_that_su_khong_cham_controller():
+    """``muted=True`` phải trả ``skipped`` trước khi chạm controller, kể cả khi bận.
+
+    Đây là chốt của spec §3.3 ở tầng thật: controller có ``busy=True`` vẫn
+    không được hỏi/không được phát, và ``error`` phải là ``None`` — tắt tiếng
+    không phải lỗi loa.
+    """
+    from posture_monitor.speaker_alert import MODE_SKIPPED, SpeakerAlerter
+
+    class _ExplodingController:
+        busy = True
+
+        def speak_file(self, *_a):
+            raise AssertionError("tắt tiếng không được chạm loa")
+
+        def speak_tone(self, *_a):
+            raise AssertionError("tắt tiếng không được chạm loa")
+
+    alerter = SpeakerAlerter(
+        _ExplodingController(), audio_dir="khong-dung", clock=lambda: 7.0
+    )
+
+    outcome = alerter.alert_many(("leave_frame",), now=7.0, muted=True)
+
+    assert outcome.mode == MODE_SKIPPED
+    assert outcome.spoken is False
+    assert outcome.error is None
+    assert "tắt tiếng" in outcome.reason
+
+
+def test_da_phat_thi_ghi_su_kien_speak_ok(monkeypatch, tmp_path):
+    """``outcome.spoken`` → ``storage.record_event`` nhận ``EVENT_SPEAK_OK``."""
+    from posture_monitor.state import EVENT_SPEAK_OK
+
+    frames = 6
+    clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
+    estimator = _ScriptedEstimator(
+        [_pose(True), _pose(True), None, None, None, None]
+    )
+    storage = _FakeStorage()
+
+    exit_code, _observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=estimator,
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=_config(_schedule(inside=True)),
+        phone_script=[(None, 0.0)],
+        storage=storage,
+        spoken=True,
+    )
+
+    assert exit_code == 0
+    assert len(alerter.calls) == 1
+    speak_events = [event for event in storage.events if event.type == EVENT_SPEAK_OK]
+    assert len(speak_events) == 1, storage.events
+    assert speak_events[0].label == "leave_frame"
+    assert speak_events[0].alert is False
+
+
+def test_loi_loa_thi_ghi_su_kien_speak_failed(monkeypatch, tmp_path):
+    """``outcome.error`` → ``EVENT_SPEAK_FAILED``, và vòng lặp không chết."""
+    from posture_monitor.state import EVENT_SPEAK_FAILED
+
+    frames = 6
+    clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
+    estimator = _ScriptedEstimator(
+        [_pose(True), _pose(True), None, None, None, None]
+    )
+    storage = _FakeStorage()
+    logger = _QuietLogger()
+
+    exit_code, _observed, _alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=estimator,
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=_config(_schedule(inside=True)),
+        phone_script=[(None, 0.0)],
+        storage=storage,
+        logger=logger,
+        error="CameraAudioUnavailable: camera từ chối backchannel",
+    )
+
+    assert exit_code == 0, "lỗi loa không được giết vòng lặp"
+    failed = [
+        event for event in storage.events if event.type == EVENT_SPEAK_FAILED
+    ]
+    assert len(failed) == 1, storage.events
+    assert failed[0].label == "leave_frame"
+    assert any("SPEAK_FAILED" in line for line in logger.warnings), logger.warnings
+
+
+def test_tat_tieng_khong_phai_speak_failed_va_van_ghi_su_kien(monkeypatch, tmp_path):
+    """Tắt tiếng: KHÔNG có ``SPEAK_FAILED``, nhưng ``storage.record`` vẫn chạy.
+
+    §3.3 nói rõ tắt tiếng "không phát ra loa nhưng vẫn ghi sự kiện". Ở đây
+    quan sát ``record`` (theo khung), không phải ``record_event``.
+    """
+    from posture_monitor.state import EVENT_SPEAK_FAILED
+
+    frames = 6
+    clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
+    estimator = _ScriptedEstimator(
+        [_pose(True), _pose(True), None, None, None, None]
+    )
+    storage = _FakeStorage()
+
+    exit_code, _observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=estimator,
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=_config(_schedule(inside=True)),
+        phone_script=[(None, 0.0)],
+        state=_muted_state(),
+        storage=storage,
+    )
+
+    assert exit_code == 0
+    assert len(alerter.calls) == 1, alerter.calls
+    assert all(event.type != EVENT_SPEAK_FAILED for event in storage.events), (
+        storage.events
+    )
+    # Mỗi khung vẫn được ghi xuống DB, kể cả khi đang tắt tiếng.
+    assert len(storage.records) == frames, len(storage.records)
+    assert all(update.events is not None for update, _ in storage.records)
