@@ -46,7 +46,13 @@ import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
-from .config import ONVIF_PASSWORD_ENV, REDACTED, redact_camera_source
+from .config import (
+    ONVIF_PASSWORD_ENV,
+    REDACTED,
+    camera_credentials,
+    camera_source_host,
+    redact_camera_source,
+)
 from .logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -232,8 +238,22 @@ def speaker_config_from_config(config: Any) -> SpeakerConfig:
             "config.yaml (kèm 'camera.speaker.host') rồi thử lại."
         )
 
-    user = str(_section_value(speaker, "user", "") or "")
-    password = os.environ.get(ONVIF_PASSWORD_ENV, "")
+    raw_user = str(_section_value(speaker, "user", "") or "")
+    camera = getattr(config, "camera", None)
+    source = str(_section_value(camera, "source", "") or "")
+
+    # Tài khoản theo **một** quy tắc duy nhất, dùng chung với ``camera.onvif``
+    # (:func:`posture_monitor.config.camera_credentials`):
+    #   1) ``POSTURE_ONVIF_PASSWORD`` thắng;
+    #   2) không có thì lấy cặp tài khoản nhúng trong ``camera.source``;
+    #   3) không có nguồn nào → mật khẩu rỗng, nơi gọi tự báo lỗi.
+    # Không đọc thẳng ``os.environ`` ở đây: một bản sao thứ hai của quy tắc ưu
+    # tiên là chỗ để hai tài nguyên của cùng camera lệch nhau.
+    user, password = camera_credentials(raw_user, source)
+    if password and not user:
+        # ``camera.speaker.user`` trống mà có mật khẩu → ``admin``, đúng mặc
+        # định của ``camera.onvif``.
+        user = "admin"
 
     stream_uri = _section_value(speaker, "stream_uri", None)
     if not stream_uri:
@@ -241,22 +261,33 @@ def speaker_config_from_config(config: Any) -> SpeakerConfig:
     if stream_uri:
         return SpeakerConfig.from_uri(str(stream_uri), user=user, password=password)
 
-    host = _section_value(speaker, "host", None)
+    host = str(_section_value(speaker, "host", None) or "").strip()
+    if not host:
+        # Cùng quy ước với ``camera.onvif.host``: trống thì suy từ
+        # ``camera.source`` khi đó là URL RTSP. Một địa chỉ camera, một nơi
+        # khai — người dùng chỉ đặt ``POSTURE_CAMERA_SOURCE`` là đủ để cả PTZ
+        # lẫn loa hoạt động. Host điền tay luôn thắng (nhánh trên).
+        host = camera_source_host(source)
     if not host:
         raise CameraAudioConfigError(
             "Thiếu 'camera.speaker.host' nên chưa biết phát tiếng vào camera "
-            "nào."
+            "nào. Điền 'camera.speaker.host' trong config.yaml, hoặc đặt "
+            "'camera.source' thành URL RTSP có host (ví dụ qua biến môi "
+            "trường POSTURE_CAMERA_SOURCE)."
         )
 
     if user and not password:
+        # Chen host thì phải che: người dùng hay dán cả URL RTSP có mật khẩu
+        # vào ô host, và thông điệp này lọt ra web/log.
+        safe_host = redact_camera_source(host)
         raise CameraAudioConfigError(
-            f"Đã đặt 'camera.speaker.user' nhưng chưa có mật khẩu. Đặt biến "
-            f"môi trường {ONVIF_PASSWORD_ENV} rồi chạy lại (đừng ghi mật khẩu "
-            "vào config.yaml vì file đó được commit)."
+            f"Đã đặt 'camera.speaker.user' nhưng chưa có mật khẩu cho camera "
+            f"{safe_host!r}. Đặt biến môi trường {ONVIF_PASSWORD_ENV} rồi chạy "
+            "lại (đừng ghi mật khẩu vào config.yaml vì file đó được commit)."
         )
 
     return SpeakerConfig(
-        host=str(host),
+        host=redact_camera_source(host),
         port=int(_section_value(speaker, "port", 554) or 554),
         stream_path=str(
             _section_value(speaker, "stream_path", DEFAULT_STREAM_PATH)

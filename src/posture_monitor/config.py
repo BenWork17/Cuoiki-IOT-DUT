@@ -506,6 +506,15 @@ def _source_host(source: str) -> str:
     return host
 
 
+def camera_source_host(source: str) -> str:
+    """Host suy ra từ ``camera.source``, dùng chung cho ONVIF và loa.
+
+    Bọc :func:`_source_host` thành tên công khai để ``camera_audio`` dùng lại
+    thay vì viết bản sao phân tích URL thứ hai. Trả ``""`` khi nguồn không
+    phải URL RTSP (``usb:0``, ``file:``, ``picamera``).
+    """
+    return _source_host(source)
+
 def _source_credentials(source: str) -> tuple[str, str]:
     """``(user, password)`` nhúng trong URL ``camera.source``; rỗng nếu không có.
 
@@ -601,11 +610,14 @@ def _check_onvif_ready(
         )
 
 
-def onvif_credentials(onvif: OnvifConfig, source: str) -> tuple[str, str]:
-    """``(user, password)`` để mở phiên ONVIF, theo thứ tự ưu tiên.
+def camera_credentials(user: str, source: str) -> tuple[str, str]:
+    """``(user, password)`` cho **một tài nguyên bất kỳ** của camera.
 
-    1. ``POSTURE_ONVIF_PASSWORD`` có giá trị → dùng ``camera.onvif.user`` (mặc
-       định ``admin``) với mật khẩu đó. Biến môi trường luôn thắng.
+    Dùng chung cho ONVIF (PTZ) và loa (RTSP backchannel): cả hai là hai tài
+    nguyên của **cùng một** camera nên cùng một tài khoản. Thứ tự ưu tiên:
+
+    1. ``POSTURE_ONVIF_PASSWORD`` có giá trị → ``user`` truyền vào (``admin``
+       nếu rỗng ở nơi gọi) với mật khẩu đó. Biến môi trường luôn thắng.
     2. Không có thì lấy cặp tài khoản nhúng trong URL ``camera.source`` — cùng
        một camera nên cùng một tài khoản.
     3. Không có nguồn nào → ``""`` cho mật khẩu; nơi gọi tự báo lỗi.
@@ -614,11 +626,20 @@ def onvif_credentials(onvif: OnvifConfig, source: str) -> tuple[str, str]:
     """
     env_password = onvif_password()
     if env_password:
-        return onvif.user, env_password
-    user, password = _source_credentials(source)
-    if password:
-        return user, password
-    return onvif.user, ""
+        return user, env_password
+    source_user, source_password = _source_credentials(source)
+    if source_password:
+        return source_user, source_password
+    return user, ""
+
+def onvif_credentials(onvif: OnvifConfig, source: str) -> tuple[str, str]:
+    """``(user, password)`` để mở phiên ONVIF; xem :func:`camera_credentials`.
+
+    Giữ tên riêng vì ``camera.onvif.user`` là trường của
+    :class:`OnvifConfig`; quy tắc ưu tiên nằm ở một chỗ duy nhất để loa dùng
+    lại được mà không có bản sao thứ hai của logic phân tích URL.
+    """
+    return camera_credentials(onvif.user, source)
 
 
 def _parse_speaker(raw: Any) -> CameraSpeakerConfig:
@@ -654,11 +675,9 @@ def _parse_speaker(raw: Any) -> CameraSpeakerConfig:
         raise ConfigError(
             "'camera.speaker.port' phải nằm trong khoảng 1..65535."
         )
-    if cfg.enabled and not cfg.host.strip():
-        raise ConfigError(
-            "'camera.speaker.enabled' là true nhưng 'camera.speaker.host' "
-            "đang trống. Điền địa chỉ camera IP (ví dụ 192.168.1.50)."
-        )
+    # Kiểm tra "enabled nhưng thiếu host" **không** làm ở đây: host có thể suy
+    # từ ``camera.source``, mà nguồn chưa được chốt (biến môi trường áp sau).
+    # Việc đó nằm ở :func:`_parse_camera`, sau khi biết nguồn cuối cùng.
     if "://" in cfg.host:
         # Lỗi hay gặp: dán cả URL RTSP (có mật khẩu) vào ô host. Thông điệp
         # phải che userinfo — URL đó chứa mật khẩu thật.
@@ -694,6 +713,20 @@ def _parse_camera(raw: Any) -> CameraConfig:
     # bằng biến môi trường), nên host suy ra từ URL RTSP phản ánh đúng camera
     # đang dùng.
     cfg.onvif = _resolve_onvif(cfg.onvif, cfg.source, from_env=bool(override))
+
+    # Loa cũng nhận host từ cùng nguồn đó, nên phép kiểm tra phải chạy **sau**
+    # khi nguồn đã chốt: ``enabled: true`` + host trống là hợp lệ khi
+    # ``camera.source`` là URL RTSP — ``speaker_config_from_config`` (nơi thật
+    # sự mở phiên) mới suy host. Ở đây chỉ chặn trường hợp chắc chắn không có
+    # cách nào suy ra, để lỗi hiện lúc nạp chứ không đợi tới lúc phát tiếng.
+    if cfg.speaker.enabled and not cfg.speaker.host.strip():
+        if not _source_host(cfg.source):
+            raise ConfigError(
+                "'camera.speaker.enabled' là true nhưng không xác định được "
+                "'camera.speaker.host': mục đó đang trống và 'camera.source' "
+                "không phải URL RTSP có host. Điền 'camera.speaker.host' (ví "
+                "dụ 192.168.1.50) hoặc đặt 'camera.source' thành URL RTSP."
+            )
     if cfg.width <= 0 or cfg.height <= 0:
         raise ConfigError(
             f"'camera.width' và 'camera.height' phải là số dương, nhận được "

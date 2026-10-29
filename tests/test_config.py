@@ -295,6 +295,30 @@ def test_speaker_enabled_without_host_raises_config_error(tmp_path: Path) -> Non
     assert "camera.speaker.host" in str(excinfo.value)
 
 
+def test_speaker_enabled_without_host_loads_when_source_is_rtsp(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``enabled: true`` + host trống **hợp lệ** khi ``camera.source`` có host.
+
+    Host được suy từ ``camera.source`` ở :func:`speaker_config_from_config`,
+    nên chặn ngay lúc nạp sẽ khoá cứng tính năng dù đủ thông tin để suy ra.
+    """
+    monkeypatch.setenv(
+        "POSTURE_CAMERA_SOURCE", "rtsp://admin:mat-khau-gia@192.0.2.77:554/1/2"
+    )
+    text = (
+        "camera:\n"
+        "  source: usb:0\n"
+        "  speaker:\n"
+        "    enabled: true\n"
+        '    host: ""\n'
+    )
+    config = load_config(_write(tmp_path, text))
+
+    assert config.camera.speaker.host == ""
+    assert config.camera.source == "rtsp:rtsp://admin:mat-khau-gia@192.0.2.77:554/1/2"
+
+
 def test_speaker_port_out_of_range_raises_config_error(tmp_path: Path) -> None:
     text = "camera:\n  source: usb:0\n  speaker:\n    port: 70000\n"
     with pytest.raises(ConfigError) as excinfo:

@@ -46,12 +46,14 @@ camera:
   # Gộp hai mục làm một sẽ khiến cấu hình bên này ghi đè bên kia.
   speaker:
     enabled: false       # true thì /api/speak mới phát được
-    host: ""             # ví dụ "192.168.1.50"; để trống khi chưa dùng
+    host: ""             # trống = suy ra từ camera.source (giống camera.onvif)
     port: 554            # cổng RTSP (không phải cổng HTTP ONVIF)
-    user: ""
+    user: ""             # trống = tài khoản trong camera.source, không có thì "admin"
     stream_path: "/1/2"  # luồng phụ đã kiểm chứng cho backchannel
-    # Mật khẩu cũng KHÔNG nằm ở đây: dùng chung biến môi trường
-    # POSTURE_ONVIF_PASSWORD (một mật khẩu cho cả hai tài nguyên của camera).
+    # Mật khẩu cũng KHÔNG nằm ở đây. Thứ tự ưu tiên giống camera.onvif:
+    #   1) POSTURE_ONVIF_PASSWORD
+    #   2) tài khoản nhúng trong URL của POSTURE_CAMERA_SOURCE
+    # Nhờ vậy chỉ cần đặt POSTURE_CAMERA_SOURCE là cả PTZ lẫn loa chạy.
 
 model:
   name: yolo11n-pose     # dự phòng: yolov8n-pose
