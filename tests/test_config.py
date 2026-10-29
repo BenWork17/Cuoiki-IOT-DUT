@@ -18,6 +18,7 @@ from posture_monitor.config import (  # noqa: E402
     Config,
     ConfigError,
     load_config,
+    onvif_credentials,
     parse_camera_source,
 )
 
@@ -506,3 +507,60 @@ def test_onvif_host_dang_url_rtsp_bi_che_trong_thong_diep(tmp_path, monkeypatch)
 
     message = str(excinfo.value)
     assert SECRET not in message
+
+
+def test_onvif_tu_bat_khi_chi_co_env_password(tmp_path, monkeypatch):
+    """``auto`` + ``POSTURE_ONVIF_PASSWORD`` + URL **không** có tài khoản → bật.
+
+    Đây là đường triển khai mà tài liệu khuyên dùng: mật khẩu để trong biến
+    môi trường chứ không nhét vào URL. ``enabled`` = ``auto`` chỉ được quyết
+    định dựa trên *có mật khẩu từ bất kỳ nguồn nào*, không phải chỉ URL.
+
+    Test này khoá đúng tổ hợp đó. Hai test lân cận
+    (``test_onvif_tu_bat_khi_chi_co_source_co_mat_khau`` và
+    ``test_onvif_tu_tat_khi_source_khong_co_mat_khau``) đều giả định "nguồn
+    mật khẩu duy nhất là URL", nên một bản "đơn giản hoá" hàm
+    ``_resolve_onvif`` thành ``_source_credentials(source)[1]`` vẫn làm chúng
+    xanh trong khi đường khuyến nghị trong README §7.2 chết.
+    """
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, SECRET)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, "rtsp://192.0.2.77:554/1/2")
+
+    config = load_config(_write_source(tmp_path, "usb:0"))
+
+    assert config.camera.source == "rtsp:rtsp://192.0.2.77:554/1/2"
+    assert config.camera.onvif.host == "192.0.2.77", "host vẫn suy từ source"
+    assert config.camera.onvif.enabled is True, (
+        "có mật khẩu từ biến môi trường là đủ để auto bật"
+    )
+    assert SECRET not in repr(config)
+
+
+def test_env_password_thang_tai_khoan_nhung_trong_source(tmp_path, monkeypatch):
+    """Cả hai nguồn đều có mật khẩu **khác nhau** → biến môi trường thắng.
+
+    Tài liệu hứa "``POSTURE_ONVIF_PASSWORD`` luôn thắng" (README §4,
+    ``docs/WEB_DASHBOARD.md`` §7.2). Nếu ai đó đảo thứ tự ưu tiên trong
+    :func:`onvif_credentials` thì người dùng đổi mật khẩu bằng biến môi trường
+    sẽ thấy camera từ chối đăng nhập mà không hiểu vì sao.
+    """
+    env_secret = "mat-khau-tu-env"
+    source_secret = "mat-khau-trong-url"
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, env_secret)
+    monkeypatch.setenv(
+        CAMERA_SOURCE_ENV, f"rtsp://nguoi-dung-url:{source_secret}@192.0.2.77:554/1/2"
+    )
+
+    config = load_config(_write_source(tmp_path, "usb:0"))
+    user, password = onvif_credentials(
+        config.camera.onvif, config.camera.source
+    )
+
+    assert password == env_secret, "biến môi trường phải thắng URL"
+    assert password != source_secret
+    # Tài khoản đi kèm mật khẩu env là ``camera.onvif.user`` (mặc định
+    # ``admin``), không phải tên đăng nhập nhúng trong URL — cặp
+    # (user, password) phải đến từ **cùng một** nguồn.
+    assert user == config.camera.onvif.user
+    assert user != "nguoi-dung-url"
+    assert source_secret not in repr(config)
