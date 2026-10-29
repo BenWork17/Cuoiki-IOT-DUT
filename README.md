@@ -75,6 +75,32 @@ Vì vậy chỉ cài trần `ultralytics==8.4.191` (đã có trong `requirements
 ngay trên Pi. Chưa chạy resolve thật nên chưa khẳng định được pip cài được hay
 thất bại. Chi tiết: [`docs/SPEC_V2.md` §2b](docs/SPEC_V2.md).
 
+### 4. Điều khiển xoay camera (PTZ) — tuỳ chọn
+
+Bốn nút xoay trên dashboard dùng thư viện `rtsp-backchannel`, đã có trong
+`requirements.txt` ở bản đã kiểm chứng:
+
+```bash
+pip install rtsp-backchannel==0.5.2      # bước 2 đã cài nếu chạy -r requirements.txt
+```
+
+Thiếu thư viện này chương trình vẫn chạy (chỉ mất nút xoay, bấm vào sẽ báo
+tiếng Việt). Để PTZ dùng được, camera phải là camera IP RTSP. Chỉ cần **một**
+chỗ khai địa chỉ camera:
+
+```bash
+export POSTURE_CAMERA_SOURCE="rtsp://admin:matkhau@<ip-camera>:554/1/2"
+```
+
+Thay `<ip-camera>` bằng địa chỉ thật lúc chạy — đừng chép một IP cố định từ tài
+liệu, vì địa chỉ camera đổi theo mạng. Ở đây và trong toàn bộ tài liệu, mọi
+địa chỉ ví dụ đều là `192.0.2.x` (dải TEST-NET, không bao giờ là thiết bị thật).
+
+`camera.onvif.host` để trống sẽ tự lấy host từ URL trên, và tài khoản trong URL
+được dùng luôn cho ONVIF. Chỉ điền `camera.onvif.host` khi camera PTZ nằm ở
+host khác luồng ảnh; đặt `POSTURE_ONVIF_PASSWORD` để dùng mật khẩu khác với URL
+xem ảnh. Chi tiết: [`docs/WEB_DASHBOARD.md` §7](docs/WEB_DASHBOARD.md).
+
 ---
 
 ## Trạng thái camera trên Pi của dự án (đo ngày 28/10/2026)

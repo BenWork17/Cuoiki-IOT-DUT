@@ -189,3 +189,76 @@ web:
 - Favicon là `data:` URI nhúng trong HTML nên không phát sinh request mạng.
 
 Cập nhật: trạng thái mỗi 1 giây, số liệu biểu đồ mỗi 30 giây.
+
+---
+
+## 7. Điều khiển xoay camera (PTZ)
+
+Dashboard có bốn nút mũi tên (lên/xuống/trái/phải) gọi `POST /api/ptz`, route
+này nói chuyện với camera IP qua ONVIF. Bấm giữ thì camera xoay liên tục; nhả
+tay thì dừng. Bàn phím (Tab + Enter) cũng bấm được, mỗi lần một bước ngắn.
+
+### 7.1 Cài đặt
+
+```bash
+pip install rtsp-backchannel==0.5.2
+```
+
+Đã có trong `requirements.txt`. Thiếu thư viện thì chương trình vẫn chạy; chỉ
+nút xoay báo lỗi tiếng Việt kèm đúng câu lệnh cần chạy.
+
+### 7.2 Cấu hình — một địa chỉ camera, một nơi khai
+
+Camera IP đã được khai ở `camera.source`, nên **không lặp lại IP** ở mục ONVIF:
+
+```bash
+export POSTURE_CAMERA_SOURCE="rtsp://admin:matkhau@192.0.2.50:554/1/2"
+```
+
+`192.0.2.50` là địa chỉ **ví dụ** thuộc dải TEST-NET; thay bằng IP thật của
+camera lúc chạy. Đừng chép một IP cụ thể từ tài liệu: địa chỉ camera đổi theo
+mạng, và IP cũ sẽ thành hướng dẫn sai. Tài liệu này chỉ dùng `192.0.2.x`.
+
+| Khóa | Mặc định | Ý nghĩa |
+|---|---|---|
+| `camera.onvif.enabled` | `auto` | `auto` = bật khi xác định được host; `true` = bắt buộc (thiếu host/mật khẩu là lỗi lúc nạp); `false` = tắt hẳn |
+| `camera.onvif.host` | `""` | Để trống thì suy ra từ `camera.source` khi đó là URL `rtsp://`. Chỉ điền khi camera PTZ khác host luồng ảnh |
+| `camera.onvif.port` | `80` | Cổng **HTTP của ONVIF**, không phải cổng RTSP 554 |
+| `camera.onvif.user` | `admin` | Bị tài khoản nhúng trong `camera.source` thay khi dùng nó |
+
+Mật khẩu **không bao giờ** nằm trong `config.yaml`. Thứ tự ưu tiên:
+
+1. `POSTURE_ONVIF_PASSWORD` (biến môi trường) — luôn thắng.
+2. Tài khoản nhúng trong URL của `POSTURE_CAMERA_SOURCE` — cùng một camera thì
+   cùng một tài khoản, nên không phải nhập hai lần.
+
+Không có mật khẩu ở đâu cả thì PTZ tự coi là **tắt** (chương trình vẫn xem ảnh
+bình thường), và bấm nút sẽ hiện thông báo chỉ rõ hai biến môi trường cần đặt.
+
+### 7.3 Khi bấm nút mà không có gì xảy ra
+
+Route luôn trả JSON `{"ok": false, "message": "..."}` bằng tiếng Việt, và
+dashboard hiện nguyên câu đó ở dòng thông báo dưới các nút. Câu thường gặp:
+
+| Thông báo | Nguyên nhân |
+|---|---|
+| "...Đặt POSTURE_CAMERA_SOURCE thành URL RTSP..." | PTZ chưa có host: nguồn ảnh không phải RTSP và `camera.onvif.host` trống |
+| "...Đặt biến môi trường POSTURE_ONVIF_PASSWORD..." | Không có mật khẩu ở cả hai đường |
+| "Chưa cài thư viện điều khiển PTZ..." | Thiếu `rtsp-backchannel` |
+| "Không kết nối được tới camera để điều khiển PTZ..." | Sai IP/cổng ONVIF, hoặc camera không bật ONVIF |
+
+Đối chiếu bằng tay:
+
+```bash
+curl -s -X POST http://<ip-của-Pi>:8000/api/ptz \
+     -H 'Content-Type: application/json' \
+     -d '{"direction": "left", "duration": 0.5}'
+```
+
+### 7.4 Giới hạn
+
+- Mỗi lệnh xoay bị chặn ở **3 giây** (`camera_control.MAX_MOVE_DURATION_S`);
+  giao diện gửi từng bước 0,4 giây nên một lần bấm giữ dài là nhiều lệnh nối
+  tiếp, không phải một lệnh dài.
+- Camera không quảng cáo `ContinuousMove` sẽ trả 501 ("chỉ hỗ trợ preset") —
+  dự án chưa có đường điều khiển preset.

@@ -354,3 +354,144 @@ def test_ptz_khong_lo_thong_tin_mat_khau_tu_controller():
     )
     client = make_client(ptz=FakePtz(error=leaky))
     assert_json_error(client.post("/api/ptz", json={"direction": "left"}), 502)
+
+
+# ---------------------------------------------------------------------------
+# Giao diện: dashboard phải thật sự CÓ nút và thật sự gọi route
+# ---------------------------------------------------------------------------
+#
+# Backend có route mà giao diện không có nút thì người dùng bấm không ra gì —
+# đúng lỗi được báo. Test dưới đây đọc thẳng template và app.js (không chạy
+# JS), nên chúng khẳng định *dây nối tồn tại* chứ không khẳng định hành vi
+# trình duyệt. Phần hành vi (bấm giữ, khoá nút) được kiểm bằng mắt trên trình
+# duyệt thật, ghi rõ trong báo cáo.
+
+from posture_monitor.camera_control import DIRECTION_VECTORS  # noqa: E402
+
+_TEMPLATE = (
+    _REPO_ROOT / "src" / "posture_monitor" / "web" / "templates" / "index.html"
+)
+_APP_JS = _REPO_ROOT / "src" / "posture_monitor" / "web" / "static" / "app.js"
+
+
+def _html() -> str:
+    app = create_app(make_config(), state=DashboardState())
+    app.config.update(TESTING=True)
+    return app.test_client().get("/").get_data(as_text=True)
+
+
+def test_trang_chu_co_du_bon_nut_ptz_theo_dung_huong():
+    """Bốn ``data-ptz-direction`` khớp đúng tập hướng backend nhận.
+
+    So với ``DIRECTION_VECTORS`` chứ không đếm chuỗi: thêm một hướng ở backend
+    mà quên nút, hoặc đổi tên hướng, đều làm test đỏ.
+    """
+    import re
+
+    html = _html()
+    found = set(re.findall(r'data-ptz-direction="([^"]+)"', html))
+
+    assert found == set(DIRECTION_VECTORS), (
+        f"nút PTZ lệch so với backend: thiếu {set(DIRECTION_VECTORS) - found}, "
+        f"thừa {found - set(DIRECTION_VECTORS)}"
+    )
+
+
+def test_moi_nut_ptz_co_id_va_nhan_tieng_viet():
+    html = _html()
+    for direction in DIRECTION_VECTORS:
+        assert f'id="ptz-{direction}"' in html, direction
+    for label in (
+        'aria-label="Xoay camera lên"',
+        'aria-label="Xoay camera xuống"',
+        'aria-label="Xoay camera sang trái"',
+        'aria-label="Xoay camera sang phải"',
+    ):
+        assert label in html, label
+
+
+def test_trang_chu_khong_lo_thong_tin_dang_nhap_camera():
+    """HTML không được chứa mật khẩu hay host của camera."""
+    assert FAKE_PASSWORD not in _html()
+
+
+def _ptz_request_body_expression(script: str) -> str:
+    """Chuỗi đối số của ``JSON.stringify(...)`` trong lời gọi ``/api/ptz``.
+
+    Cắt đúng khối của lời gọi đó (cân bằng ngoặc) chứ không tìm chuỗi rời:
+    ``"direction"`` xuất hiện ở nhiều chỗ khác trong file, nên một assert
+    ``in script`` vẫn xanh dù thân request đã mất hướng — đúng lỗi mà test
+    này phải bắt.
+    """
+    anchor = script.index('"/api/ptz"')
+    start = script.index("JSON.stringify(", anchor) + len("JSON.stringify(")
+    depth = 1
+    for index in range(start, len(script)):
+        char = script[index]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return script[start:index]
+    raise AssertionError("JSON.stringify( không đóng ngoặc trong app.js")
+
+
+def test_app_js_goi_route_ptz_voi_huong_va_thoi_gian():
+    """Thân request ``POST /api/ptz`` phải có cả ``direction`` lẫn ``duration``."""
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    assert '"/api/ptz"' in script, "giao diện chưa nối vào route PTZ"
+    assert 'method: "POST"' in script
+
+    body = _ptz_request_body_expression(script)
+    assert "direction: direction" in body, (
+        f"thân request thiếu hướng; thực tế: {body!r}"
+    )
+    assert "duration: duration" in body, (
+        f"thân request thiếu thời gian; thực tế: {body!r}"
+    )
+    assert "pointerdown" in script, "thiếu bấm-giữ"
+    assert "pointerup" in script, "thiếu nhả tay để dừng xoay"
+
+
+def test_app_js_doc_du_bon_huong_tu_dom_va_khong_hardcode_danh_sach_huong():
+    """Chọn nút qua ``[data-ptz-direction]``: thêm nút trong HTML là chạy ngay."""
+    script = _APP_JS.read_text(encoding="utf-8")
+    assert 'querySelectorAll("[data-ptz-direction]")' in script
+    for direction in DIRECTION_VECTORS:
+        # Không được tự dựng danh sách hướng trong JS (hai nguồn sự thật).
+        assert f'"{direction}"' not in script, (
+            f"app.js hardcode hướng {direction!r}; hãy đọc từ data-ptz-direction"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phụ thuộc: người khác cài theo requirements.txt phải có nút xoay chạy được
+# ---------------------------------------------------------------------------
+
+_REQUIREMENTS = _REPO_ROOT / "requirements.txt"
+
+
+def test_requirements_pin_rtsp_backchannel():
+    """``requirements.txt`` phải ghim ``rtsp-backchannel`` đúng bản đã kiểm chứng.
+
+    Trên Pi venv trước đây thiếu thư viện này nên nút xoay báo 503 —
+    ``camera_control`` vẫn chạy nhờ import muộn, nhưng không ai cài được nó
+    từ repo. Test này khoá dòng phụ thuộc đó.
+    """
+    import re
+
+    text = _REQUIREMENTS.read_text(encoding="utf-8")
+    # Bỏ chú thích: dòng bị comment không cài được gì.
+    lines = [line.split("#", 1)[0].strip() for line in text.splitlines()]
+
+    assert "rtsp-backchannel==0.5.2" in lines, (
+        "requirements.txt phải có dòng 'rtsp-backchannel==0.5.2' (không comment)"
+    )
+    # Bản đã kiểm chứng thật trên camera của dự án; nới lỏng thành >= là mời
+    # một bản chưa ai thử.
+    assert not any(
+        re.match(r"^rtsp-backchannel\s*(?:>=|>|~=|!=|<=|<)", line)
+        for line in lines
+    ), "không được nới lỏng phiên bản rtsp-backchannel"

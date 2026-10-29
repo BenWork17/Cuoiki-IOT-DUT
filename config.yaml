@@ -17,18 +17,28 @@ camera:
   width: 640
   height: 480
   view: front            # front | side
-  # Điều khiển PTZ qua ONVIF (tuỳ chọn, tắt mặc định). Bật xong thì dashboard
-  # có nút xoay camera; route POST /api/ptz gọi xuống đây.
+  # Điều khiển PTZ qua ONVIF (tuỳ chọn). Dashboard có bốn nút xoay; route
+  # POST /api/ptz gọi xuống đây.
+  # QUY ƯỚC MỘT ĐỊA CHỈ CAMERA, MỘT NƠI KHAI:
+  #   - 'host' để trống thì suy ra từ 'camera.source' khi đó là URL rtsp://
+  #     (đặt qua POSTURE_CAMERA_SOURCE). Đó là đường khuyến nghị: chỉ một chỗ
+  #     chứa IP camera, không lặp lại ở đây.
+  #   - Điền 'host' chỉ khi camera PTZ khác host của luồng ảnh.
+  #   - 'enabled' để trống là TỰ ĐỘNG: bật khi xác định được host, tắt khi
+  #     không. Ghi false để chủ động tắt dù có host.
   # LƯU Ý: 'port' ở mục này là cổng HTTP ONVIF (mặc định 80), KHÔNG phải cổng
   # RTSP. Loa của camera nằm ở mục 'speaker' bên dưới, dùng cổng 554.
   onvif:
-    enabled: false
-    host: ""             # ví dụ "192.168.1.50"; để trống khi chưa dùng
+    enabled: auto        # auto | true | false
+    host: ""             # trống = suy ra từ camera.source
     port: 80             # cổng HTTP ONVIF (không phải RTSP)
-    user: "admin"
-    # Mật khẩu KHÔNG nằm trong file này (file được commit). Đặt biến môi trường
-    # POSTURE_ONVIF_PASSWORD trước khi chạy; enabled: true mà thiếu biến này
-    # thì chương trình báo lỗi cấu hình ngay lúc nạp.
+    user: "admin"        # bị tài khoản trong camera.source thay khi dùng nó
+    # Mật khẩu KHÔNG nằm trong file này (file được commit). Thứ tự ưu tiên:
+    #   1) POSTURE_ONVIF_PASSWORD
+    #   2) tài khoản nhúng trong URL của POSTURE_CAMERA_SOURCE
+    # 'enabled: true' mà cả hai đều không có thì báo lỗi cấu hình ngay lúc nạp.
+    # Nếu không có mật khẩu, PTZ tự coi như tắt và /api/ptz báo lỗi tiếng Việt
+    # chỉ rõ cách sửa.
   # Loa của camera IP, phát qua RTSP backchannel (route POST /api/speak).
   # Đây là một TÀI NGUYÊN KHÁC với mục 'onvif' ở trên và dùng cổng khác:
   #   - onvif.port   = cổng HTTP ONVIF (80) để điều khiển PTZ
