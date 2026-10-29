@@ -388,6 +388,92 @@ def test_unknown_kind_is_ignored_with_reason(tmp_path):
     assert controller.calls == []
 
 
+# --------------------------------------------------------------------------
+# Chuỗi bị truyền nhầm chỗ danh sách — guard ``isinstance(kinds, str)``
+# --------------------------------------------------------------------------
+def test_alert_many_accepts_bare_string_without_silently_dropping(tmp_path):
+    """``alert_many("phone")`` (chuỗi, không phải danh sách) **phải phát**.
+
+    Chuỗi cũng là ``Iterable[str]``, nên nếu thiếu guard ``isinstance(kinds,
+    str)`` thì ``"phone"`` bị lặp thành từng ký tự ``p, h, o, n, e``; không
+    ký tự nào có trong ``ALERT_TEXT`` nên kết quả là ``mode="skipped"``. Hệ
+    thống vẫn chạy, cooldown vẫn đúng, log vẫn sạch — và **không bao giờ báo
+    động**. Đó là kiểu hỏng tệ nhất, nên chốt lại: đúng một lần phát và
+    ``kind == "phone"``.
+    """
+    controller = FakeController()
+    alerter, _ = _alerter(tmp_path, controller=controller)
+    alerter.prepare()
+
+    outcome = alerter.alert_many(ALERT_PHONE_USE)  # chuỗi, không phải list
+
+    assert outcome.kind == ALERT_PHONE_USE
+    assert outcome.text == ALERT_TEXT[ALERT_PHONE_USE]
+    assert outcome.mode == MODE_SPEECH
+    assert outcome.spoken is True
+    assert len(controller.calls) == 1, controller.calls
+    assert controller.calls[0][0] == "file"
+
+
+def test_alert_with_bare_string_reaches_speaker_via_tuple_path(tmp_path):
+    """``alert("phone")`` phát được — đường này **không** đi qua guard chuỗi.
+
+    ``alert`` bọc thành ``(kind,)`` rồi mới gọi ``alert_many``, nên guard
+    ``isinstance(kinds, str)`` không tham gia. Ghi lại sự thật đó để hai đường
+    hỏng không bị gộp làm một: bỏ guard thì ``alert`` **vẫn** chạy, còn đổi
+    ``alert`` thành chuyền thẳng chuỗi thì lại cần guard.
+    """
+    controller = FakeController()
+    alerter, _ = _alerter(tmp_path, controller=controller)
+    alerter.prepare()
+
+    outcome = alerter.alert(ALERT_PHONE_USE)
+
+    assert outcome.kind == ALERT_PHONE_USE
+    assert outcome.mode == MODE_SPEECH
+    assert outcome.spoken is True
+    assert len(controller.calls) == 1, controller.calls
+    assert controller.calls[0][0] == "file"
+
+
+def test_alert_many_empty_string_is_skipped_without_error(tmp_path):
+    """Chuỗi rỗng → ``skipped`` có lý do, không ném lỗi, không phát gì."""
+    controller = FakeController()
+    alerter, _ = _alerter(tmp_path, controller=controller)
+    alerter.prepare()
+
+    outcome = alerter.alert_many("")
+
+    assert outcome.kind is None
+    assert outcome.mode == MODE_SKIPPED
+    assert outcome.spoken is False
+    assert outcome.reason
+    assert controller.calls == []
+
+
+@pytest.mark.parametrize(
+    "kinds",
+    [(ALERT_PHONE_USE,), [ALERT_PHONE_USE], {ALERT_PHONE_USE}],
+    ids=["tuple", "list", "set"],
+)
+def test_alert_many_container_forms_all_play_phone(tmp_path, kinds):
+    """Tuple, list, set cùng một phần tử cho cùng kết quả như chuỗi.
+
+    Guard không được làm hỏng những cách gọi vốn đã đúng.
+    """
+    controller = FakeController()
+    alerter, _ = _alerter(tmp_path, controller=controller)
+    alerter.prepare()
+
+    outcome = alerter.alert_many(kinds)
+
+    assert outcome.kind == ALERT_PHONE_USE
+    assert outcome.text == ALERT_TEXT[ALERT_PHONE_USE]
+    assert outcome.mode == MODE_SPEECH
+    assert outcome.spoken is True
+    assert len(controller.calls) == 1, controller.calls
+
+
 def test_alert_uses_injected_clock(tmp_path):
     """``now`` và ``clock`` tiêm được, để tầng gọi log đúng thời điểm."""
     clock = FakeClock(500.0)
