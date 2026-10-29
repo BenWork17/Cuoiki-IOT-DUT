@@ -30,7 +30,14 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from posture_monitor import schedule as schedule_mod  # noqa: E402
-from posture_monitor.config import Config, PresenceConfig  # noqa: E402
+from posture_monitor import state as state_mod  # noqa: E402
+from posture_monitor.classifier import HEAD_DOWN  # noqa: E402
+from posture_monitor.config import (  # noqa: E402
+    AlertsConfig,
+    Config,
+    PresenceConfig,
+    TimingConfig,
+)
 from posture_monitor.pose import PoseResult  # noqa: E402
 from posture_monitor.schedule import (  # noqa: E402
     DAY_NAMES,
@@ -137,6 +144,24 @@ class _AlerterHolder:
     instance: _RecordingAlerter
 
 
+class _RecordingDispatcher:
+    """Bộ đẩy phần cứng giả: ghi lại đúng ``StateUpdate`` mà vòng lặp đẩy đi.
+
+    Cần quan sát ``StateUpdate`` **sau** khi vòng lặp đã quyết định nội dung
+    ``labels``/``alerts`` — nhờ vậy test bắt được các bước biến đổi nằm giữa
+    ``classify`` và tầng cảnh báo, chứ không chỉ kiểm một hàm phụ.
+    """
+
+    def __init__(self) -> None:
+        self.updates: list = []
+
+    def dispatch(self, update) -> None:
+        self.updates.append(update)
+
+    def close(self) -> None:
+        pass
+
+
 def _make_phone_signal_fake(script):
     """``PhoneSignal`` giả: mỗi lần ``observe`` tiêu một mục của ``script``.
 
@@ -198,8 +223,15 @@ _WALL_TIME = datetime(2026, 10, 28, 19, 30)  # thứ Tư
 
 
 def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
-         phone_script, people=None, logger=None):
-    """Chạy ``_monitor_loop`` thật với các seam đã thay, trả kết quả quan sát."""
+         phone_script, people=None, logger=None, baseline=None, dispatcher=None,
+         state=None):
+    """Chạy ``_monitor_loop`` thật với các seam đã thay, trả kết quả quan sát.
+
+    ``baseline`` mặc định là baseline rỗng (mọi đặc trưng ``None``) để các bài
+    cũ không bị ảnh hưởng; bài mới truyền baseline thật khi cần ``classify``
+    sinh ra nhãn tư thế. ``dispatcher``/``state`` chuyển thẳng vào vòng lặp để
+    quan sát bản ``StateUpdate`` mà nó thật sự đẩy đi.
+    """
     import posture_monitor.__main__ as cli
     import posture_monitor.calibration as calibration_mod
     import posture_monitor.phone_detector as phone_mod
@@ -207,18 +239,16 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
     from posture_monitor.calibration import Baseline
     from posture_monitor.features import ALL_NAMES
 
-    monkeypatch.setattr(
-        calibration_mod,
-        "load",
-        lambda _path: Baseline(
+    if baseline is None:
+        baseline = Baseline(
             values={name: None for name in ALL_NAMES},
             view="front",
             width=640,
             height=480,
             created_at="",
             frames=0,
-        ),
-    )
+        )
+    monkeypatch.setattr(calibration_mod, "load", lambda _path: baseline)
     monkeypatch.setattr(cli.cv2, "namedWindow", lambda *a, **k: None)
     monkeypatch.setattr(cli.cv2, "imshow", lambda *a, **k: None)
     monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda *a, **k: None)
@@ -253,6 +283,8 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
         config,
         logger if logger is not None else _QuietLogger(),
         people=people,
+        state=state,
+        dispatcher=dispatcher,
         clock=clock,
         wall_clock=wall_clock,
     )
@@ -428,6 +460,200 @@ def test_cooldown_chi_mot_canh_bao_cho_hai_khung_lien_tiep(monkeypatch, tmp_path
     ]
     assert len(over_threshold) >= 2, observed
     assert len(alerter.calls) == 1, alerter.calls
+
+
+# ---------------------------------------------------------------------------
+# Bộ lọc nhãn tư thế và công tắc GPIO: hai bước biến đổi nằm **trong** vòng
+# lặp, giữa ``classify`` và tầng cảnh báo. Hai hàm phụ (``_loc_nhan_tu_the``,
+# ``AlertsConfig.gpio_alert_enabled``) đều đã có test riêng, nhưng test riêng
+# của chúng vẫn xanh khi vòng lặp **quên gọi**. Hai bài dưới đây chạy vòng
+# lặp thật và quan sát đúng ``StateUpdate`` mà nó đẩy cho ``dispatcher``.
+# ---------------------------------------------------------------------------
+
+#: Baseline "đầu rất cao": ``head_height`` chuẩn là 1.0, nên khung nào có
+#: ``head_height`` thấp hơn 0.70 đều vượt ``thresholds.head_down_ratio`` và
+#: ``classify`` sinh đúng nhãn ``HEAD_DOWN``. ``shoulder_width``/
+#: ``shoulder_mid_x`` là bắt buộc để ``extract`` tính được ``closeness``/
+#: ``lean_x`` (nếu thiếu, ``Baseline`` ném ``CalibrationError``).
+_BASE_HEAD_HEIGHT = 1.0
+
+
+def _baseline_dau_thap():
+    """Baseline front làm ``HEAD_DOWN`` bắn ra chắc chắn ở mọi khung."""
+    from posture_monitor.calibration import Baseline
+    from posture_monitor.features import ALL_NAMES
+
+    values = {name: None for name in ALL_NAMES}
+    values.update(
+        {
+            "shoulder_width": 100.0,
+            "shoulder_mid_x": 100.0,
+            "head_height": _BASE_HEAD_HEIGHT,
+            "shoulder_tilt_deg": 0.0,
+            "head_tilt_deg": 0.0,
+            "head_yaw": 0.0,
+            "lean_x": 0.0,
+        }
+    )
+    return Baseline(
+        values=values, view="front", width=640, height=480, created_at="", frames=0
+    )
+
+
+def _pose_head_down() -> PoseResult:
+    """Người ngồi với đầu cúi thấp: vai ngang, mũi thấp hơn vai rõ rệt.
+
+    ``shoulder_width`` = 100 px nên ``head_height`` = (mid_y - nose_y) / 100.
+    Đặt mũi **dưới** vai (``nose_y > mid_y``) cho ``head_height`` âm — nhỏ
+    hơn hẳn ``1.0 * 0.70`` nên ``HEAD_DOWN`` luôn bật.
+    """
+    xy = np.full((17, 2), 100.0, dtype=np.float32)
+    xy[5] = (50.0, 100.0)   # vai trái
+    xy[6] = (150.0, 100.0)  # vai phải → mid_y = 100, width = 100
+    xy[0] = (100.0, 200.0)  # mũi thấp hơn vai 100 px → head_height = -1.0
+    conf = np.zeros(17, dtype=np.float32)
+    conf[[0, 5, 6]] = 0.9
+    bbox = np.array([10.0, 10.0, 200.0, 300.0], dtype=np.float32)
+    return PoseResult(xy=xy, conf=conf, bbox=bbox)
+
+
+def _run_voi_dispatch(monkeypatch, tmp_path, *, config, frames=6,
+                      estimator=None, baseline=None, state=None):
+    """Chạy vòng lặp thật với dispatcher ghi lại; trả ``(exit, updates)``."""
+    dispatcher = _RecordingDispatcher()
+    if estimator is None:
+        estimator = _ScriptedEstimator([_pose_head_down()] * frames)
+    if baseline is None:
+        baseline = _baseline_dau_thap()
+    exit_code, _observed, _alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=estimator,
+        frames=frames,
+        clock=_QueueClock([float(i) for i in range(2 * frames)]),
+        wall_clock=_StepWallClock(_WALL_TIME),
+        config=config,
+        phone_script=[(None, 0.0)],
+        baseline=baseline,
+        dispatcher=dispatcher,
+        state=state,
+    )
+    return exit_code, dispatcher.updates
+
+
+def test_vong_lap_ap_dung_bo_loc_nhan_tu_the(monkeypatch, tmp_path):
+    """``_monitor_loop`` phải gọi ``_loc_nhan_tu_the``; cả hai chiều trong một bài.
+
+    Xoá dòng ``labels = _loc_nhan_tu_the(labels, config.posture_labels_enabled)``
+    khỏi vòng lặp thì mọi test khác vẫn xanh (chúng kiểm hàm phụ, không kiểm
+    việc gọi). Ở đây vòng lặp thật chạy với pose "đầu cúi" nên ``classify``
+    sinh ``HEAD_DOWN``:
+
+    - ``posture_labels_enabled = False`` (mặc định) → nhãn **không** được lọt
+      tới ``dispatcher``;
+    - ``posture_labels_enabled = True`` → nhãn **phải** còn trong bản đẩy đi.
+
+    Hai vế trong cùng một bài để nó không thể xanh bằng cách luôn lọc hoặc
+    luôn không lọc.
+    """
+    frames = 6
+
+    # Vế 1: mặc định — nhãn tư thế bị lọc.
+    tat = _config(_schedule(inside=True))
+    tat.posture_labels_enabled = False
+    exit_tat, updates_tat = _run_voi_dispatch(
+        monkeypatch, tmp_path, config=tat, frames=frames
+    )
+
+    assert exit_tat == 0
+    assert updates_tat, "vòng lặp phải đẩy ít nhất một StateUpdate cho dispatcher"
+    labels_tat = [label for update in updates_tat for label in update.labels]
+    assert HEAD_DOWN not in labels_tat, (
+        "posture_labels_enabled=False nhưng HEAD_DOWN vẫn tới dispatcher: "
+        f"{sorted(set(labels_tat))} — vòng lặp không áp dụng bộ lọc nhãn tư thế."
+    )
+
+    # Vế 2: bật lên — cùng pose, cùng baseline, nhãn phải được giữ.
+    bat = _config(_schedule(inside=True))
+    bat.posture_labels_enabled = True
+    exit_bat, updates_bat = _run_voi_dispatch(
+        monkeypatch, tmp_path, config=bat, frames=frames
+    )
+
+    assert exit_bat == 0
+    assert updates_bat, "vòng lặp phải đẩy ít nhất một StateUpdate cho dispatcher"
+    labels_bat = [label for update in updates_bat for label in update.labels]
+    assert HEAD_DOWN in labels_bat, (
+        "posture_labels_enabled=True nhưng HEAD_DOWN không tới dispatcher: "
+        f"{sorted(set(labels_bat))} — bộ lọc đang lọc quá tay."
+    )
+
+
+def test_vong_lap_chan_gpio_khi_tat(monkeypatch, tmp_path):
+    """``alerts.gpio_alert_enabled`` phải chặn ``alerts`` **trong** vòng lặp.
+
+    Bỏ mệnh đề ``or not config.alerts.gpio_alert_enabled`` khỏi điều kiện
+    quanh ``dispatcher.dispatch`` thì suite vẫn xanh. Ở đây dùng
+    ``break_after_min = 0`` để máy trạng thái sinh ``EVENT_BREAK`` —
+    ``alert=True`` — ngay khung đầu, nên ``update.alerts`` **không rỗng** nếu
+    không bị chặn. Cần vậy để phép kiểm ``alerts == ()`` có nội dung: nếu
+    ``update.alerts`` vốn đã rỗng thì bài này xanh mà chẳng chứng minh gì.
+    """
+    frames = 3
+
+    def _config_break(gpio: bool) -> Config:
+        config = _config(_schedule(inside=True))
+        # ``break_after_min = 0``: ngồi 0 phút đã tới hạn → ``EVENT_BREAK``
+        # ngay khung đầu, kèm ``alert=True``.
+        timing = TimingConfig()
+        timing.break_after_min = 0.0
+        config.timing = timing
+        config.alerts = AlertsConfig(
+            gpio_alert_enabled=gpio, buzzer_enabled=True, vibration_enabled=True
+        )
+        return config
+
+    # Vế 1: công tắc tắt — ``alerts`` bị xoá, dù máy trạng thái có sinh alert.
+    tat = _config_break(gpio=False)
+    exit_tat, updates_tat = _run_voi_dispatch(
+        monkeypatch, tmp_path, config=tat, frames=frames
+    )
+
+    assert exit_tat == 0
+    assert updates_tat, "vòng lặp phải đẩy StateUpdate cho dispatcher"
+    # Nội dung phải có: ``EVENT_BREAK`` xuất hiện trong sự kiện của update.
+    loai_su_kien = [
+        event.type for update in updates_tat for event in update.events
+    ]
+    assert state_mod.EVENT_BREAK in loai_su_kien, (
+        "máy trạng thái không sinh EVENT_BREAK nên bài này không chứng minh "
+        f"được gì: {loai_su_kien}"
+    )
+    assert all(update.alerts == () for update in updates_tat), (
+        "gpio_alert_enabled=False nhưng dispatcher vẫn nhận alerts khác rỗng: "
+        f"{[u.alerts for u in updates_tat if u.alerts]} — công tắc GPIO không "
+        "chặn được trong vòng lặp."
+    )
+
+    # Vế 2: công tắc bật — ``alerts`` không bị xoá.
+    bat = _config_break(gpio=True)
+    exit_bat, updates_bat = _run_voi_dispatch(
+        monkeypatch, tmp_path, config=bat, frames=frames
+    )
+
+    assert exit_bat == 0
+    assert updates_bat, "vòng lặp phải đẩy StateUpdate cho dispatcher"
+    co_alert = [update for update in updates_bat if update.alerts]
+    assert co_alert, (
+        "gpio_alert_enabled=True nhưng không update nào có alerts: "
+        f"{[u.events for u in updates_bat]} — công tắc đang chặn cả khi bật."
+    )
+    # Và sự kiện bị chặn phải đúng là ``EVENT_BREAK`` đã sinh ở trên.
+    assert any(
+        event.type == state_mod.EVENT_BREAK
+        for update in co_alert
+        for event in update.alerts
+    ), "alert còn lại không phải EVENT_BREAK đã sinh"
 
 
 def test_presence_config_duoc_nap_va_anh_xa_vao_tracker():
