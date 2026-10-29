@@ -588,6 +588,8 @@ def _monitor_loop(
     phone_signal = None
     speaker_alerter = None
     alert_errors = 0
+    #: Số lần ghi sự kiện cảnh báo xuống DB thất bại; chỉ log lần đầu.
+    event_errors = 0
     try:
         presence_cfg = getattr(config, "presence", None)
         presence_tracker = PresenceTracker(
@@ -898,14 +900,43 @@ def _monitor_loop(
                                 decision.kind,
                             )
                         elif storage is not None:
-                            storage.record_event(
-                                Event(
-                                    ts=float(alert_now),
-                                    type=event_type,
-                                    label=decision.kind,
-                                    alert=True,
+                            # ``duration_s`` là thời gian điều kiện đã duy trì
+                            # liên tục — chính là giá trị ``should_alert`` vừa
+                            # dùng để quyết định, có sẵn trong ``held``. Bỏ
+                            # trống thì cột luôn 0,0 và lịch sử báo mọi cảnh
+                            # báo kéo dài 0 giây. ``held`` khởi tạo là ``{}``
+                            # ngay đầu khối nên luôn có ``.get``.
+                            #
+                            # Bọc riêng lời ghi DB: ``record_event`` ném thì
+                            # khối ``try`` ngoài nhảy thẳng vào ``except`` và
+                            # BỎ QUA ``last_alert_at[kind] = ...`` ở cuối khối
+                            # → cooldown không tiến → khung sau báo lại, lặp
+                            # mỗi khung. Lỗi ghi DB không được chặn bước tiến
+                            # cooldown, và cũng không được nuốt luôn phần loa
+                            # phía dưới (bài học ~18 000 dòng/giờ ở cuối khối).
+                            try:
+                                storage.record_event(
+                                    Event(
+                                        ts=float(alert_now),
+                                        type=event_type,
+                                        label=decision.kind,
+                                        duration_s=float(
+                                            held.get(decision.kind, 0.0)
+                                        ),
+                                        alert=True,
+                                    )
                                 )
-                            )
+                            except Exception as exc:  # noqa: BLE001 - spec §11.3
+                                event_errors += 1
+                                if event_errors == 1:
+                                    logger.warning(
+                                        "Không ghi được sự kiện cảnh báo '%s' "
+                                        "vào DB (%s); vẫn giám sát tiếp. Các "
+                                        "lỗi sau không ghi log để tránh ngập "
+                                        "log.",
+                                        decision.kind,
+                                        exc,
+                                    )
                         if speaker_alerter is not None:
                             # ``speaker_alerter is None`` nghĩa là chưa cấu
                             # hình loa: không có gì để nói, nên cũng không ghi
