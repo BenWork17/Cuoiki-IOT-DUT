@@ -210,6 +210,22 @@ def test_khong_co_tep_phu_thi_van_unknown(tmp_path: Path) -> None:
             json.dumps({"version": THRESHOLD_VERSION, "threshold": "cao"}),
             id="khong-phai-so",
         ),
+        # JSON hợp lệ nhưng số nguyên quá lớn: ``float(10**400)`` ném
+        # ``OverflowError`` (lớp con của ``ArithmeticError``, KHÔNG phải
+        # ``ValueError``). Không bắt nó thì constructor chết và dashboard không
+        # dựng lên được — đúng lời hứa "không bao giờ ném" ở §11.3/§11.4.
+        pytest.param(
+            json.dumps(
+                {"version": THRESHOLD_VERSION, "threshold": 10**400, "updated_at": 0}
+            ),
+            id="so-nguyen-qua-lon",
+        ),
+        pytest.param(
+            json.dumps(
+                {"version": THRESHOLD_VERSION, "threshold": -(10**400), "updated_at": 0}
+            ),
+            id="so-nguyen-am-qua-lon",
+        ),
         pytest.param(
             json.dumps({"version": THRESHOLD_VERSION}),
             id="thieu-nguong",
@@ -226,6 +242,8 @@ def test_tep_phu_hong_thi_unknown_va_chi_canh_bao(
 
     try:
         assert service._auto_threshold is None
+        # Dịch vụ phải chạy tiếp được, không chỉ "không ném lúc dựng".
+        assert set(service.signals()) == {"presence", "phone", "identity"}
         state, _, _ = service._classify(np.array(BASE_VECTOR))
         assert state == IDENTITY_UNKNOWN
         assert len(logger.warnings) == 1, logger.warnings

@@ -248,7 +248,11 @@ def _parse_threshold_payload(payload: Any) -> float:
         raise ValueError("ngưỡng phải là số thực, không phải bool")
     try:
         value = float(raw)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
+        # ``OverflowError`` (``ArithmeticError``, không phải ``ValueError``) khi
+        # JSON hợp lệ chứa số nguyên quá lớn, ví dụ ``10**400``: ``float()``
+        # không biểu diễn nổi. Không bắt nó ở đây thì constructor và dashboard
+        # chết vì một tệp phụ — trái lời hứa của ``_load_auto_threshold``.
         raise ValueError(f"ngưỡng không phải số thực ({raw!r})") from exc
     if not math.isfinite(value):
         raise ValueError(f"ngưỡng không hữu hạn ({value!r})")
