@@ -595,6 +595,92 @@ def test_speaker_config_from_stream_uri_strips_credentials():
     assert speaker.stream_uri == "rtsp://camera.test:554/1/2"
 
 
+def test_speaker_host_derived_from_camera_source(monkeypatch):
+    """``camera.speaker.host`` trống → suy host + tài khoản từ ``camera.source``.
+
+    Cùng một quy ước với ``camera.onvif``: người dùng đặt
+    ``POSTURE_CAMERA_SOURCE`` một lần là cả PTZ lẫn loa biết camera ở đâu, khỏi
+    điền tay ``speaker.host`` rồi thêm ``POSTURE_ONVIF_PASSWORD``.
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    config = Config()
+    config.camera = _camera_with_speaker(
+        {"host": "", "port": 554, "stream_path": "/1/2"}
+    )
+    config.camera.source = "rtsp:rtsp://admin:s3cret-pw@10.0.0.9:554/1/2"
+
+    speaker = speaker_config_from_config(config)
+
+    assert speaker.host == "10.0.0.9"
+    assert speaker.user == "admin"
+    assert speaker.password == "s3cret-pw"
+    assert speaker.port == 554, "cổng RTSP, không kéo theo cổng HTTP ONVIF"
+    assert speaker.stream_uri == "rtsp://10.0.0.9:554/1/2"
+
+
+def test_explicit_speaker_host_wins_over_camera_source(monkeypatch):
+    """Host điền tay thắng; ``camera.source`` trỏ host khác không ghi đè."""
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    config = Config()
+    config.camera = _camera_with_speaker({"host": "10.0.0.9", "port": 554})
+    config.camera.source = "rtsp:rtsp://admin:s3cret-pw@10.9.9.9:554/1/2"
+
+    speaker = speaker_config_from_config(config)
+
+    assert speaker.host == "10.0.0.9"
+
+
+def test_onvif_password_env_wins_over_camera_source(monkeypatch):
+    """Biến môi trường thắng mật khẩu nhúng trong URL ``camera.source``."""
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, "env-pw")
+    config = Config()
+    config.camera = _camera_with_speaker({"host": "", "port": 554})
+    config.camera.source = "rtsp:rtsp://admin:s3cret-pw@10.0.0.9:554/1/2"
+
+    speaker = speaker_config_from_config(config)
+
+    assert speaker.password == "env-pw"
+    assert speaker.user == "admin"
+    assert speaker.host == "10.0.0.9"
+
+
+def test_speaker_without_host_or_rtsp_source_raises(monkeypatch):
+    """Nguồn không phải URL (``usb:0``) + host trống → lỗi tiếng Việt như cũ."""
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    config = Config()
+    config.camera = _camera_with_speaker({"host": "", "port": 554})
+    config.camera.source = "usb:0"
+
+    with pytest.raises(CameraAudioConfigError) as info:
+        speaker_config_from_config(config)
+
+    assert "camera.speaker.host" in str(info.value)
+
+
+def test_speaker_error_never_leaks_camera_password(monkeypatch):
+    """Thông điệp lỗi có chen ``host`` phải che mật khẩu nằm trong ``host``.
+
+    Người dùng hay dán cả URL RTSP vào ô ``camera.speaker.host``. Nhánh lỗi
+    "có user, chưa có mật khẩu" trích ``host`` vào thông điệp, nên đây là chỗ
+    dễ rò mật khẩu nhất. Nguồn đặt ``usb:0`` để **không** có tài khoản nào từ
+    ``camera.source`` — nhờ vậy nhánh lỗi thật sự chạy, không phải đi đường
+    khác rồi tình cờ không in mật khẩu.
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    config = Config()
+    config.camera = _camera_with_speaker(
+        {"host": "rtsp://admin:s3cret-pw@10.0.0.9", "user": "admin"}
+    )
+    config.camera.source = "usb:0"
+
+    with pytest.raises(CameraAudioConfigError) as info:
+        speaker_config_from_config(config)
+
+    message = str(info.value)
+    assert ONVIF_PASSWORD_ENV in message, "phải là lỗi thiếu mật khẩu"
+    assert "s3cret-pw" not in message
+
+
 def test_speaker_config_rejects_scheme_in_host():
     with pytest.raises(CameraAudioConfigError) as info:
         SpeakerConfig(host="rtsp://camera.test")
