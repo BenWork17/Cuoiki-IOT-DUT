@@ -24,6 +24,7 @@ trễ phải do ``benchmark`` sinh ra trên máy đích (spec §11.6).
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import threading
 import time
@@ -377,7 +378,7 @@ def _create_people_service(config, logger):
         store_dir = store_path.parent if str(store_path.parent) else Path(".")
         store = FaceStore(store_dir)
         recognizer = FaceRecognizer(face.detector, face.recognizer)
-        return PeopleService(
+        service = PeopleService(
             store,
             recognizer,
             threshold=face.match_threshold,
@@ -386,12 +387,72 @@ def _create_people_service(config, logger):
             schedule=getattr(config, "schedule", None),
             logger=logger,
         )
+        service.set_processor(
+            _build_face_processor(recognizer, face, logger)
+        )
+        return service
     except Exception:  # noqa: BLE001 - thiếu model kho không được giết dashboard
         logger.exception(
             "Không dựng được dịch vụ người học; dashboard vẫn chạy nhưng các "
             "tính năng người học sẽ trả 503."
         )
         return None
+
+
+def _build_face_processor(recognizer, face, logger):
+    """Đóng gói đường ống khuôn mặt **thật** cho :meth:`PeopleService.set_processor`.
+
+    Hai việc:
+
+    1. **Cổng nhịp ``face.interval_s``.** Hàm được gọi mỗi khung (5–6 FPS)
+       nhưng YuNet + SFace tốn 86,1 ms/lượt (§4.2), nên lượt bị chặn trả
+       :data:`~posture_monitor.people_service.OBSERVATION_SKIPPED` — **không**
+       trả ``None``, vì ``None`` nghĩa là "đã nhìn, không thấy mặt" và sẽ ghi
+       đè danh tính vừa nhận ra.
+    2. **Phát hiện rồi trích embedding trên khung gốc**, dùng chung một ảnh
+       cho cả hai bước nên toạ độ hộp mặt nhất quán, không cần ánh xạ ngược.
+       Không thấy mặt → ``None`` (UNKNOWN, đúng nghĩa). Lỗi model →
+       ``OBSERVATION_SKIPPED`` kèm cảnh báo: lỗi không phải "vắng mặt".
+
+    **Cố ý KHÔNG thu nhỏ khung về ``face.detect_width``.** Spec §5.13 yêu cầu
+    bước thu nhỏ, nhưng đo thật (OpenCV 4.13.0, model và ảnh thật) cho thấy
+    làm vậy sẽ mất mặt: ở ngưỡng detector mặc định ``0.9``, khung 704x576
+    phát hiện 1 mặt, còn khung 320x262 phát hiện **0 mặt**; quét 11 mức ảnh
+    nguồn thì ``@320 + 0.9`` không phát hiện được mặt nào. Thủ phạm là ngưỡng
+    điểm ``score_threshold`` của YuNet, không phải ``min_face_px`` (mặt ở 320
+    vẫn còn 68–74 px, trên mức lọc 40). Hạ ngưỡng xuống 0.6 sẽ bù lại được
+    nhưng thêm mặt giả — mỗi cái là một vector rác vào bộ phân loại danh
+    tính — và đổi ngưỡng ngoài ``config.yaml`` là điều spec §11 cấm. Vì vậy
+    detect chạy trên khung gốc, đúng hành vi đã được chứng minh hoạt động;
+    ``detect_width``/``clahe_enabled`` hiện vẫn chưa có người đọc.
+    """
+    from .people_service import OBSERVATION_SKIPPED  # noqa: PLC0415
+
+    interval_s = float(getattr(face, "interval_s", 2.0) or 2.0)
+    #: Lượt đầu phải luôn chạy: ``-inf`` bảo đảm ``now - last_at >= interval_s``.
+    state = {"last_at": -math.inf}
+
+    def processor(frame):
+        now = time.monotonic()
+        if now - state["last_at"] < interval_s:
+            return OBSERVATION_SKIPPED
+        state["last_at"] = now
+        try:
+            prepared = frame  # KHÔNG thu nhỏ — xem docstring ở trên.
+            faces = recognizer.detect(prepared)
+            if not faces:
+                return None
+            largest = max(faces, key=lambda detected: detected.area)
+            return recognizer.embedding(prepared, largest)
+        except Exception as exc:  # noqa: BLE001 - lỗi model không phải vắng mặt
+            logger.warning(
+                "Không nhận diện được khuôn mặt ở khung này (%s); giữ nguyên "
+                "danh tính gần nhất.",
+                exc,
+            )
+            return OBSERVATION_SKIPPED
+
+    return processor
 
 
 def _serve_web(app, config, logger) -> None:
