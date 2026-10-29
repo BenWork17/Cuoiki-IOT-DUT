@@ -17,7 +17,7 @@ COCO, ví dụ ``yolo11n``, và lấy lớp ``cell phone`` = :data:`PHONE_CLASS_
 này **không** gồm thời gian đọc khung và **không** phải khung camera thật.
 Nó **không** được dùng để khẳng định FPS nào: chi phí detect *trong pipeline
 thật* chưa từng được đo. Ghép nó vào phép đo pipeline thật duy nhất của dự
-án (pose-only, 199,39 ms → 5,01 FPS) cho 4,02 FPS ở nhịp 1/2 khung — tức
+án (pose-only, 199,25 ms → 5,02 FPS) cho 4,02 FPS ở nhịp 1/2 khung — tức
 **chưa đạt** 5 FPS. Muốn có số thật thì chạy
 ``python -m posture_monitor benchmark --profile pose_phone``
 (SPEC_V3 §4.3, §14 bước G).

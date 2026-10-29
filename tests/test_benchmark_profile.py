@@ -292,12 +292,99 @@ def test_spec_khong_con_so_fps_bia() -> None:
             )
 
 
+#: Bảng cho phép: số **không có** trong ``SPEC_V2.md`` nhưng vẫn là số đo thật
+#: của dự án. Đây là danh sách đóng và **cố ý nhỏ**: số nào tìm được trong
+#: ``SPEC_V2.md`` thì **không** được ở đây — test tự tìm ra nó.
+#:
+#: Mỗi mục phải ghi **đúng mức truy được của nguồn**, kể cả khi nguồn đó không
+#: tái lập được. Một cái tên nghe như tài liệu mà không tồn tại trong repo là
+#: đúng loại lỗi bài này đang chống — không được ghi "bench2.py" như thể nó là
+#: file trong repo khi `git log --all -- '*bench2*'` trả về 0 commit.
+_NGOAI_SPEC_V2 = {
+    # Đo bằng script tạm trên Pi ngày 2026-10-28. Script KHÔNG có trong repo,
+    # KHÔNG commit ở nhánh nào, nên số này **không tái lập được** từ mã nguồn.
+    # Vẫn giữ vì là số đo thật đã kiểm chứng trước đó — nhưng nhãn nguồn phải
+    # nói thẳng giới hạn đó.
+    "98,6": "script tạm trên Pi 2026-10-28 — KHÔNG có trong repo, KHÔNG tái lập được",
+    "98,7": "script tạm trên Pi 2026-10-28 — KHÔNG có trong repo, KHÔNG tái lập được",
+    "4,90": "max_fps của script tạm trên Pi 2026-10-28 — KHÔNG có trong repo, "
+            "KHÔNG tái lập được; là suy luận trên khung tổng hợp, không phải FPS pipeline",
+    # Đường ống khuôn mặt đo trên Pi 4, khung thật 704x576 — SPEC_V3 §4.2.
+    "86,1": "trọn đường ống khuôn mặt 86,1 ms/lượt, Pi 4, khung thật 704x576",
+    "99,9": "YuNet 704x576 (không thu nhỏ) 99,9 ms, Pi 4",
+    "19,3": "YuNet 320x262 19,3 ms, Pi 4",
+    "11,4": "CLAHE 320x262 11,4 ms, Pi 4",
+    "11,6": "trọn đường ống khuôn mặt 11,6 lượt/giây, Pi 4",
+}
+
+#: Đơn vị của **số đo hiệu năng** — thời gian, FPS, bộ nhớ, nhiệt. Đây là phạm
+#: vi của bài này, đúng với bảng cho phép ở trên.
+#:
+#: **Không** gồm KB/GB/byte: các khẳng định về dung lượng file model và kích
+#: thước embedding là một nhóm khác, không có trong bảng cho phép, và bài này
+#: **không** kiểm chứng chúng. Ghi rõ giới hạn thay vì giả vờ đã phủ.
+_DON_VI = r"(?:ms|FPS|fps|MiB|MB|°C|lượt/giây)"
+
+#: Dòng mang các nhãn này thì con số được phép **không** truy được nguồn, vì
+#: nhãn đã tự nói nó không phải số đo trực tiếp.
+_NHAN_MIEN_TRUY_NGUON = ("TÍNH TỪ ĐO", "GIẢ THUYẾT", "CHƯA ĐO")
+
+
+def test_moi_so_da_do_trong_spec_deu_truy_duoc_nguon() -> None:
+    """Mọi số đo hiệu năng gắn nhãn ĐÃ ĐO phải có nguồn: SPEC_V2 hoặc bảng cho phép.
+
+    Đây là hàng rào cho chính lỗi của §19: một con số được gắn "ĐÃ ĐO" mà
+    không bài đo nào sinh ra nó, rồi được chép sang ``config.yaml`` và
+    docstring. Luật: số mang đơn vị đo trên dòng có nhãn ĐÃ ĐO **phải** xuất
+    hiện nguyên văn trong ``SPEC_V2.md``, hoặc có trong
+    :data:`_NGOAI_SPEC_V2` kèm nguồn đo.
+
+    Số mang nhãn TÍNH TỪ ĐO / GIẢ THUYẾT / CHƯA ĐO thì bỏ qua — các nhãn đó
+    tự khai không phải số đo trực tiếp.
+
+    Phần §19 **được miễn**: đó là bảng vết đính chính, cố ý chép lại nguyên văn
+    cả số bịa lẫn nhãn cũ của nó (cột "Nhãn cũ") để người đọc sau thấy vì sao
+    số đổi. Xoá số khỏi đó là phá dấu vết. Phạm vi bài này là phần spec **đang
+    có hiệu lực**, tức trước §19.
+    """
+    assert _SPEC.is_file(), f"Không thấy spec: {_SPEC}"
+    spec_v2 = _REPO_ROOT / "docs" / "SPEC_V2.md"
+    assert spec_v2.is_file(), f"Không thấy SPEC_V2 để đối chiếu nguồn: {spec_v2}"
+
+    text = _SPEC.read_text(encoding="utf-8")
+    nguon = spec_v2.read_text(encoding="utf-8")
+    mau_so = re.compile(r"(\d[\d.,]*\d|\d)\s*" + _DON_VI)
+
+    # Cắt bỏ §19 (bảng vết đính chính) — xem docstring.
+    cat = text.find("\n## 19.")
+    assert cat != -1, "mất §19 của spec — không xác định được phạm vi kiểm"
+    hieu_luc = text[:cat]
+
+    thieu: list[str] = []
+    for so_dong, dong in enumerate(hieu_luc.splitlines(), start=1):
+        if "ĐÃ ĐO" not in dong and "ĐO THẬT" not in dong:
+            continue
+        if any(nhan in dong for nhan in _NHAN_MIEN_TRUY_NGUON):
+            continue
+        for so in mau_so.findall(dong):
+            if so in nguon or so in _NGOAI_SPEC_V2:
+                continue
+            thieu.append(f"SPEC_V3.md:{so_dong} — số {so!r}: {dong.strip()[:120]}")
+
+    assert not thieu, (
+        "Có con số gắn nhãn ĐÃ ĐO nhưng KHÔNG truy được nguồn. Mỗi số như vậy "
+        "phải có trong docs/SPEC_V2.md, hoặc được thêm vào bảng cho phép "
+        "_NGOAI_SPEC_V2 kèm nguồn đo thật. Nếu không truy được nguồn thì sửa "
+        "số trong spec, đừng nới lỏng test:\n  " + "\n  ".join(thieu)
+    )
+
+
 def test_spec_ghi_ro_moi_nhip_detect_deu_khong_dat() -> None:
     """§4.3 phải nói thẳng cả bốn nhịp detect đều chưa đạt 5 FPS."""
     text = _SPEC.read_text(encoding="utf-8")
     body = _section(text, "### 4.3 Ngân sách FPS", "## 5. Chi tiết")
 
-    for fps in ("3,36", "4,02", "4,31", "4,46"):
+    for fps in ("3,36", "4,02", "4,31", "4,47"):
         assert fps in body, f"§4.3 thiếu kết quả {fps} FPS cho một nhịp detect"
     assert "KHÔNG" in body
     # Kết luận phải nêu rõ detect chưa được đo trong pipeline thật.
@@ -410,3 +497,35 @@ def test_parser_co_profile_va_mac_dinh_la_pose() -> None:
     args = parser.parse_args([])
     assert args.profile == "pose"
     assert set(bench.PROFILES) >= {"pose", "pose_phone", "pose_phone_face"}
+
+
+def test_moi_ten_profile_trong_spec_deu_ton_tai() -> None:
+    """Mọi ``--profile <tên>`` nêu trong spec phải là hồ sơ ``benchmark`` có thật.
+
+    Lệnh nghiệm thu trong spec trước đây ghi ``--profile full``, nhưng
+    :data:`benchmark.PROFILES` chỉ có ``pose`` / ``pose_phone`` /
+    ``pose_phone_face``. Chép nguyên lệnh đó ra Pi là ``BenchmarkError`` ngay —
+    spec tự đưa ra một lệnh không chạy được. Bài này khoá lại: tên nào được
+    viết trong tài liệu thì phải chạy được thật, nếu không thì sửa tài liệu
+    hoặc thêm hồ sơ, không được để hai bên lệch nhau.
+    """
+    assert _SPEC.is_file(), f"Không thấy spec: {_SPEC}"
+    text = _SPEC.read_text(encoding="utf-8")
+
+    # Lấy tên hồ sơ, bỏ dấu bao kiểu ```--profile name` `` trong Markdown.
+    #
+    # Lookahead bắt buộc dấu phân cách sau tên: nếu không, câu văn Việt
+    # "--profile là: pose / pose_phone" sẽ bị đọc thành hồ sơ tên "l" (chữ
+    # "à" không thuộc [\w], nên "l" tách ra như một token riêng).
+    ten_trong_spec = set(
+        re.findall(r"--profile\s+([A-Za-z][A-Za-z0-9_]*)(?=[\s`),;.]|$)", text)
+    )
+    assert ten_trong_spec, "spec không còn lệnh --profile nào — kiểm lại regex"
+
+    thieu = sorted(ten_trong_spec - set(bench.PROFILES))
+    assert not thieu, (
+        f"spec nhắc tới --profile {thieu} nhưng benchmark.PROFILES chỉ có "
+        f"{sorted(bench.PROFILES)}. Lệnh nghiệm thu trong spec sẽ báo "
+        "BenchmarkError khi chạy trên Pi. Sửa tên trong spec cho khớp, hoặc "
+        "thêm hồ sơ vào PROVIDES — không được để spec và code lệch nhau."
+    )

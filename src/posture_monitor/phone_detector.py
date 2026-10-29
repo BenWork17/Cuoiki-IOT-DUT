@@ -27,8 +27,8 @@ chạy đó, bật pose và detect ở **mọi** khung đo được **4,90 FPS**
 
 Chi phí của detect **trong pipeline thật thì chưa được đo**. Phép đo
 pipeline thật duy nhất của dự án là pose-only trên camera thật 704x576:
-199,39 ms/khung → 5,01 FPS. Ghép detect cách khung vào đúng phép đo đó
-(199,39 + 49,35 ms) ra ≈ 4,02 FPS, **không đạt** mục tiêu ≥ 5 FPS — nên
+199,25 ms/khung → 5,02 FPS. Ghép detect cách khung vào đúng phép đo đó
+(199,25 + 49,3 ms) ra ≈ 4,02 FPS, **không đạt** mục tiêu ≥ 5 FPS — nên
 chưa có cơ sở nào để nói cấu hình detect cách khung đạt mục tiêu. Vì vậy
 ``phone.detect_every_n_frames`` vẫn là khóa cấu hình, mặc định ``2``, nhưng
 đó là **giá trị mặc định chưa có ngân sách đo**: phải chứng minh lại bằng

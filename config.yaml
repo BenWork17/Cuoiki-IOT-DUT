@@ -76,7 +76,7 @@ tracking:
 # không phải khung camera thật). Cùng lần chạy đó, pose + detect ở MỌI khung
 # đo được 4,90 FPS.
 # Chi phí detect trong pipeline thật CHƯA ĐO. Phép đo pipeline thật duy nhất
-# là pose-only 199,39 ms -> 5,01 FPS; ghép detect cách khung theo số đo đó ra
+# là pose-only 199,25 ms -> 5,02 FPS; ghép detect cách khung theo số đo đó ra
 # ~4,02 FPS, KHÔNG đạt >= 5 FPS. Vì vậy detect_every_n_frames = 2 chỉ là
 # mặc định CHƯA CÓ NGÂN SÁCH ĐO - cần đo lại bằng benchmark --profile pose_phone.
 phone:
