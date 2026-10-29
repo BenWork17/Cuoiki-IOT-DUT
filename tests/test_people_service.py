@@ -34,9 +34,13 @@ from posture_monitor.people_service import (  # noqa: E402
     IDENTITY_MATCH,
     IDENTITY_MISMATCH,
     IDENTITY_UNKNOWN,
+    PHONE_AGE_LIMIT_S,
+    PHONE_STATE_NONE,
+    PHONE_STATE_USE,
     STATE_CANCELLED,
     STATE_DONE,
     STATE_FAILED,
+    STATE_NO_DATA,
     STATE_RUNNING,
     PeopleService,
     PeopleServiceError,
@@ -405,6 +409,54 @@ def test_signals_cu_thi_khong_fresh_va_khong_doi_ket_luan(tmp_path: Path) -> Non
     assert signals["presence"]["age_s"] == pytest.approx(100.0)
     assert signals["presence"]["state"] == "co_mat"
     assert signals["phone"]["state"] == "dung"
+
+
+def test_note_phone_ghi_tin_hieu_dien_thoai_ma_khong_dung_update_signals(
+    tmp_path: Path,
+) -> None:
+    """``note_phone`` phải tới được đúng ô mà ``signals()`` đọc.
+
+    Lỗi gốc: vòng lặp gọi ``update_signals(presence=..., now=...)`` thiếu
+    ``phone=``, nên dòng "Điện thoại" trên dashboard đứng ở "chưa có dữ liệu"
+    vĩnh viễn trong khi loa vẫn báo dùng điện thoại. Test này khoá phương thức
+    thay thế **mà không đổi chữ ký** ``update_signals``.
+    """
+    service, _, clock = _service(tmp_path, threshold=0.5)
+
+    service.note_phone(PHONE_STATE_USE, now=clock.now)
+    signals = service.signals()
+
+    assert signals["phone"]["state"] == PHONE_STATE_USE
+    assert signals["phone"]["fresh"] is True
+    assert signals["phone"]["age_s"] == pytest.approx(0.0)
+    # Presence không được bị đụng tới: đây là tín hiệu riêng.
+    assert signals["presence"]["state"] == STATE_NO_DATA
+    assert signals["presence"]["age_s"] is None
+
+
+def test_note_phone_mac_dinh_lay_dong_ho_cua_dich_vu(tmp_path: Path) -> None:
+    """Không truyền ``now`` thì tuổi tính theo ``clock`` tiêm vào, không phải
+    ``time.monotonic`` thật — trộn hai gốc thời gian làm tuổi sai hàng nghìn
+    giây."""
+    service, _, clock = _service(tmp_path, threshold=0.5)
+    clock.advance(50.0)
+
+    service.note_phone(PHONE_STATE_NONE)
+
+    signals = service.signals()
+    assert signals["phone"]["state"] == PHONE_STATE_NONE
+    assert signals["phone"]["age_s"] == pytest.approx(0.0)
+
+
+def test_note_phone_het_han_thi_khong_doi_ket_luan_cu(tmp_path: Path) -> None:
+    service, _, clock = _service(tmp_path, threshold=0.5)
+    service.note_phone(PHONE_STATE_USE, now=clock.now)
+
+    clock.advance(PHONE_AGE_LIMIT_S + 1.0)
+    signals = service.signals()
+
+    assert signals["phone"]["fresh"] is False
+    assert signals["phone"]["state"] == PHONE_STATE_USE
 
 
 def test_signals_chua_co_du_lieu_thi_age_none(tmp_path: Path) -> None:

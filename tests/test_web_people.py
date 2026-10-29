@@ -545,6 +545,86 @@ def test_app_js_co_nhanh_du_lieu_cu_cho_tin_hieu():
     )
 
 
+def test_app_js_tra_bang_theo_dung_gia_tri_server_gui():
+    """Khoá tra bảng phải là giá trị server thật, không phải tên CSS.
+
+    Server gửi ``co_mat``/``vang_mat`` (``presence.STATE_PRESENT``/
+    ``STATE_ABSENT`` qua ``_presence_state``) và phone là ``dung``/
+    ``khong_dung``. Bản cũ tra ``present``/``absent`` nên ``grep -c co_mat
+    app.js`` = 0 và dòng "Có mặt" không bao giờ hiện đúng — một lỗi im lặng
+    vì nó chỉ hiện "Chưa rõ" chứ không ném lỗi.
+
+    Test tĩnh (không có bộ chạy JS trong bộ test này): đọc file và soát các
+    khoá của bảng nhãn. Ghi rõ đây là kiểm tra tĩnh trong báo cáo.
+    """
+    from posture_monitor import presence as presence_mod
+
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    # Mọi giá trị server-lived phải xuất hiện làm khoá bảng nhãn.
+    for state in (presence_mod.STATE_PRESENT, presence_mod.STATE_ABSENT):
+        assert f'"{state}"' in script, (
+            f"app.js không có khoá {state!r} trong bảng nhãn presence; "
+            "server gửi giá trị này nên dòng sẽ luôn hiện sai"
+        )
+    for state in ("dung", "khong_dung"):
+        assert f'"{state}"' in script, f"app.js không có khoá phone {state!r}"
+
+    # Khoá CSS cũ chỉ được là *giá trị* của bảng trạng thái, không được là
+    # khoá tra bảng nhãn.
+    for stale in ("present", "absent"):
+        assert f"{stale}:" not in script.split("PRESENCE_STATE")[0], (
+            f"app.js vẫn tra bảng presence bằng khoá cũ {stale!r}"
+        )
+
+
+def test_app_js_hop_dong_khoa_voi_hang_so_that_cua_people_service():
+    """Khoá phone trong ``app.js`` phải khớp hằng số trong ``people_service``.
+
+    Ràng buộc chéo hai file: đổi tên hằng ở server mà quên ``app.js`` thì
+    dashboard im lặng hiện "Chưa rõ" thay vì "Đang dùng" — đúng loại lỗi mà
+    brief này sửa. So trực tiếp hai nguồn.
+    """
+    from posture_monitor import people_service as people_mod
+
+    script = _APP_JS.read_text(encoding="utf-8")
+    for name in ("PHONE_STATE_NONE", "PHONE_STATE_USE"):
+        value = getattr(people_mod, name)
+        assert f'"{value}"' in script, (
+            f"app.js thiếu khoá {value!r} ({name} của people_service) — "
+            "hai nguồn đã lệch nhau"
+        )
+
+
+def test_app_js_gia_tri_la_thi_hien_gia_tri_tho_khong_im_lang():
+    """Giá trị lạ phải hiện nguyên văn, không bị nuốt thành "Chưa rõ" trần.
+
+    Im lặng thay bằng "Chưa rõ" làm một giá trị mới của server (hoặc lỗi đánh
+    máy) trông y hệt "chưa đo được", nên không ai biết để sửa. Hàm dự phòng
+    phải nhận chính giá trị đó làm tham số và chèn nó vào câu chữ.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    assert "function unknownText(rawState)" in script, (
+        "thiếu hàm dự phòng unknownText"
+    )
+    body_start = script.index("function unknownText(rawState)")
+    body = script[body_start : body_start + 700]
+    assert "String(rawState)" in body, (
+        "hàm dự phòng không đọc giá trị thô, nên không thể hiện nó"
+    )
+
+    # Các nhánh tra bảng phải gọi hàm này thay vì trả nhãn cố định.
+    func_start = script.index("function signalPresentation")
+    func_body = script[func_start : script.index("\n  }", func_start)]
+    assert "unknownText(" in func_body, (
+        "signalPresentation không dùng nhãn dự phòng cho giá trị lạ"
+    )
+    assert func_body.count('"Chưa rõ"') == 0, (
+        "còn nhánh trả thẳng \"Chưa rõ\", nuốt mất giá trị thật"
+    )
+
+
 def test_template_co_cho_hien_tuoi_tin_hieu(client):
     html = client.get("/").get_data(as_text=True)
     for kind in ("presence", "phone", "identity"):

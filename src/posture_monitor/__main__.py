@@ -24,6 +24,7 @@ trễ phải do ``benchmark`` sinh ra trên máy đích (spec §11.6).
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import threading
 import time
@@ -377,7 +378,7 @@ def _create_people_service(config, logger):
         store_dir = store_path.parent if str(store_path.parent) else Path(".")
         store = FaceStore(store_dir)
         recognizer = FaceRecognizer(face.detector, face.recognizer)
-        return PeopleService(
+        service = PeopleService(
             store,
             recognizer,
             threshold=face.match_threshold,
@@ -386,12 +387,72 @@ def _create_people_service(config, logger):
             schedule=getattr(config, "schedule", None),
             logger=logger,
         )
+        service.set_processor(
+            _build_face_processor(recognizer, face, logger)
+        )
+        return service
     except Exception:  # noqa: BLE001 - thiếu model kho không được giết dashboard
         logger.exception(
             "Không dựng được dịch vụ người học; dashboard vẫn chạy nhưng các "
             "tính năng người học sẽ trả 503."
         )
         return None
+
+
+def _build_face_processor(recognizer, face, logger):
+    """Đóng gói đường ống khuôn mặt **thật** cho :meth:`PeopleService.set_processor`.
+
+    Hai việc:
+
+    1. **Cổng nhịp ``face.interval_s``.** Hàm được gọi mỗi khung (5–6 FPS)
+       nhưng YuNet + SFace tốn 86,1 ms/lượt (§4.2), nên lượt bị chặn trả
+       :data:`~posture_monitor.people_service.OBSERVATION_SKIPPED` — **không**
+       trả ``None``, vì ``None`` nghĩa là "đã nhìn, không thấy mặt" và sẽ ghi
+       đè danh tính vừa nhận ra.
+    2. **Phát hiện rồi trích embedding trên khung gốc**, dùng chung một ảnh
+       cho cả hai bước nên toạ độ hộp mặt nhất quán, không cần ánh xạ ngược.
+       Không thấy mặt → ``None`` (UNKNOWN, đúng nghĩa). Lỗi model →
+       ``OBSERVATION_SKIPPED`` kèm cảnh báo: lỗi không phải "vắng mặt".
+
+    **Cố ý KHÔNG thu nhỏ khung về ``face.detect_width``.** Spec §5.13 yêu cầu
+    bước thu nhỏ, nhưng đo thật (OpenCV 4.13.0, model và ảnh thật) cho thấy
+    làm vậy sẽ mất mặt: ở ngưỡng detector mặc định ``0.9``, khung 704x576
+    phát hiện 1 mặt, còn khung 320x262 phát hiện **0 mặt**; quét 11 mức ảnh
+    nguồn thì ``@320 + 0.9`` không phát hiện được mặt nào. Thủ phạm là ngưỡng
+    điểm ``score_threshold`` của YuNet, không phải ``min_face_px`` (mặt ở 320
+    vẫn còn 68–74 px, trên mức lọc 40). Hạ ngưỡng xuống 0.6 sẽ bù lại được
+    nhưng thêm mặt giả — mỗi cái là một vector rác vào bộ phân loại danh
+    tính — và đổi ngưỡng ngoài ``config.yaml`` là điều spec §11 cấm. Vì vậy
+    detect chạy trên khung gốc, đúng hành vi đã được chứng minh hoạt động;
+    ``detect_width``/``clahe_enabled`` hiện vẫn chưa có người đọc.
+    """
+    from .people_service import OBSERVATION_SKIPPED  # noqa: PLC0415
+
+    interval_s = float(getattr(face, "interval_s", 2.0) or 2.0)
+    #: Lượt đầu phải luôn chạy: ``-inf`` bảo đảm ``now - last_at >= interval_s``.
+    state = {"last_at": -math.inf}
+
+    def processor(frame):
+        now = time.monotonic()
+        if now - state["last_at"] < interval_s:
+            return OBSERVATION_SKIPPED
+        state["last_at"] = now
+        try:
+            prepared = frame  # KHÔNG thu nhỏ — xem docstring ở trên.
+            faces = recognizer.detect(prepared)
+            if not faces:
+                return None
+            largest = max(faces, key=lambda detected: detected.area)
+            return recognizer.embedding(prepared, largest)
+        except Exception as exc:  # noqa: BLE001 - lỗi model không phải vắng mặt
+            logger.warning(
+                "Không nhận diện được khuôn mặt ở khung này (%s); giữ nguyên "
+                "danh tính gần nhất.",
+                exc,
+            )
+            return OBSERVATION_SKIPPED
+
+    return processor
 
 
 def _serve_web(app, config, logger) -> None:
@@ -576,7 +637,11 @@ def _monitor_loop(
         DEFAULT_ABSENT_HOLD_S,
         PresenceTracker,
     )  # noqa: PLC0415
-    from .people_service import IDENTITY_MISMATCH  # noqa: PLC0415
+    from .people_service import (
+        IDENTITY_MISMATCH,
+        PHONE_STATE_NONE,
+        PHONE_STATE_USE,
+    )  # noqa: PLC0415
     from .phone_detector import PhoneSignal  # noqa: PLC0415
     from .speaker_alert import SpeakerAlerter  # noqa: PLC0415
 
@@ -588,6 +653,8 @@ def _monitor_loop(
     phone_signal = None
     speaker_alerter = None
     alert_errors = 0
+    #: Số lần ghi sự kiện cảnh báo xuống DB thất bại; chỉ log lần đầu.
+    event_errors = 0
     try:
         presence_cfg = getattr(config, "presence", None)
         presence_tracker = PresenceTracker(
@@ -835,6 +902,28 @@ def _monitor_loop(
                             else 0.0
                         )
 
+                        # Dashboard đọc people.signals()["phone"], còn loa đọc
+                        # held["phone"] — hai nguồn rời nhau. Không đẩy sang dịch
+                        # vụ thì dòng "Điện thoại" đứng ở "chưa có dữ liệu" mãi
+                        # dù loa vẫn báo dùng.
+                        #
+                        # Đọc trong ``try`` riêng, đúng như khối danh tính bên
+                        # dưới: một dịch vụ nửa vời (thiếu ``note_phone``) chỉ
+                        # được làm mất dòng điện thoại, **không** được làm rơi
+                        # cả khối và mất luôn cảnh báo rời khung/danh tính của
+                        # khung này.
+                        if people is not None:
+                            try:
+                                people.note_phone(
+                                    PHONE_STATE_USE
+                                    if phone_result is not None
+                                    and phone_signal.in_use
+                                    else PHONE_STATE_NONE,
+                                    now=alert_now,
+                                )
+                            except Exception:  # noqa: BLE001 - spec §11.3
+                                pass
+
                     # "Người khác ngồi học hộ": chỉ tin ``identity`` khi nó
                     # còn MỚI. ``PeopleService.signals`` ghi rõ ``fresh is
                     # False`` nghĩa là hết dữ liệu, không phải "vẫn đúng như
@@ -898,14 +987,43 @@ def _monitor_loop(
                                 decision.kind,
                             )
                         elif storage is not None:
-                            storage.record_event(
-                                Event(
-                                    ts=float(alert_now),
-                                    type=event_type,
-                                    label=decision.kind,
-                                    alert=True,
+                            # ``duration_s`` là thời gian điều kiện đã duy trì
+                            # liên tục — chính là giá trị ``should_alert`` vừa
+                            # dùng để quyết định, có sẵn trong ``held``. Bỏ
+                            # trống thì cột luôn 0,0 và lịch sử báo mọi cảnh
+                            # báo kéo dài 0 giây. ``held`` khởi tạo là ``{}``
+                            # ngay đầu khối nên luôn có ``.get``.
+                            #
+                            # Bọc riêng lời ghi DB: ``record_event`` ném thì
+                            # khối ``try`` ngoài nhảy thẳng vào ``except`` và
+                            # BỎ QUA ``last_alert_at[kind] = ...`` ở cuối khối
+                            # → cooldown không tiến → khung sau báo lại, lặp
+                            # mỗi khung. Lỗi ghi DB không được chặn bước tiến
+                            # cooldown, và cũng không được nuốt luôn phần loa
+                            # phía dưới (bài học ~18 000 dòng/giờ ở cuối khối).
+                            try:
+                                storage.record_event(
+                                    Event(
+                                        ts=float(alert_now),
+                                        type=event_type,
+                                        label=decision.kind,
+                                        duration_s=float(
+                                            held.get(decision.kind, 0.0)
+                                        ),
+                                        alert=True,
+                                    )
                                 )
-                            )
+                            except Exception as exc:  # noqa: BLE001 - spec §11.3
+                                event_errors += 1
+                                if event_errors == 1:
+                                    logger.warning(
+                                        "Không ghi được sự kiện cảnh báo '%s' "
+                                        "vào DB (%s); vẫn giám sát tiếp. Các "
+                                        "lỗi sau không ghi log để tránh ngập "
+                                        "log.",
+                                        decision.kind,
+                                        exc,
+                                    )
                         if speaker_alerter is not None:
                             # ``speaker_alerter is None`` nghĩa là chưa cấu
                             # hình loa: không có gì để nói, nên cũng không ghi
