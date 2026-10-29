@@ -624,6 +624,14 @@ def test_redact_camera_source_che_thong_tin_dang_nhap() -> None:
     assert "***:***@" in redacted
 
 
+def test_redact_camera_source_che_literal_admin_secret() -> None:
+    """Ca tối thiểu, viết thẳng: ``admin:secret`` trên dải TEST-NET phải thành ``***``."""
+    assert (
+        redact_camera_source("rtsp://admin:secret@192.0.2.10:554/1/2")
+        == "rtsp://***:***@192.0.2.10:554/1/2"
+    )
+
+
 def test_redact_camera_source_giu_nguyen_url_khong_dang_nhap() -> None:
     """URL không có thông tin đăng nhập: giữ nguyên từng ký tự."""
     plain = "rtsp://192.0.2.10:554/Streaming/Channels/101"
