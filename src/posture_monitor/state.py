@@ -56,6 +56,23 @@ EVENT_SPEAK_OK = "SPEAK_OK"
 #: Loa không phát được (spec v3 §5.15, §6). **Không** dùng cho ca tắt tiếng.
 EVENT_SPEAK_FAILED = "SPEAK_FAILED"
 
+# Cảnh báo đã phát (spec v3 §6): một quyết định của ``schedule.should_alert``
+# đã tới hạn và được đưa ra loa. Khác ``EVENT_SPEAK_OK`` — sự kiện đó chỉ ghi
+# khi loa thật sự kêu; ba loại dưới đây ghi theo **quyết định**, nên vẫn có
+# bản ghi khi dashboard tắt tiếng hoặc loa lỗi (cooldown vẫn tiến).
+EVENT_ABSENT = "ABSENT"
+EVENT_PHONE_USE = "PHONE_USE"
+EVENT_IMPOSTOR = "IMPOSTOR"
+
+#: Ánh xạ ``decision.kind`` (spec v2 §5.6, ``config.yaml`` mục ``alerts.kinds``)
+#: sang loại sự kiện ở bảng ``events``. Kind không có trong bảng thì không
+#: được ghi bừa — vòng lặp bỏ qua và cảnh báo một dòng.
+ALERT_EVENT_TYPE = {
+    "leave_frame": EVENT_ABSENT,
+    "phone": EVENT_PHONE_USE,
+    "stranger": EVENT_IMPOSTOR,
+}
+
 
 @dataclass(frozen=True)
 class Event:

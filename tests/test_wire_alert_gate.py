@@ -1115,3 +1115,72 @@ def test_tat_tieng_khong_phai_speak_failed_va_van_ghi_su_kien(monkeypatch, tmp_p
     # Mỗi khung vẫn được ghi xuống DB, kể cả khi đang tắt tiếng.
     assert len(storage.records) == frames, len(storage.records)
     assert all(update.events is not None for update, _ in storage.records)
+
+
+def test_canh_bao_duoc_ghi_vao_bang_events(monkeypatch, tmp_path):
+    """Quyết định cảnh báo phải thành một bản ghi ``events`` (spec v3 §6).
+
+    ``should_alert`` cho ``leave_frame`` → ``record_event`` nhận **đúng một**
+    ``Event(type="ABSENT", label="leave_frame", alert=True)``, cùng mốc
+    ``ts=alert_now`` với lần phát. Vế thứ hai chạy lại khi dashboard tắt
+    tiếng: quyết định vẫn xảy ra (cooldown vẫn tiến) nên bản ghi **vẫn phải
+    có**, dù loa không kêu.
+    """
+    from posture_monitor.state import EVENT_ABSENT
+
+    frames = 6
+    clock_values = [0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20]
+    estimator = _ScriptedEstimator(
+        [_pose(True), _pose(True), None, None, None, None]
+    )
+    config = _config(_schedule(inside=True))
+
+    storage = _FakeStorage()
+    exit_code, _observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=estimator,
+        frames=frames,
+        clock=_QueueClock(clock_values),
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        storage=storage,
+    )
+
+    assert exit_code == 0
+    assert [kind for kind, _ in alerter.calls] == ["leave_frame"], alerter.calls
+    ban_ghi = [event for event in storage.events if event.type == EVENT_ABSENT]
+    assert len(ban_ghi) == 1, storage.events
+    assert ban_ghi[0].label == "leave_frame"
+    assert ban_ghi[0].alert is True
+    # Cùng một mốc thời gian với lần phát ra loa, không phải now của DB.
+    assert ban_ghi[0].ts == pytest.approx(alerter.calls[0][1]), (
+        ban_ghi[0].ts,
+        alerter.calls,
+    )
+
+    # Vế tắt tiếng: không phát ra loa nhưng quyết định vẫn được ghi.
+    storage_muted = _FakeStorage()
+    exit_muted, _observed, alerter_muted = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator(
+            [_pose(True), _pose(True), None, None, None, None]
+        ),
+        frames=frames,
+        clock=_QueueClock(clock_values),
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        state=_muted_state(),
+        storage=storage_muted,
+    )
+
+    assert exit_muted == 0
+    assert all(alerter_muted.muted_values), alerter_muted.muted_values
+    ban_ghi_tat_tieng = [
+        event for event in storage_muted.events if event.type == EVENT_ABSENT
+    ]
+    assert len(ban_ghi_tat_tieng) == 1, storage_muted.events
+    assert ban_ghi_tat_tieng[0].label == "leave_frame"
