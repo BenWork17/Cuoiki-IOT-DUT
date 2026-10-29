@@ -637,7 +637,11 @@ def _monitor_loop(
         DEFAULT_ABSENT_HOLD_S,
         PresenceTracker,
     )  # noqa: PLC0415
-    from .people_service import IDENTITY_MISMATCH  # noqa: PLC0415
+    from .people_service import (
+        IDENTITY_MISMATCH,
+        PHONE_STATE_NONE,
+        PHONE_STATE_USE,
+    )  # noqa: PLC0415
     from .phone_detector import PhoneSignal  # noqa: PLC0415
     from .speaker_alert import SpeakerAlerter  # noqa: PLC0415
 
@@ -897,6 +901,28 @@ def _monitor_loop(
                             if phone_result is not None
                             else 0.0
                         )
+
+                        # Dashboard đọc people.signals()["phone"], còn loa đọc
+                        # held["phone"] — hai nguồn rời nhau. Không đẩy sang dịch
+                        # vụ thì dòng "Điện thoại" đứng ở "chưa có dữ liệu" mãi
+                        # dù loa vẫn báo dùng.
+                        #
+                        # Đọc trong ``try`` riêng, đúng như khối danh tính bên
+                        # dưới: một dịch vụ nửa vời (thiếu ``note_phone``) chỉ
+                        # được làm mất dòng điện thoại, **không** được làm rơi
+                        # cả khối và mất luôn cảnh báo rời khung/danh tính của
+                        # khung này.
+                        if people is not None:
+                            try:
+                                people.note_phone(
+                                    PHONE_STATE_USE
+                                    if phone_result is not None
+                                    and phone_signal.in_use
+                                    else PHONE_STATE_NONE,
+                                    now=alert_now,
+                                )
+                            except Exception:  # noqa: BLE001 - spec §11.3
+                                pass
 
                     # "Người khác ngồi học hộ": chỉ tin ``identity`` khi nó
                     # còn MỚI. ``PeopleService.signals`` ghi rõ ``fresh is

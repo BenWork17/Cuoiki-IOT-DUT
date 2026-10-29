@@ -215,11 +215,19 @@ def _make_phone_signal_fake(script):
             self._script = list(script)
             self._calls = 0
             self._held = 0.0
+            self._hold_s = float(_config.phone.hold_s)
             _FakePhoneSignal.last_instance = self
 
         @property
         def held_s(self) -> float:
             return self._held
+
+        @property
+        def in_use(self) -> bool:
+            # Cùng định nghĩa với ``phone_detector.PhoneSignal``: đủ
+            # ``hold_s`` chạm liên tục. Thiếu thuộc tính này thì lời gọi
+            # ``note_phone`` trong vòng lặp vấp ``AttributeError``.
+            return self._held >= self._hold_s
 
         def observe(self, _frame, _keypoints, _now):
             index = min(self._calls, len(self._script) - 1)
@@ -758,6 +766,12 @@ class _FakePeople:
         self._selected = selected
         self.observe_calls = 0
         self.signals_calls = 0
+        self.phone_states: list[str] = []
+        self.phone_nows: list[float] = []
+
+    def note_phone(self, state: str, now: float | None = None) -> None:
+        self.phone_states.append(state)
+        self.phone_nows.append(now)
 
     def update_signals(self, **_kwargs) -> None:
         pass
@@ -1184,3 +1198,123 @@ def test_canh_bao_duoc_ghi_vao_bang_events(monkeypatch, tmp_path):
     ]
     assert len(ban_ghi_tat_tieng) == 1, storage_muted.events
     assert ban_ghi_tat_tieng[0].label == "leave_frame"
+
+
+def test_vong_lap_day_trang_thai_dien_thoai_sang_dich_vu_nguoi_hoc(
+    monkeypatch, tmp_path
+):
+    """``note_phone`` phải được gọi mỗi khung, đúng hằng số, đúng mốc giờ.
+
+    Dashboard đọc ``people.signals()["phone"]`` còn loa đọc
+    ``held["phone"]`` — hai nguồn rời nhau. Thiếu lời gọi này thì dòng
+    "Điện thoại" đứng ở "chưa có dữ liệu" vĩnh viễn dù loa vẫn báo dùng
+    (đúng lỗi đã xảy ra với ``update_signals``).
+
+    Ba khung, ``hold_s`` của phone là 2.0 s:
+
+    - khung 0: chạm 0.5 s → chưa đủ → ``PHONE_STATE_NONE``;
+    - khung 1: chạm 3.0 s → đủ → ``PHONE_STATE_USE``;
+    - khung 2: ``observe`` trả ``None`` (người quay lưng) → ``PHONE_STATE_NONE``,
+      **không** giữ giá trị "dùng" cũ.
+
+    Vế thứ ba là vế dễ hỏng nhất: giữ trạng thái cũ khi không quan sát được
+    sẽ khiến dashboard báo "đang dùng điện thoại" mãi sau một khung lỗi.
+    """
+    frames = 3
+    clock = _QueueClock([0, 0, 1, 1, 2, 2])
+
+    class _PhoneResult:
+        co_cham = True
+
+    # ``phone_result`` khác ``None`` ở hai khung đầu, ``None`` ở khung cuối.
+    phone_script = [
+        (_PhoneResult(), 0.5),
+        (_PhoneResult(), 3.0),
+        (None, 3.0),
+    ]
+    people = _FakePeople(state="MATCH", fresh=True, selected="an")
+    config = _config(_schedule(inside=True))
+    # Nâng ``hold_s`` cảnh báo để loa không chen vào phép đo.
+    config.schedule.kinds["phone"] = KindSettings(
+        enabled=True, cooldown_s=120.0, hold_s=100.0
+    )
+    config.phone.hold_s = 2.0
+
+    exit_code, _observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator([_pose(True)] * frames),
+        frames=frames,
+        clock=clock,
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=phone_script,
+        people=people,
+    )
+
+    from posture_monitor.people_service import (
+        PHONE_STATE_NONE,
+        PHONE_STATE_USE,
+    )
+
+    assert exit_code == 0
+    assert people.phone_states == [
+        PHONE_STATE_NONE,
+        PHONE_STATE_USE,
+        PHONE_STATE_NONE,
+    ], people.phone_states
+    # ``now`` phải là ``alert_now`` (gốc monotonic tuyệt đối), không phải
+    # ``None`` lẫn số giây tương đối của vòng lặp.
+    assert people.phone_nows == [0.0, 1.0, 2.0], people.phone_nows
+    assert alerter.calls == [], alerter.calls
+
+
+def test_dich_vu_thieu_note_phone_khong_lam_roi_canh_bao_khac(
+    monkeypatch, tmp_path
+):
+    """Dịch vụ nửa vời (không có ``note_phone``) chỉ mất dòng điện thoại.
+
+    Đây là hồi quy thật: ``_FakePeople`` bản cũ thiếu ``note_phone``, và lời
+    gọi trần đã ném ``AttributeError`` ra ngoài, nuốt luôn cả khối cảnh báo
+    của khung đó — người rời khung không còn được báo. Bài này dùng một dịch
+    vụ **cố ý** thiếu phương thức và kiểm rằng cảnh báo ``leave_frame`` vẫn ra.
+    """
+
+    class _PeopleThieuNotePhone:
+        def update_signals(self, **_kwargs) -> None:
+            pass
+
+        def observe(self, _frame, _now) -> None:
+            pass
+
+        def selected_person(self):
+            return None
+
+        def signals(self) -> dict:
+            return {}
+
+    frames = 6
+    schedule = _schedule(inside=True)
+    schedule.kinds["leave_frame"] = KindSettings(
+        enabled=True, cooldown_s=60.0, hold_s=5.0
+    )
+    schedule.kinds["phone"] = KindSettings(
+        enabled=True, cooldown_s=120.0, hold_s=1000.0
+    )
+    config = _config(schedule)
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator([None] * frames),
+        frames=frames,
+        clock=_QueueClock([float(i) for i in range(2 * frames)]),
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        people=_PeopleThieuNotePhone(),
+    )
+
+    assert exit_code == 0
+    assert len(observed) == frames, observed
+    assert [kind for kind, _ in alerter.calls] == ["leave_frame"], alerter.calls
