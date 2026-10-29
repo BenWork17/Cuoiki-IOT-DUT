@@ -90,6 +90,21 @@ def test_malformed_input_does_not_crash(broken):
     assert count_upper_keypoints(broken, 0.5) == 0
 
 
+def test_confidence_out_of_float_range_returns_zero():
+    """``conf`` chứa số vượt dải float trả 0, không ném OverflowError."""
+    pose = PoseResult(
+        xy=np.zeros((NUM_KEYPOINTS, 2), dtype=np.float32),
+        conf=np.array([10**400] * NUM_KEYPOINTS, dtype=object),
+        bbox=np.zeros(4, np.float32),
+    )
+    assert count_upper_keypoints(pose, 0.5) == 0
+
+
+def test_threshold_out_of_float_range_returns_zero():
+    """``kp_conf_min`` vượt dải float trả 0, không ném OverflowError."""
+    assert count_upper_keypoints(_pose(0.5), 10**400) == 0
+
+
 def test_all_zero_confidence_is_not_present():
     assert count_upper_keypoints(_pose(0.0), 0.5) == 0
 

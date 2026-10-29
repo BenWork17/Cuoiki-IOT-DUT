@@ -216,6 +216,15 @@ def test_wrong_type_for_float_raises_config_error(tmp_path: Path) -> None:
     assert "thresholds.head_down_ratio" in str(excinfo.value)
 
 
+@pytest.mark.parametrize("value", [10**400, -(10**400)])
+def test_float_out_of_range_raises_config_error(tmp_path: Path, value: int) -> None:
+    """Số nguyên vượt dải float phải thành ConfigError, không phải OverflowError."""
+    text = f"face:\n  interval_s: {value}\n"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "face.interval_s" in str(excinfo.value)
+
+
 def test_wrong_type_for_bool_raises_config_error(tmp_path: Path) -> None:
     text = "web:\n  stream_enabled: \"yes\"\n"
     with pytest.raises(ConfigError) as excinfo:

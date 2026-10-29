@@ -379,7 +379,15 @@ def _get_float(
             f"'{_where(section, key)}' phải là số, nhận được "
             f"{type(value).__name__}: {value!r}."
         )
-    return float(value)
+    # Số nguyên vượt dải float (vd 10**400) vượt qua isinstance nhưng
+    # float() ném OverflowError; load_config chỉ hứa ConfigError.
+    try:
+        return float(value)
+    except OverflowError:
+        raise ConfigError(
+            f"'{_where(section, key)}' phải là số biểu diễn được dạng float, "
+            f"nhận được {type(value).__name__}: {value!r}."
+        ) from None
 
 
 def _get_bool(
