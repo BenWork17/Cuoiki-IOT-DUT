@@ -22,7 +22,7 @@ Không đạt cả ba thì đánh **LOẠI**. Không có mức trung gian: một
 | `gpiozero.pins.mock.MockFactory` | gpiozero 2.0.1.post3 | MIT | Đặt `Device.pin_factory = MockFactory()`, LED bật/tắt đúng, `DistanceSensor` khởi tạo được | **TẠN DỤNG** thay cho `gpio_mock.py` tự viết. Giới hạn: không giả lập được giá trị khoảng cách, phải fake ở tầng `sensors.py`. |
 | Chart.js 4.4.7 UMD minified | jsDelivr, `dist/chart.umd.min.js` | MIT | Tải về 205.851 byte, xác nhận chuỗi `Chart.js v4.4.7` trong file, sha256 `42f4dbfe70c430ffc22c7128f36cae8d599cac90b8cd37c8f42a59e565e5deb7` | **TẠN DỤNG**, đặt cục bộ trong `static/`, đúng yêu cầu không dùng CDN của §5.10. |
 | Trọng số `yolo11n-pose.pt` và `yolov8n-pose.pt` | release asset ultralytics v8.3.0 | AGPL-3.0 | Tải thử HTTP 206, magic bytes `PK\x03\x04` xác nhận là file zip hợp lệ | **TẠN DỤNG**. Model dự phòng theo thang §8 vẫn còn tải được. |
-| `yolo11-pose.yaml` (định nghĩa kiến trúc) | ultralytics main branch | AGPL-3.0 | Tải được HTTP 200, scale `n` khai báo 2.905.907 tham số | **TẠN DỤNG**. YOLO11 vẫn được duy trì dù docs đã chuyển sang YOLO26. |
+| `yolo11-pose.yaml` (định nghĩa kiến trúc) | ultralytics main branch | AGPL-3.0 | Tải được HTTP 200, scale `n` khai báo 2.908.507 tham số | **TẠN DỤNG**. YOLO11 vẫn được duy trì dù docs đã chuyển sang YOLO26. |
 
 > **Cảnh báo giấy phép:** ultralytics là **AGPL-3.0**. Nếu đồ án chỉ dùng nội bộ và nộp báo cáo thì bình thường, nhưng nếu sau này phát hành sản phẩm thì AGPL bắt buộc mở mã nguồn. Cần nêu trong README.
 
