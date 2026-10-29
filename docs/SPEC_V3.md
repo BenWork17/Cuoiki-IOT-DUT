@@ -21,7 +21,8 @@ Tài liệu giao việc cho AI agent · **Bản v3, 29/10/2026** · Thay đề t
 | Mục | Thay đổi | Lý do |
 | --- | --- | --- |
 | §1 | Mục tiêu đổi: từ "tư thế đúng/sai" sang "có mặt / dùng điện thoại / học hộ / trong giờ học" | Đề tài mới: camera IP đặt góc trước bàn học, nhìn cả bàn và người ngồi |
-| §3, §5.11–§5.15 (mới) | Thêm 5 module: `presence`, `phone`, `faces`, `schedule`, `speaker_alert` | Bốn hành vi cần giám sát + khung giờ + kênh cảnh báo |
+| §3, §5.11–§5.15 | Thêm 4 module mới (`presence`, `phone`, `faces`, `speaker_alert`); `schedule` **đã có sẵn** ở `r1-alerts` (`00ce781`) và §5.14 mô tả đúng API đó | Bốn hành vi cần giám sát + khung giờ + kênh cảnh báo |
+| §5.14 | Viết lại theo **API đã ACCEPT** của `schedule.py`: `days` dùng **tên thứ** (`mon`..`sun`), hàm `is_active(schedule, now)` / `should_alert(schedule, now, *, held, last_alert_at, kinds)`, `enabled: false` = **không giới hạn giờ** | Spec đi theo code đã chạy và đã có test, không phải ngược lại |
 | §5.7 | Kênh cảnh báo chính đổi từ **buzzer trên GPIO** sang **loa của camera IP** (RTSP backchannel) | Yêu cầu đề tài; loa camera to hơn buzzer và không cần đấu dây |
 | §5.2 | Thêm model thứ hai `yolo11n` (detect) chạy **cách khung**; thêm `yunet.onnx` + `sface.onnx` cho khuôn mặt | Nhận diện điện thoại và nhận diện người |
 | §8 | Ngân sách FPS mới theo 3 model; ghi rõ cấu hình nào **đã đo**, cấu hình nào **chưa đo** | Số đo 6,18 FPS chỉ đúng cho 2 model, chưa gồm khuôn mặt |
@@ -142,7 +143,7 @@ Bổ sung cho đề tài mới:
 3. Sự kiện lọt cooldown → phát cảnh báo ra loa camera + ghi vào SQLite + hiện trên dashboard.
 4. Người học quay lại / bỏ điện thoại → sự kiện kết thúc, hệ thống im.
 
-**C. Ngoài giờ học** — không cảnh báo, chỉ ghi số liệu tối thiểu để biết hệ thống còn sống.
+**C. Ngoài giờ học** — khi `schedule.enabled: true` và có `windows`: không cảnh báo, chỉ ghi số liệu tối thiểu để biết hệ thống còn sống. Lưu ý: `schedule.enabled: false` **không** phải chế độ "ngoài giờ học" — nó nghĩa là không giới hạn giờ, cảnh báo vẫn chạy (§5.14).
 
 ### 3.3 Quy tắc phát cảnh báo (hợp nhất ba tín hiệu)
 
@@ -154,7 +155,7 @@ Bổ sung cho đề tài mới:
 
 Luật chung:
 
-- Chỉ phát khi `schedule` đang mở.
+- Cổng giờ học và cổng cooldown/hold **của từng loại cảnh báo** do `schedule.should_alert(...)` quyết định (§5.14) — trả `None` thì không phát. `schedule.enabled: false` nghĩa là **không giới hạn giờ**, cảnh báo vẫn chạy mọi lúc; muốn tắt một loại thì `schedule.kinds.<loại>.enabled: false`.
 - Dùng lại đúng cơ chế hold/hysteresis/cooldown của v2 §5.6 (`bad_hold_s`, `good_hold_s`, `alert_cooldown_s`, `escalate_after_s`) — không viết cơ chế thứ hai.
 - Cảnh báo phát ra loa camera là **âm thanh ngắn** (mặc định tiếng bíp + câu tiếng Việt). Không phát lặp lại mỗi khung.
 - Dashboard tắt tiếng (`muted`) thì **không phát ra loa** nhưng vẫn ghi sự kiện — giữ đúng hành vi v2 `WEB_DASHBOARD.md` §2.2.
@@ -206,7 +207,8 @@ Luật chung:
                     |
             SignalFusion (presence / phone / identity)
                     |
-             ScheduleGate (chỉ mở trong giờ học)
+        schedule.should_alert(schedule, now, held=..., last_alert_at=...)
+                       (cổng giờ học + hold + cooldown theo từng loại; §5.14)
                     |
               StateMachine (v2 §5.6 — hold, hysteresis, cooldown)
                     |
@@ -219,7 +221,7 @@ Quy tắc luồng:
 
 - Ảnh **không** đi vào `Storage` dưới bất kỳ dạng nào.
 - `FaceWorker` chạy **luồng riêng**, không chặn vòng lặp pose/detect (**GIẢ THIẾT** — phải đo tranh chấp CPU, xem §14 bước G).
-- `ScheduleGate` là cổng duy nhất quyết định "có phát cảnh báo hay không"; module nào khác không được tự đọc giờ.
+- `schedule.py` là **cổng duy nhất** quyết định "có phát cảnh báo hay không" (`should_alert`); module nào khác không được tự đọc giờ. Nó là module thuần: nhận `now` từ ngoài, không gọi `datetime.now()`.
 - Giao tiếp với web vẫn qua `DashboardState` như v2 (`WEB_DASHBOARD.md` §2) — vòng lặp không chạm Flask.
 
 ### 4.2 Chu kỳ chạy từng model
@@ -441,17 +443,88 @@ Bằng chứng hai chiều (đo trên Pi, khung thật, 2026-10-29):
 
 **Ghi chú pháp lý (cần người dùng xác nhận, không phải kết luận của tài liệu):** dữ liệu sinh trắc học (khuôn mặt) là **dữ liệu cá nhân nhạy cảm** theo Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân. Việc thu thập cần có sự đồng ý của chính người được đăng ký. Thiết kế trên (chỉ lưu vector, không lưu ảnh, không truyền ra ngoài, xoá được) giảm rủi ro nhưng **không tự động** tạo ra sự tuân thủ. Người quyết định sản phẩm phải xác nhận phạm vi sử dụng trước khi triển khai ngoài phòng thí nghiệm.
 
-### 5.14 schedule.py (mới)
+### 5.14 schedule.py (đã có — theo `r1-alerts`, commit `00ce781`)
 
-Trả lời "có đang trong giờ học không".
+Module này **đã được build và nghiệm thu**. Mục này mô tả **đúng API đã có**, không phải thiết kế đề xuất; spec đi theo code, không phải ngược lại.
 
-- Cấu hình theo **thứ trong tuần + khoảng giờ**, hỗ trợ nhiều khung trong một ngày và khung vắt qua nửa đêm.
-- Dạng cấu hình: danh sách `{days: [2,3,4,5,6], start: "19:00", end: "22:00"}` với `days` theo ISO (1 = thứ 2, 7 = chủ nhật).
-- `is_open(now)` nhận **thời điểm từ ngoài** (giây epoch hoặc `datetime` đã có timezone), giống cách `state.py` nhận `now` — để test bằng đồng hồ giả, không phụ thuộc `time.time()` bên trong.
-- Vắt qua nửa đêm: `start > end` nghĩa là qua ngày hôm sau; `days` được hiểu là ngày **bắt đầu**.
-- Không có ngày lễ. Nếu cần nghỉ, người dùng sửa cấu hình hoặc dùng một khung giờ rỗng.
-- **Kiểm tra đồng hồ:** đọc độ lệch NTP nếu đọc được; không đọc được thì không chặn. Lệch quá `clock_skew_warn_s` → dashboard hiện cảnh báo và **tắt phát cảnh báo** (vì có thể đang ngoài giờ học thật).
-- Ghi log mỗi lần cổng mở/đóng.
+Module **thuần**: không đọc file, không đọc đồng hồ hệ thống, không phụ thuộc camera/model/GPIO. Mọi thời điểm nhận từ ngoài qua tham số `now`.
+
+**Hai hàm công khai, đều không có tác dụng phụ:**
+
+| Hàm / lớp | Chữ ký | Việc |
+| --- | --- | --- |
+| `is_active` | `is_active(schedule, now) -> bool` | `now` có nằm trong giờ học không. Hàm **module-level**, không phải method |
+| `should_alert` | `should_alert(schedule, now, *, held, last_alert_at=None, kinds=None) -> AlertDecision \| None` | Có nên phát cảnh báo ngay bây giờ, kèm lý do; `None` = không nên |
+| `TimeWindow` | `TimeWindow(days, start, end)` | Một khung giờ; có `.covers(moment)` và `.overnight` |
+| `ScheduleConfig` | `ScheduleConfig(enabled, windows, kinds)` | Mục `schedule` trong `config.yaml` |
+| `KindSettings` | `KindSettings(enabled, cooldown_s, hold_s)` | Thiết lập cho một loại cảnh báo |
+| `ScheduleError` | `ValueError` | Lỗi giờ/thứ/khung; `config.py` đổi thành `ConfigError` |
+| Hằng số | `ALERT_KINDS = (leave_frame, phone, stranger)`, `DAY_NAMES`, `DEFAULT_KINDS` | Thứ tự `ALERT_KINDS` cũng là thứ tự ưu tiên khi nhiều loại cùng đủ điều kiện |
+| Hàm đọc cấu hình | `parse_clock`, `parse_days`, `parse_window`, `parse_kind_settings` | Báo lỗi chỉ đúng đường dẫn khoá, ví dụ `schedule.windows[0].start` |
+
+**Định dạng cấu hình — `days` theo TÊN THỨ, không theo số:**
+
+```yaml
+schedule:
+  enabled: false
+  windows:
+    - days: [mon, tue, wed, thu, fri]
+      start: "19:00"
+      end: "21:30"
+    - days: [sat, sun]
+      start: "08:00"
+      end: "11:00"
+  kinds:
+    leave_frame: {enabled: true, cooldown_s: 60,  hold_s: 5}
+    phone:       {enabled: true, cooldown_s: 120, hold_s: 10}
+    stranger:    {enabled: true, cooldown_s: 300, hold_s: 5}
+```
+
+- Tên thứ: `mon tue wed thu fri sat sun` (`DAY_NAMES`), **không phân biệt hoa thường**, trùng nhau thì bỏ qua.
+- Tên sai → `ScheduleError`: `'<x>' không phải tên thứ hợp lệ; dùng một trong [...]`.
+- Chọn tên thứ thay vì số vì đọc YAML là hiểu ngay; danh sách số thứ tự bắt người đọc phải tra "1 là thứ mấy".
+- `start`/`end` phải là chuỗi `"HH:MM"` trong ngoặc kép. YAML không ngoặc kép đọc `19:00` thành số `1140` (dấu `:` bị hiểu là hệ 60); `parse_clock` bắt trường hợp này và gợi ý cách sửa.
+
+**Ngữ nghĩa thời gian (đã có test khoá):**
+
+- `start` tính là **trong** khung, `end` tính là **ngoài**: 19:00–21:30 thì 19:00 đang học, 21:30 đã hết giờ.
+- `start == end` bị từ chối (khung rỗng, không rõ nghĩa).
+- **Khung qua đêm** (`start > end`) thuộc về **ngày bắt đầu**. `days: [fri]`, 22:00–01:00: thứ Sáu 23:30 và thứ Bảy 00:30 đều đang học; thứ Bảy 23:30 thì không. `TimeWindow.overnight` cho biết khung có qua đêm.
+- Không có ngày lễ.
+
+**`schedule.enabled` — nghĩa là KHÔNG giới hạn giờ, không phải tắt cảnh báo:**
+
+- `enabled: false` → `is_active` trả **`True`** ở mọi thời điểm: cảnh báo chạy **mọi lúc**. Đây **không** phải công tắc tắt cảnh báo.
+- Muốn tắt một loại cảnh báo → `schedule.kinds.<loại>.enabled: false`.
+- `enabled: true` mà `windows` rỗng → **lỗi cấu hình** lúc nạp, không âm thầm chạy.
+- Đã có 2 test khoá hành vi này: `test_disabled_schedule_never_restricts_time`, `test_empty_enabled_schedule_and_no_windows`.
+
+**`should_alert` trả `None` trong bốn trường hợp:**
+
+1. Ngoài giờ học (`is_active` sai).
+2. Loại đó bị tắt (`kinds.<loại>.enabled: false`).
+3. `held[loại]` thiếu hoặc **nhỏ hơn** `hold_s` của loại đó.
+4. `last_alert_at[loại]` còn trong `cooldown_s` của loại đó.
+
+Ngoài bốn trường hợp trên, trả `AlertDecision(kind, reason)` cho **loại đầu tiên** đủ điều kiện theo thứ tự `ALERT_KINDS` (`leave_frame` → `phone` → `stranger`), kèm `reason` tiếng Việt đọc được.
+
+**Ba tham số cần hiểu đúng:**
+
+- **`held`** — ánh xạ `{loại: số giây điều kiện đã duy trì liên tục}`. Loại không có trong `held` coi như chưa xảy ra. Đây là nơi bơm kết quả của tầng presence/phone/faces sau khi đã lọc nhiễu.
+- **`last_alert_at`** — ánh xạ `{loại: datetime}` **tính theo từng loại**. Một loại đang cooldown **không** chặn loại khác. Phải **cùng dạng** với `now`: cả hai đều có timezone hoặc cả hai đều naive; trộn lẫn thì `ValueError` thay vì đoán.
+- **`kinds`** — thiết lập thay thế cho `schedule.kinds`, dùng khi test hoặc khi muốn ghi đè tạm; `None` = dùng cấu hình trong `schedule`.
+
+**Quy ước thời gian — bắt buộc khi gọi:**
+
+- `is_active`/`should_alert` **không bao giờ** gọi `datetime.now()`.
+- `now` **naive** = giờ treo tường của máy: hàm chỉ đọc `weekday()` và `time()`.
+- `now` **có tzinfo** = dùng đúng giờ hiển thị trong chính timezone đó; hàm **không** tự đổi sang timezone của máy. Người gọi muốn "giờ địa phương" thì truyền `datetime.now().astimezone()` hoặc datetime naive.
+- Mọi phép tính khoảng cách dùng **`datetime - datetime`**, không dùng `timestamp()` — trên Windows, `timestamp()` ném `OSError` ở mốc gần epoch 0.
+
+**Chưa triển khai trong `00ce781` — ghi nhận, không được viết như đã có:**
+
+- **Kiểm tra lệch đồng hồ NTP.** Spec trước có nêu `clock_skew_warn_s`; code đã ACCEPT **không** có khoá này và `_parse_schedule` không đọc nó. Vì vậy việc kiểm tra đồng hồ là **việc cần làm** ở tầng gọi (không thuộc module thuần này), và tiêu chí nghiệm thu tương ứng ở §8.2 mục 9 phải hiểu là *"đúng khi đồng hồ đúng"*, không phải hệ thống tự phát hiện đồng hồ sai.
+- Không có khoá `schedule.timezone`; timezone do **người gọi** quyết định qua dạng của `now`.
 
 ### 5.15 speaker_alert.py (mới)
 
@@ -553,15 +626,20 @@ presence:
   absent_grace_s: 3.0           # ngắn hơn absent_reset_s của v2
 
 schedule:
-  timezone: "Asia/Ho_Chi_Minh"
-  clock_skew_warn_s: 60
+  # ĐÚNG như đã build và ACCEPT ở r1-alerts (00ce781). days dùng TÊN THỨ.
+  enabled: true                 # false = KHÔNG giới hạn giờ (chạy mọi lúc),
+                                # KHÔNG phải tắt cảnh báo (xem §5.14)
   windows:
-    - days: [2, 3, 4, 5, 6]     # ISO: 1 = thứ 2 ... 7 = chủ nhật
-      start: "19:00"
-      end: "22:00"
-    - days: [7]
+    - days: [mon, tue, wed, thu, fri]
+      start: "19:00"            # phải có ngoặc kép: YAML đọc 19:00 thành 1140
+      end: "21:30"
+    - days: [sat, sun]
       start: "08:00"
-      end: "11:30"
+      end: "11:00"
+  kinds:                        # tắt riêng từng loại cảnh báo ở đây
+    leave_frame: {enabled: true, cooldown_s: 60,  hold_s: 5}
+    phone:       {enabled: true, cooldown_s: 120, hold_s: 10}
+    stranger:    {enabled: true, cooldown_s: 300, hold_s: 5}
 
 speaker_alert:
   enabled: true
@@ -629,7 +707,9 @@ Giữ nguyên v2: `calibrate`, `replay`, `benchmark`. `benchmark` được mở 
 | 1 | Presence | Báo `ABSENT` trong ≤ 3 s sau khi người rời khung; về `PRESENT` ≤ 1 s khi quay lại; **0** lần báo vắng khi người vẫn ngồi, trong 10 phút | Replay clip có sẵn; `expected.json` ghi mốc chuyển trạng thái; log chuyển trạng thái |
 | 1b | Người khác đi qua khung | Không đổi trạng thái presence của người được chọn | Replay clip 2 người; test tự động trên track id giả |
 | 2 | Cảnh báo ra loa | Nghe được tiếng Việt từ loa camera ở khoảng cách ngồi học; ≤ 2 s sau khi đủ điều kiện; không phát lặp trong `alert_cooldown_s` | Video quay bằng điện thoại (chỉ để làm bằng chứng, **không** commit vào repo), log `SPEAK_OK`, `curl /api/speak` |
-| 2b | Ngoài giờ học | Không phát cảnh báo nào; sự kiện không sinh | `schedule check` + test đồng hồ giả trên `ScheduleGate`; chạy thật ngoài giờ 5 phút, log sạch |
+| 2b | Ngoài giờ học | Với `schedule.enabled: true` và có `windows`: không phát cảnh báo nào, sự kiện không sinh. Với `enabled: false`: **cảnh báo vẫn chạy** (không giới hạn giờ) | `test_schedule.py` + `test_config.py` của `00ce781` (đã có); chạy thật ngoài giờ 5 phút, log sạch |
+| 2c | Tắt riêng một loại | `kinds.<loại>.enabled: false` thì loại đó không bao giờ phát, hai loại còn lại vẫn phát | Test `should_alert` với `kinds` ghi đè; kiểm tra tay |
+| 2d | Cooldown theo từng loại | Một loại đang cooldown **không** chặn loại khác; `last_alert_at` tính riêng từng loại | Test `should_alert` với `last_alert_at` chỉ có một loại |
 | 2c | Loa/mạng hỏng | Có `SPEAK_FAILED` trong log/DB; vòng lặp tiếp tục chạy | Rút mạng camera, chạy 2 phút, xem log |
 | 3 | Dùng điện thoại | Phát hiện đúng ≥ 80 % trên clip có dùng điện thoại thật; ≤ 1 báo nhầm / 10 phút khi không dùng | Replay ≥ 3 clip (dùng, không dùng, điện thoại trên bàn không chạm); bảng đếm TP/FP/FN ghi vào báo cáo |
 | 3b | Quy tắc khoảng cách = 0 | `point_rect_distance` = 0 khi cổ tay trong hộp, > 0 khi ngoài | Unit test với hình chữ nhật và điểm tổng hợp (biên, trong, ngoài, chạm cạnh) |
@@ -643,7 +723,7 @@ Giữ nguyên v2: `calibrate`, `replay`, `benchmark`. `benchmark` được mở 
 | 4d | CLAHE bật mặc định | Cấu hình `clahe_enabled: true`; khung ngược sáng mạnh (sáng trung bình ~99,6) tìm được 1 khuôn mặt | Chạy trên khung thật đã lưu; **không** cam kết mọi điều kiện sáng |
 | 7 | Chọn người đang học | Đổi người chọn thì identity so với đúng người mới; chọn người chưa đăng ký bị từ chối | Kiểm tra tay + test `POST /api/select` |
 | 8 | PTZ | Bốn hướng xoay đúng chiều; camera không hỗ trợ thì báo lỗi tiếng Việt | Đã có test `test_web_ptz.py` ở v2; bổ sung kiểm tra tay trên camera thật |
-| 9 | Giờ học | Đúng trong khung; đúng ngày trong tuần; đúng khung vắt nửa đêm; đúng khi đổi `TZ` | Unit test với `datetime` cố định, gồm 22:00–02:00, thứ 7/CN, giây cuối cùng của khung |
+| 9 | Giờ học | `is_active`/`should_alert` đúng trong khung, đúng tên thứ, đúng khung vắt nửa đêm; `enabled: false` → **không giới hạn giờ** (vẫn phát); `kinds.<loại>.enabled: false` → loại đó không phát | `tests/test_schedule.py` + `tests/test_config.py` của `00ce781` (đã có, đã ACCEPT); ca 22:00–02:00, thứ 7/CN, biên `start` trong/`end` ngoài |
 
 **Tiêu chí "báo nhầm" chung:** khi ngồi đúng, không dùng điện thoại, trong giờ học, **tối đa 1 cảnh báo sai / 10 phút**. Đây là mục tiêu, đo bằng chạy tay 30 phút.
 
@@ -665,7 +745,7 @@ Giữ nguyên v2: `calibrate`, `replay`, `benchmark`. `benchmark` được mở 
   - `test_phone.py`: `point_rect_distance` (điểm trong, ngoài, trên cạnh, góc), chọn đúng hộp bao khi có nhiều điện thoại, hộp hết hạn bị bỏ, keypoint conf thấp không kết luận.
   - `test_presence.py`: chuyển trạng thái với track id giả, người khác đi qua không làm mất track.
   - `test_faces.py`: `FaceMatcher` với vector tổng hợp (khớp, không khớp, gallery rỗng, ngưỡng biên); **ánh xạ hộp từ hệ 320 về hệ khung gốc** (kể cả khung không phải bội số của 320); **khẳng định đầu vào YuNet đúng rộng 320**; **test quét thư mục để khẳng định không có file ảnh sinh ra**; vòng `tobytes()`/`frombuffer()` giữ nguyên vector.
-  - `test_schedule.py`: đồng hồ giả, vắt nửa đêm, ngày trong tuần, biên mở/đóng, lệch TZ.
+  - `test_schedule.py`: **đã có ở `00ce781`** — đồng hồ giả, vắt nửa đêm, tên thứ, biên `start` trong/`end` ngoài, `enabled: false` không giới hạn giờ, `should_alert` bốn đường trả `None`, cooldown theo từng loại, trộn naive/aware. Chỉ cần bổ sung khi nối vào vòng lặp.
   - `test_speaker_alert.py`: chọn câu theo loại sự kiện, thứ tự ưu tiên, tôn trọng `muted`, loa bận thì bỏ, thiếu ffmpeg thì rơi về bíp (dùng controller giả).
   - `test_enroll_api.py`: đủ mẫu mới ghi, ngắt giữa chừng không ghi, tên rỗng bị từ chối.
 - **Tích hợp bằng `replay`:** clip mẫu có dùng điện thoại / không dùng / hai người / ra khỏi khung. Kỳ vọng ghi trong `tests/data/expected_v3.json`.
@@ -681,7 +761,7 @@ Tiếp sau v2 (M0–M5 đã xong). Thứ tự bắt buộc vì phụ thuộc ng�
 | Mốc | Nội dung | Tiêu chí hoàn thành |
 | --- | --- | --- |
 | **M7** | `presence.py` + nhãn `ABSENT` vào state machine + tắt bộ luật tư thế | Presence đúng trên clip replay; `--no-face --no-phone` chạy như cũ |
-| **M8** | `schedule.py` + cổng `ScheduleGate` | `schedule check` đúng; không sinh cảnh báo ngoài giờ |
+| **M8** | `schedule.py` — **đã xong ở `00ce781`** (đã ACCEPT); còn lại là nối `should_alert` vào vòng lặp và lệnh `schedule check` | `should_alert` được gọi từ vòng lặp với `held`/`last_alert_at` thật; `schedule check` in 7 ngày tới |
 | **M9** | `phone.py` + `PhoneDetector` + ngân sách FPS 2 model | Đo lại FPS **có** detect điện thoại; quy tắc khoảng cách = 0 có unit test; bảng TP/FP trên clip |
 | **M10** | `faces.py` (thu nhỏ 320 + CLAHE + ánh xạ hộp) + gallery + chọn ngưỡng bằng đo | Bảng confusion trên bộ mẫu thật; hộp khuôn mặt ở hệ khung gốc; không có file ảnh |
 | **M11** | `speaker_alert.py` + espeak-ng + hướng dẫn đăng ký bằng giọng nói | Nghe được trên loa camera; thiếu ffmpeg vẫn bíp; mất mạng không crash |
@@ -714,7 +794,7 @@ Kế thừa nguyên vẹn 8 quy tắc của v2 §11. Bổ sung:
 | Loa camera không mở backchannel trên một số firmware | Trung bình | Đã kiểm chứng trên **đúng camera của dự án**; camera khác phải chạy `speak-test` trước. Thiếu thì rơi về bíp, thiếu nữa thì ghi `SPEAK_FAILED` |
 | `espeak-ng` giọng tiếng Việt khó nghe | Trung bình | **Chưa đo chất lượng**; nếu không đủ rõ thì dùng tiếng bíp + chữ trên dashboard. Không tự ý thêm dịch vụ TTS cloud (vi phạm "không truyền ra ngoài") |
 | Mất mạng làm rơi cảnh báo đúng lúc cần | Trung bình | Ghi sự kiện; dashboard hiện trạng thái "loa không phản hồi"; không có kênh dự phòng tự động trong v3 |
-| Đồng hồ Pi sai → cảnh báo ngoài giờ | Trung bình | Kiểm tra lệch NTP; lệch nhiều thì **tắt phát** và cảnh báo trên dashboard |
+| Đồng hồ Pi sai → cảnh báo ngoài giờ | Trung bình | **Chưa có trong code**: `00ce781` không có `clock_skew_warn_s` và module cố ý thuần. Việc kiểm tra lệch NTP thuộc tầng gọi, cần làm thêm; lệch nhiều thì tắt phát và cảnh báo trên dashboard |
 | Khung giờ vắt nửa đêm tính sai | Trung bình | Unit test riêng, có ca 22:00–02:00 |
 | Embedding lưu dạng rõ → ai đọc được đĩa/SD card thì có vector khuôn mặt | Trung bình | Đã chấp nhận trong v3. Giảm nhẹ: không có route trả vector, quyền file hạn chế, xoá là xoá thật. **Hướng mở rộng, chưa kiểm chứng:** mã hoá khi lưu (AES-GCM + khoá ngoài file cấu hình) — chỉ làm khi người dùng duyệt, và phải kiểm tra wheel `cryptography` aarch64 cp313 trên Pi 4 trước; **hiện chưa có bằng chứng** cài được |
 | CLAHE không đủ cho mọi điều kiện sáng | Trung bình | Chỉ có bằng chứng ở 1 ca ngược sáng mạnh (0 → 1 mặt) và 12 khung sáng đều (không đổi kết quả). Thiếu sáng, đèn vàng, bóng đổ **chưa đo**; hậu quả rơi vào `UNKNOWN` chứ không phải `IMPOSTOR`, nên không gây báo nhầm |
