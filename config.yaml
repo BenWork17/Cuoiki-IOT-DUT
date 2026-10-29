@@ -106,6 +106,25 @@ sensors:
   ultrasonic_enabled: true
   min_distance_cm: 35
 
+# Nhận diện khuôn mặt (YuNet phát hiện + SFace đặc trưng — spec V3 §5.13, §6).
+# Mặc định TẮT vì 'match_threshold' còn null: ngưỡng cosine phải được ĐO trên
+# dữ liệu thật của chính dự án rồi mới điền vào (spec §5.13, §14 bước H).
+# Không chép ngưỡng từ tài liệu OpenCV hay repo khác vào làm mặc định.
+# 'enabled' để trống = tự động: bật khi đã có match_threshold, tắt khi chưa.
+# Ghi 'enabled: true' khi match_threshold vẫn null là LỖI cấu hình ngay lúc nạp.
+face:
+  enabled: false               # chưa đo ngưỡng thì để false
+  detector: yunet.onnx         # 228 KB — đường dẫn tới tệp mô hình phát hiện
+  recognizer: sface.onnx       # 37 MB — tệp mô hình đặc trưng
+  interval_s: 2.0              # KHÔNG chạy mỗi khung (86,1 ms/lượt, spec §4.2)
+  match_threshold: null        # BẮT BUỘC đặt sau khi đo — null = không chạy
+  impostor_hold_s: 5.0
+  enroll_step_s: 1.5
+  enroll_min_samples: 3
+  detect_width: 320            # BẮT BUỘC thu nhỏ trước khi detect (§5.13)
+  clahe_enabled: true          # phòng ngừa ngược sáng, 11,4 ms — rẻ
+  store_path: "data/faces.json"  # chỉ chứa vector + tên, KHÔNG có ảnh
+
 storage:
   db_path: data/posture.db
   retention_days: 30
