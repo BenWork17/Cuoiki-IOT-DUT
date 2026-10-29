@@ -448,7 +448,12 @@ def test_loi_nguoi_hoc_chi_ghi_log_mot_lan(monkeypatch, tmp_path):
     monkeypatch.setattr(cli.cv2, "imshow", lambda *a, **k: None)
     monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda *a, **k: None)
     monkeypatch.setattr(cli.cv2, "getWindowProperty", lambda *a, **k: 1.0)
-    monkeypatch.setattr(cli.cv2, "waitKey", lambda *a, **k: ord("q"))
+    # Chỉ thoát ở khung thứ ba: hai khung đầu phải thực sự chạy qua dịch vụ,
+    # nếu không thì "chỉ một cảnh báo" không chứng minh được gì.
+    keys = [0, 0, ord("q")]
+    monkeypatch.setattr(
+        cli.cv2, "waitKey", lambda *a, **k: keys.pop(0) if keys else ord("q")
+    )
 
     people = _BoomPeople()
     logger = _RecordingLogger()
