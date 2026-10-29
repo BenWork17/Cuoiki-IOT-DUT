@@ -14,6 +14,7 @@ Quy tắc:
 
 from __future__ import annotations
 
+import math
 import os
 import re
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from urllib.parse import unquote, urlsplit
 
 import yaml
 
+from .faces import STORE_FILENAME as FACE_STORE_FILENAME
 from .schedule import (
     ALERT_KINDS,
     DEFAULT_KINDS,
@@ -123,6 +125,39 @@ class CameraConfig:
             f"width={self.width}, height={self.height}, view={self.view!r}, "
             f"onvif={self.onvif!r}, speaker={self.speaker!r})"
         )
+
+
+@dataclass
+class FaceConfig:
+    """Nhận diện khuôn mặt (YuNet + SFace), spec V3 §6.
+
+    ``match_threshold`` là **ngưỡng cosine** và mặc định ``None`` = **chưa
+    đo**. Spec §5.13 cấm chép ngưỡng từ tài liệu hay repo khác vào làm mặc
+    định: chưa đo thì tính năng phải **không chạy**, chứ không được chạy với
+    một con số bịa. Vì vậy ``enabled: true`` cùng ``match_threshold: null`` là
+    tổ hợp **không hợp lệ về nghiệp vụ** và :func:`_parse_face` báo
+    :class:`ConfigError` ngay lúc nạp — im lặng chạy tiếp sẽ khiến người vận
+    hành tưởng nhận diện đã bật.
+
+    ``enabled`` để trống/``null`` nghĩa là **tự động**: bật khi đã có ngưỡng,
+    tắt khi chưa (cùng tinh thần ``camera.onvif.enabled``). Ghi rõ ``false``
+    thì luôn tắt, kể cả khi đã có ngưỡng.
+
+    Không có trường mật khẩu hay bí mật: đây là cấu hình thuần số/đường dẫn.
+    """
+
+    enabled: bool | None = None
+    detector: str = "yunet.onnx"
+    recognizer: str = "sface.onnx"
+    interval_s: float = 2.0
+    #: ``None`` = chưa đo ngưỡng → tính năng không chạy (spec §5.13, §6).
+    match_threshold: float | None = None
+    impostor_hold_s: float = 5.0
+    enroll_step_s: float = 1.5
+    enroll_min_samples: int = 3
+    detect_width: int = 320
+    clahe_enabled: bool = True
+    store_path: str = f"data/{FACE_STORE_FILENAME}"
 
 
 @dataclass
@@ -254,6 +289,8 @@ class Config:
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    #: Nhận diện khuôn mặt (``face``); mặc định TẮT vì chưa đo ngưỡng.
+    face: FaceConfig = field(default_factory=FaceConfig)
     #: Giờ học quy định (``schedule``); mặc định tắt.
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
 
@@ -931,6 +968,123 @@ def _parse_storage(raw: Any) -> StorageConfig:
     return cfg
 
 
+def _get_optional_float(
+    data: dict[str, Any], key: str, section: str
+) -> float | None:
+    """Như :func:`_get_float` nhưng thiếu khóa/``null`` trả ``None``.
+
+    Dùng cho ``face.match_threshold``: ``None`` là trạng thái **hợp lệ và có
+    nghĩa** — "chưa đo ngưỡng" — chứ không phải giá trị thiếu. Sai kiểu
+    (chuỗi, bool) vẫn là lỗi cấu hình.
+    """
+    if key not in data or data[key] is None:
+        return None
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(
+            f"'{_where(section, key)}' phải là số hoặc null (chưa đo), nhận "
+            f"được {type(value).__name__}: {value!r}."
+        )
+    return float(value)
+
+
+def _parse_face(raw: Any) -> FaceConfig:
+    """Nạp mục ``face`` (tuỳ chọn; thiếu mục = tắt).
+
+    Quyết định ở mục 1 của nhiệm vụ: ``enabled: true`` cùng
+    ``match_threshold: null`` **báo lỗi lúc nạp**, không lặng lẽ chạy với ngưỡng
+    mặc định. Lý do: người dùng ghi ``enabled: true`` nghĩa là họ tin nhận
+    diện đang bật; chạy với một con số bịa sẽ tạo ra nhãn MATCH/MISMATCH không
+    có cơ sở đo, đúng điều spec §5.13 cấm ("không chép ngưỡng từ tài liệu hay
+    repo khác"). Một lỗi cấu hình rõ ràng ở thời điểm nạp rẻ hơn nhiều so với
+    một nhãn sai lúc chạy.
+
+    ``enabled`` để trống/``null`` là tự động: bật khi có ngưỡng, tắt khi chưa.
+    """
+    data = _as_dict(raw, "face")
+    cfg = FaceConfig(
+        enabled=_get_optional_bool(data, "enabled", "face"),
+        detector=_get_str(data, "detector", FaceConfig.detector, "face"),
+        recognizer=_get_str(
+            data, "recognizer", FaceConfig.recognizer, "face"
+        ),
+        interval_s=_get_float(
+            data, "interval_s", FaceConfig.interval_s, "face"
+        ),
+        match_threshold=_get_optional_float(data, "match_threshold", "face"),
+        impostor_hold_s=_get_float(
+            data, "impostor_hold_s", FaceConfig.impostor_hold_s, "face"
+        ),
+        enroll_step_s=_get_float(
+            data, "enroll_step_s", FaceConfig.enroll_step_s, "face"
+        ),
+        enroll_min_samples=_get_int(
+            data, "enroll_min_samples", FaceConfig.enroll_min_samples, "face"
+        ),
+        detect_width=_get_int(
+            data, "detect_width", FaceConfig.detect_width, "face"
+        ),
+        clahe_enabled=_get_bool(
+            data, "clahe_enabled", FaceConfig.clahe_enabled, "face"
+        ),
+        store_path=_get_str(
+            data, "store_path", FaceConfig.store_path, "face"
+        ),
+    )
+    if not cfg.detector.strip():
+        raise ConfigError("'face.detector' không được để trống.")
+    if not cfg.recognizer.strip():
+        raise ConfigError("'face.recognizer' không được để trống.")
+    if not cfg.store_path.strip():
+        raise ConfigError(
+            "'face.store_path' không được để trống; kho khuôn mặt cần một "
+            "đường dẫn tệp."
+        )
+    if cfg.interval_s <= 0:
+        raise ConfigError(
+            "'face.interval_s' phải là số dương (nhịp nhận diện, giây)."
+        )
+    if cfg.impostor_hold_s < 0:
+        raise ConfigError("'face.impostor_hold_s' không được âm.")
+    if cfg.enroll_step_s <= 0:
+        raise ConfigError(
+            "'face.enroll_step_s' phải là số dương (giây mỗi tư thế)."
+        )
+    if cfg.enroll_min_samples <= 0:
+        raise ConfigError(
+            "'face.enroll_min_samples' phải là số dương (số mẫu tối thiểu)."
+        )
+    if cfg.detect_width <= 0:
+        raise ConfigError(
+            "'face.detect_width' phải là số dương (chiều rộng thu nhỏ trước "
+            "khi detect, spec §5.13)."
+        )
+    if cfg.match_threshold is not None:
+        if not (-1.0 <= cfg.match_threshold <= 1.0):
+            raise ConfigError(
+                "'face.match_threshold' phải nằm trong [-1.0, 1.0] (miền giá "
+                f"trị của cosine), nhận được {cfg.match_threshold!r}."
+            )
+        if not math.isfinite(cfg.match_threshold):
+            raise ConfigError(
+                "'face.match_threshold' phải hữu hạn, nhận được "
+                f"{cfg.match_threshold!r}."
+            )
+
+    if cfg.enabled is None:
+        # Tự động: chưa có ngưỡng thì tắt, có rồi thì bật.
+        cfg.enabled = cfg.match_threshold is not None
+    elif cfg.enabled and cfg.match_threshold is None:
+        raise ConfigError(
+            "'face.enabled' là true nhưng 'face.match_threshold' đang null. "
+            "Ngưỡng nhận diện phải được ĐO trên dữ liệu thật của dự án rồi "
+            "điền vào (spec V3 §5.13, §14 bước H) — không dùng ngưỡng mặc "
+            "định. Hoặc điền 'face.match_threshold', hoặc đặt "
+            "'face.enabled: false'."
+        )
+    return cfg
+
+
 def _parse_web(raw: Any) -> WebConfig:
     data = _as_dict(raw, "web")
     cfg = WebConfig(
@@ -1135,6 +1289,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         sensors=_parse_sensors(raw.get("sensors")),
         storage=_parse_storage(raw.get("storage")),
         web=_parse_web(raw.get("web")),
+        face=_parse_face(raw.get("face")),
         schedule=_parse_schedule(raw.get("schedule")),
         path=str(config_path),
     )
