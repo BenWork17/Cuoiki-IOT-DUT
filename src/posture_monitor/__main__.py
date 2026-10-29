@@ -322,13 +322,19 @@ class _Dashboard:
         self.state = DashboardState()
         self.storage = Storage(config)
         self.storage.open()
+        self.people = _create_people_service(config, logger)
         try:
             self.app = create_app(
-                config, state=self.state, storage=self.storage
+                config,
+                state=self.state,
+                storage=self.storage,
+                people=self.people,
             )
         except BaseException:
-            # Không để rò kết nối ghi khi dựng app hỏng.
+            # Không để rò kết nối ghi hoặc luồng thu mẫu khi dựng app hỏng.
             self.storage.close()
+            if self.people is not None:
+                self.people.close()
             raise
         self.thread = threading.Thread(
             target=_serve_web,
@@ -340,6 +346,50 @@ class _Dashboard:
     def start(self) -> None:
         """Chạy server web ở luồng nền (không chặn vòng lặp giám sát)."""
         self.thread.start()
+
+
+def _create_people_service(config, logger):
+    """Dựng :class:`~posture_monitor.people_service.PeopleService` **thật**.
+
+    Trả ``None`` — và dashboard chạy như trước — khi ``face.enabled`` tắt.
+    Đó là mặc định của ``config.yaml``: chưa đo ``match_threshold`` thì tính
+    năng nhận diện không được chạy (spec §5.13). Bật cờ đó lên thì cả chín
+    route ``/api/people*``, ``/api/enroll*``, ``/api/select``,
+    ``/api/schedule``, ``/api/signals`` mới có dịch vụ thật để gọi.
+
+    Hàm **không bao giờ ném**: thiếu model hay thư mục kho chỉ là cảnh báo,
+    dashboard và vòng lặp giám sát vẫn phải chạy (spec §11.3).
+
+    ``FaceRecognizer`` nạp model ở lần dùng đầu, nên dựng đối tượng ở đây
+    không cần tệp ``yunet.onnx``/``sface.onnx`` có mặt.
+    """
+    face = getattr(config, "face", None)
+    if face is None or not getattr(face, "enabled", False):
+        return None
+    try:
+        from .faces import FaceRecognizer, FaceStore  # noqa: PLC0415
+        from .people_service import PeopleService  # noqa: PLC0415
+
+        # ``face.store_path`` trỏ tới TỆP kho; ``FaceStore`` nhận thư mục.
+        store_path = Path(face.store_path)
+        store_dir = store_path.parent if str(store_path.parent) else Path(".")
+        store = FaceStore(store_dir)
+        recognizer = FaceRecognizer(face.detector, face.recognizer)
+        return PeopleService(
+            store,
+            recognizer,
+            threshold=face.match_threshold,
+            step_s=float(face.enroll_step_s),
+            samples_needed=int(face.enroll_min_samples),
+            schedule=getattr(config, "schedule", None),
+            logger=logger,
+        )
+    except Exception:  # noqa: BLE001 - thiếu model kho không được giết dashboard
+        logger.exception(
+            "Không dựng được dịch vụ người học; dashboard vẫn chạy nhưng các "
+            "tính năng người học sẽ trả 503."
+        )
+        return None
 
 
 def _serve_web(app, config, logger) -> None:
@@ -361,6 +411,20 @@ def _serve_web(app, config, logger) -> None:
         )
 
 
+def _presence_state(state_text: str) -> str:
+    """Đổi trạng thái của máy trạng thái sang tín hiệu presence của web.
+
+    ``ABSENT`` là trạng thái duy nhất được coi là vắng; mọi trạng thái còn
+    lại (GOOD/WARN/BAD) đều chứng minh còn người trong khung.
+    """
+    from . import state as state_mod  # noqa: PLC0415 - tránh vòng import
+    from . import presence as presence_mod  # noqa: PLC0415
+
+    if state_text == state_mod.STATE_ABSENT:
+        return presence_mod.STATE_ABSENT
+    return presence_mod.STATE_PRESENT
+
+
 def _monitor_loop(
     estimator,
     source,
@@ -371,6 +435,7 @@ def _monitor_loop(
     sensor=None,
     dispatcher=None,
     stream_enabled=False,
+    people=None,
 ) -> int:
     """Vòng lặp giám sát: đọc khung → pose → đặc trưng → phân loại → trạng thái.
 
@@ -386,6 +451,9 @@ def _monitor_loop(
     - Yêu cầu hiệu chỉnh từ web **không** tự chạy ở đây: chỉ log hướng dẫn
       chạy lệnh ``calibrate`` rồi khởi động lại, vì hiệu chỉnh cần một cửa sổ
       thu riêng và người dùng phải ngồi đúng tư thế.
+    - ``people`` (dịch vụ người học) nhận khung qua ``observe`` và tín hiệu
+      presence/phone qua ``update_signals``; mỗi lời gọi được bọc ``try`` và
+      chỉ **ghi log**, vì lỗi của tính năng mới không được làm chết camera.
     """
     from .calibration import (  # noqa: PLC0415 - chỉ nhánh này cần
         DEFAULT_PATH,
@@ -451,6 +519,9 @@ def _monitor_loop(
     loop_start = time.monotonic()
     #: Nhãn đang có sự kiện cảnh báo đang mở, để dựng chữ ``alert`` cho web.
     active_alerts: dict[str, str] = {}
+
+    #: Số lần dịch vụ người học ném lỗi; chỉ log lần đầu (xem vòng lặp).
+    people_errors = 0
 
     #: Cửa sổ xem trước còn dùng được không. Không phải máy nào cũng có
     #: display/backend Qt lành: trên Pi qua xrdp, thiếu thư mục font làm Qt
@@ -566,6 +637,32 @@ def _monitor_loop(
 
             if storage is not None:
                 storage.record(update, distance_cm)
+
+            # Tính năng người học: ``observe`` chỉ cất tham chiếu khung rồi
+            # trả về ngay (xem docstring ``PeopleService``). Lỗi ở đây —
+            # kể cả ``AttributeError`` vì dịch vụ nửa vời — phải bị nuốt và
+            # đếm, không được giết vòng lặp camera.
+            if people is not None:
+                try:
+                    # Đồng hồ của dịch vụ là ``time.monotonic`` (giây tuyệt
+                    # đối), **không** phải ``now`` tương đối so với
+                    # ``loop_start`` ở trên — trộn hai gốc thời gian sẽ khiến
+                    # tuổi tín hiệu sai hàng nghìn giây.
+                    people_now = time.monotonic()
+                    people.update_signals(
+                        presence=_presence_state(update.state),
+                        now=people_now,
+                    )
+                    people.observe(frame, people_now)
+                except Exception as exc:  # noqa: BLE001 - spec §11.3
+                    people_errors += 1
+                    if people_errors == 1:
+                        logger.warning(
+                            "Dịch vụ người học lỗi khi nhận khung (%s); vẫn "
+                            "giám sát, chỉ tính năng người học bị ảnh hưởng. "
+                            "Các lỗi sau không ghi log để tránh ngập log.",
+                            exc,
+                        )
 
             if dispatcher is not None:
                 if state is not None and state.muted:
@@ -691,11 +788,15 @@ def cmd_run(args: argparse.Namespace) -> int:
                 sensor=sensor,
                 dispatcher=dispatcher,
                 stream_enabled=bool(config.web.stream_enabled),
+                people=getattr(dashboard, "people", None),
             )
         finally:
             if dashboard is not None:
                 dashboard.storage.close()
                 dashboard.thread.join(timeout=1.0)
+                people_service = getattr(dashboard, "people", None)
+                if people_service is not None:
+                    people_service.close()
             if dispatcher is not None:
                 dispatcher.close()
             if sensor is not None:

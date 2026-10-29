@@ -50,7 +50,7 @@ import math
 import threading
 import time
 import uuid
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -63,6 +63,14 @@ from .faces import (
     validate_threshold,
 )
 from .logging_setup import get_logger
+from .schedule import (
+    ALERT_KINDS,
+    DEFAULT_KINDS,
+    ScheduleConfig,
+    ScheduleError,
+    parse_kind_settings,
+    parse_window,
+)
 
 _LOGGER = get_logger(__name__)
 
@@ -120,6 +128,102 @@ def _coerce_embedding(value: Any) -> np.ndarray | None:
         return None
 
 
+#: Khóa hợp lệ ở cấp ngoài cùng của payload ``PUT /api/schedule``.
+_SCHEDULE_KEYS = ("enabled", "windows", "kinds")
+
+
+def _schedule_payload(schedule: ScheduleConfig) -> dict[str, Any]:
+    """Đổi :class:`ScheduleConfig` thành dict thuần để trả qua JSON."""
+    return {
+        "enabled": bool(schedule.enabled),
+        "windows": [
+            {
+                "days": list(window.days),
+                "start": window.start.strftime("%H:%M"),
+                "end": window.end.strftime("%H:%M"),
+            }
+            for window in schedule.windows
+        ],
+        "kinds": {
+            name: {
+                "enabled": bool(settings.enabled),
+                "cooldown_s": float(settings.cooldown_s),
+                "hold_s": float(settings.hold_s),
+            }
+            for name, settings in schedule.kinds.items()
+        },
+    }
+
+
+def _parse_schedule_payload(raw: Mapping[str, Any]) -> ScheduleConfig:
+    """Đọc payload của ``PUT /api/schedule`` bằng chính hàm của ``schedule``.
+
+    Cùng cú pháp và cùng lời báo lỗi với ``config.yaml``. Khóa lạ bị từ chối
+    thay vì bỏ qua: người dùng gõ nhầm ``window`` cho ``windows`` mà không
+    thấy lỗi sẽ tưởng lịch đã đổi.
+
+    Raises:
+        PeopleServiceError: payload sai ở bất kỳ mức nào.
+    """
+    unknown = sorted(set(raw) - set(_SCHEDULE_KEYS))
+    if unknown:
+        raise PeopleServiceError(
+            f"Khóa giờ học không hợp lệ: {', '.join(unknown)}; dùng một trong "
+            f"{', '.join(_SCHEDULE_KEYS)}."
+        )
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise PeopleServiceError(
+            f"'{'enabled'}' của giờ học phải là true/false, nhận được "
+            f"{enabled!r}."
+        )
+
+    raw_windows = raw.get("windows")
+    windows: list[Any] = []
+    try:
+        if raw_windows is not None:
+            if not isinstance(raw_windows, (list, tuple)):
+                raise PeopleServiceError(
+                    "'windows' phải là danh sách khung giờ, nhận được "
+                    f"{type(raw_windows).__name__}."
+                )
+            for index, item in enumerate(raw_windows):
+                windows.append(parse_window(item, f"windows[{index}]"))
+        if enabled and not windows:
+            raise PeopleServiceError(
+                "Bật giờ học nhưng 'windows' đang trống. Thêm ít nhất một "
+                "khung giờ hoặc đặt enabled: false."
+            )
+
+        raw_kinds = raw.get("kinds")
+        kinds: dict[str, Any] = {}
+        if raw_kinds is not None:
+            if not isinstance(raw_kinds, Mapping):
+                raise PeopleServiceError(
+                    "'kinds' phải là ánh xạ theo tên loại cảnh báo "
+                    f"({', '.join(ALERT_KINDS)}), nhận được "
+                    f"{type(raw_kinds).__name__}."
+                )
+            for name, item in raw_kinds.items():
+                if name not in ALERT_KINDS:
+                    raise PeopleServiceError(
+                        f"'kinds.{name}' không phải loại cảnh báo hợp lệ; "
+                        f"dùng một trong {ALERT_KINDS}."
+                    )
+                kinds[name] = parse_kind_settings(item, f"kinds.{name}")
+    except ScheduleError as exc:
+        # Lỗi cú pháp của ``schedule.py`` là lỗi người dùng sửa được, nên
+        # dịch sang lỗi nghiệp vụ của dịch vụ (400), không phải 503.
+        raise PeopleServiceError(str(exc)) from exc
+
+    return ScheduleConfig(
+        enabled=enabled,
+        windows=tuple(windows),
+        kinds={**DEFAULT_KINDS, **kinds},
+    )
+
+
 def _as_steps(steps: Sequence[str] | None) -> tuple[str, ...]:
     """Kiểm tra danh sách bước đăng ký."""
     if steps is None:
@@ -154,6 +258,9 @@ class PeopleService:
         steps: năm câu hướng dẫn; mặc định :data:`DEFAULT_STEPS`.
         step_s: thời gian mỗi tư thế.
         samples_needed: số embedding hợp lệ tối thiểu để ghi.
+        schedule: khung giờ học ban đầu cho :meth:`get_schedule`; ``None``
+            thì dùng ``ScheduleConfig()`` (tắt, không khung giờ). Đây là bản
+            sao **trong bộ nhớ** — xem :meth:`put_schedule`.
         logger: logger dùng riêng (mặc định logger của module).
 
     Raises:
@@ -171,6 +278,7 @@ class PeopleService:
         steps: Sequence[str] | None = None,
         step_s: float = DEFAULT_STEP_S,
         samples_needed: int = DEFAULT_SAMPLES_NEEDED,
+        schedule: ScheduleConfig | None = None,
         logger: Any = None,
     ) -> None:
         self._store = store
@@ -202,6 +310,11 @@ class PeopleService:
         self._lock = threading.RLock()
         self._enrollments: dict[str, dict[str, Any]] = {}
         self._selected: str | None = None
+
+        # Khung giờ học sống **trong bộ nhớ** (xem ``put_schedule``).
+        self._schedule: ScheduleConfig = (
+            schedule if schedule is not None else ScheduleConfig()
+        )
 
         # Tín hiệu đã cập nhật gần nhất; mỗi bản ghi có "updated_at".
         self._presence: dict[str, Any] = {"state": STATE_NO_DATA, "updated_at": None}
@@ -662,6 +775,58 @@ class PeopleService:
         """Tên người đang được chọn, hoặc ``None``."""
         with self._lock:
             return self._selected
+
+    # ------------------------------------------------------------------
+    # khung giờ học (spec §5.16)
+    # ------------------------------------------------------------------
+    def get_schedule(self) -> dict:
+        """Khung giờ học hiện tại, cùng dạng với mục ``schedule`` của config.
+
+        Returns:
+            ``{"enabled": bool, "windows": [{"days": [...], "start": "HH:MM",
+            "end": "HH:MM"}, ...], "kinds": {name: {"enabled": ...,
+            "cooldown_s": ..., "hold_s": ...}}}``.
+
+        **Không lưu qua lần khởi động lại.** Bản sao này chỉ sống trong bộ
+        nhớ của đối tượng dịch vụ; khởi động lại ``run`` sẽ đọc lại
+        ``config.yaml``. Module này cố ý không có helper ghi YAML nào.
+        """
+        with self._lock:
+            return _schedule_payload(self._schedule)
+
+    def put_schedule(self, payload: Mapping[str, Any]) -> dict:
+        """Kiểm tra rồi ghi khung giờ học vào **bộ nhớ**; trả cấu hình mới.
+
+        Dùng lại đúng các hàm đọc của ``config.py``/``schedule.py``
+        (:func:`~posture_monitor.schedule.parse_window`,
+        :func:`~posture_monitor.schedule.parse_kind_settings`) để cú pháp và
+        lời báo lỗi khớp với ``config.yaml``; giữ nguyên luật nghiệp vụ
+        "``enabled: true`` với danh sách khung giờ rỗng là không hợp lệ".
+
+        Payload **không** nằm trong danh sách khóa đã biết bị bỏ qua im lặng:
+        khóa lạ là lỗi, để người dùng không tưởng nhầm là đã đặt.
+
+        **Không ghi ra tệp.** Cấu hình mới mất khi khởi động lại; muốn bền
+        thì sửa ``config.yaml`` tay. Ghi ngầm vào ``config.yaml`` sẽ làm hỏng
+        định dạng/ghi chú người dùng tự viết — quyết định có chủ ý.
+
+        Raises:
+            PeopleServiceError: payload sai (không phải ánh xạ, khóa lạ,
+                giờ/thứ sai, khung rỗng khi ``enabled``).
+        """
+        if not isinstance(payload, Mapping):
+            raise PeopleServiceError(
+                "Cấu hình giờ học phải là một đối tượng JSON."
+            )
+        schedule = _parse_schedule_payload(payload)
+        with self._lock:
+            self._schedule = schedule
+        self._log.info(
+            "Đã cập nhật giờ học trong bộ nhớ: enabled=%s, %d khung giờ.",
+            schedule.enabled,
+            len(schedule.windows),
+        )
+        return _schedule_payload(schedule)
 
     # ------------------------------------------------------------------
     # tín hiệu cho web
