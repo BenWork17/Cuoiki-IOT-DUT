@@ -759,6 +759,18 @@ class PeopleService:
                 return record
         return None
 
+    def is_enrolling(self) -> bool:
+        """Có phiên đăng ký nào đang chạy không.
+
+        Vòng lặp dùng cờ này để BỎ QUA cổng nhịp ``face.interval_s`` trong
+        lúc đăng ký: cửa sổ đăng ký chỉ dài ``len(steps) * step_s`` (7,5 s) và
+        mỗi bước chỉ nhận một mẫu, nên hai lần trượt detect rơi đúng nhịp cổng
+        là đủ làm phiên thất bại. Đo thật: có cổng → ``failed`` 2/3 mẫu;
+        không cổng → ``done`` 3/3.
+        """
+        with self._lock:
+            return self._running_enrollment() is not None
+
     def _expire(self, record: dict[str, Any], moment: float) -> None:
         """Hết thời gian cả chuỗi tư thế mà chưa đủ mẫu → ``failed``, không ghi."""
         if record["state"] != STATE_RUNNING:
