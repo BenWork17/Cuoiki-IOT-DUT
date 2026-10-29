@@ -718,7 +718,7 @@ def create_app(
         """
         if people is None:
             return _people_unavailable()
-        ok, result = _people_call(people.signals)
+        ok, result = _people_call(lambda: people.signals())
         if not ok:
             return result
         return jsonify(_scrub_biometrics(dict(result)))
@@ -728,7 +728,7 @@ def create_app(
         """Khung giờ học hiện tại."""
         if people is None:
             return _people_unavailable()
-        ok, result = _people_call(people.get_schedule)
+        ok, result = _people_call(lambda: people.get_schedule())
         if not ok:
             return result
         return jsonify({"ok": True, "schedule": result})

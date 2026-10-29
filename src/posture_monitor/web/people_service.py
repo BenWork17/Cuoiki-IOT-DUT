@@ -18,6 +18,11 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
+#: Lỗi nghiệp vụ **thật** của dịch vụ người học, dùng lại chứ không định nghĩa
+#: lớp thứ hai. Hai lớp cùng tên là cách chắc chắn nhất để ``except`` bên web
+#: không bao giờ khớp lỗi dịch vụ thật ném ra — và biến 400 thành 503.
+from ..people_service import PeopleServiceError  # noqa: F401  re-export
+
 #: Năm bước hướng dẫn đăng ký, đúng thứ tự spec §5.13 và §3.4:
 #: nhìn thẳng → quay phải → quay trái → ngẩng → cúi. Bản thật phát đúng
 #: chuỗi này ra loa camera lẫn màn hình, nên chuỗi phải khớp từng chữ.
@@ -28,14 +33,6 @@ ENROLL_STEPS: tuple[str, ...] = (
     "Ngẩng lên",
     "Cúi xuống",
 )
-
-
-class PeopleServiceError(ValueError):
-    """Lỗi nghiệp vụ của dịch vụ người học; thông điệp bằng tiếng Việt.
-
-    Kế thừa ``ValueError`` để chỗ gọi nào bắt lỗi giá trị cũ vẫn chạy, nhưng
-    lớp web phân biệt nó với lỗi hệ thống để trả đúng 400 / 503.
-    """
 
 
 @runtime_checkable
