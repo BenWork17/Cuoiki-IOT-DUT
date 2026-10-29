@@ -150,17 +150,20 @@ presence:
                          # (5 s) — điều kiện phải giữ đủ lâu mới thành cảnh báo.
 
 # Nhận diện khuôn mặt (YuNet phát hiện + SFace đặc trưng — spec V3 §5.13, §6).
-# Mặc định TẮT vì 'match_threshold' còn null: ngưỡng cosine phải được ĐO trên
-# dữ liệu thật của chính dự án rồi mới điền vào (spec §5.13, §14 bước H).
-# Không chép ngưỡng từ tài liệu OpenCV hay repo khác vào làm mặc định.
+# 'match_threshold' để null nghĩa là CHƯA có số đo tay. Khi đó ngưỡng được
+# TỰ SUY RA từ chính các mẫu đăng ký của bạn (độ giống nhau thấp nhất giữa
+# hai mẫu cùng người, trừ một khoảng an toàn) ngay khi đăng ký đủ
+# 'enroll_min_samples' mẫu; trước đó mọi quan sát là UNKNOWN.
+# Không có ngưỡng bịa nào ở đây — spec §5.13 cấm chép ngưỡng từ tài liệu/repo
+# khác vào làm mặc định. Muốn đặt tay: chạy 'python scripts/face_threshold_probe.py'
+# rồi dán số đo vào 'match_threshold' (số trong config LUÔN thắng số tự suy).
 # 'enabled' để trống = tự động: bật khi đã có match_threshold, tắt khi chưa.
-# Ghi 'enabled: true' khi match_threshold vẫn null là LỖI cấu hình ngay lúc nạp.
 face:
-  enabled: false               # chưa đo ngưỡng thì để false
+  enabled: true                # bật; ngưỡng tự suy ra khi đăng ký đủ mẫu
   detector: yunet.onnx         # 228 KB — đường dẫn tới tệp mô hình phát hiện
   recognizer: sface.onnx       # 37 MB — tệp mô hình đặc trưng
   interval_s: 2.0              # KHÔNG chạy mỗi khung (86,1 ms/lượt, spec §4.2)
-  match_threshold: null        # BẮT BUỘC đặt sau khi đo — null = không chạy
+  match_threshold: null        # null = chưa có số đo → tự suy từ mẫu đăng ký
   impostor_hold_s: 5.0
   enroll_step_s: 1.5
   enroll_min_samples: 3

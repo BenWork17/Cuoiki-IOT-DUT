@@ -89,6 +89,23 @@ DEFAULT_STEP_S = 1.5
 #: Số embedding hợp lệ tối thiểu để ghi danh tính; spec §5.13: 3.
 DEFAULT_SAMPLES_NEEDED = 3
 
+# -- Ngưỡng tự suy từ dữ liệu đăng ký ---------------------------------------
+#
+# Khi ``face.match_threshold`` là null, ngưỡng cosine được suy ra từ chính
+# các mẫu của người vừa đăng ký: độ giống nhau THẤP NHẤT giữa hai mẫu bất kỳ
+# của cùng một người chính là mức "vẫn còn là chính mình" trên thiết bị này.
+# Đặt ngưỡng thấp hơn mức đó một khoảng an toàn để biến thiên ánh sáng/góc
+# mặt giữa các lần đo không làm rơi người thật xuống dưới ngưỡng.
+#
+# Đây KHÔNG phải ngưỡng chép từ tài liệu hay repo khác: giá trị cuối cùng
+# phụ thuộc hoàn toàn vào dữ liệu người dùng vừa đăng ký.
+AUTO_THRESHOLD_MARGIN = 0.15
+#: Sàn: dưới mức này thì "khớp" gần như vô nghĩa (hai vector gần trực giao).
+AUTO_THRESHOLD_MIN = 0.30
+#: Trần: trên mức này chỉ khung gần như trùng khít mới qua, dễ bỏ sót người
+#: thật; dữ liệu đăng ký ít mẫu không đủ tư cách đòi hỏi cao hơn.
+AUTO_THRESHOLD_MAX = 0.95
+
 #: Trạng thái của một phiên đăng ký.
 STATE_RUNNING = "running"
 STATE_DONE = "done"
@@ -130,6 +147,41 @@ def _coerce_embedding(value: Any) -> np.ndarray | None:
 
 #: Khóa hợp lệ ở cấp ngoài cùng của payload ``PUT /api/schedule``.
 _SCHEDULE_KEYS = ("enabled", "windows", "kinds")
+
+
+def derive_threshold(
+    samples: Sequence[np.ndarray],
+) -> float | None:
+    """Suy ngưỡng cosine từ các embedding mẫu của **cùng một người**.
+
+    Lấy độ giống nhau **thấp nhất** giữa mọi cặp mẫu (mức còn nhận ra chính
+    mình), trừ :data:`AUTO_THRESHOLD_MARGIN` để có khoảng an toàn, rồi kẹp
+    vào ``[AUTO_THRESHOLD_MIN, AUTO_THRESHOLD_MAX]`` và làm tròn 2 chữ số.
+
+    Trả ``None`` khi không có cơ sở để suy: ít hơn 3 mẫu (cần ít nhất ba mẫu
+    để có ba cặp), mẫu khác số chiều, hoặc một cặp không so được. Khi đó
+    tính năng giữ nguyên trạng thái "chưa có ngưỡng" thay vì bịa số.
+    """
+    vectors = [np.asarray(sample, dtype=np.float64).reshape(-1) for sample in samples]
+    if len(vectors) < 3:
+        return None
+    dim = vectors[0].size
+    if dim == 0 or any(vector.size != dim for vector in vectors):
+        return None
+    lowest: float | None = None
+    for i in range(len(vectors)):
+        for j in range(i + 1, len(vectors)):
+            try:
+                score = cosine_similarity(vectors[i], vectors[j])
+            except (TypeError, ValueError):
+                return None
+            if lowest is None or score < lowest:
+                lowest = score
+    if lowest is None:
+        return None
+    derived = lowest - AUTO_THRESHOLD_MARGIN
+    derived = max(AUTO_THRESHOLD_MIN, min(AUTO_THRESHOLD_MAX, derived))
+    return round(float(derived), 2)
 
 
 def _schedule_payload(schedule: ScheduleConfig) -> dict[str, Any]:
@@ -292,6 +344,11 @@ class PeopleService:
         if threshold is not None:
             self._threshold = validate_threshold(threshold)
 
+        # Ngưỡng tự suy từ dữ liệu đăng ký, chỉ có khi ``threshold`` là None
+        # và đã đăng ký đủ mẫu. Sống trong bộ nhớ: khởi động lại thì lần đăng
+        # ký kế tiếp suy lại. Giá trị trong config luôn thắng giá trị này.
+        self._auto_threshold: float | None = None
+
         self._steps = _as_steps(steps)
         step_value = float(step_s)
         if not math.isfinite(step_value) or step_value <= 0.0:
@@ -332,6 +389,9 @@ class PeopleService:
         self._worker: threading.Thread | None = None
         self._stop = False
         self._processor: Callable[[Any], Any] | None = None
+        #: Thông điệp lỗi processor gần nhất, để chỉ log khi lỗi ĐỔI (thiếu
+        #: tệp mô hình lặp lại mỗi khung; log hết sẽ ngập).
+        self._processor_error: str | None = None
 
     # ------------------------------------------------------------------
     # processor / luồng worker
@@ -426,10 +486,17 @@ class PeopleService:
         try:
             raw = processor(frame)
         except Exception as exc:  # noqa: BLE001 - lỗi model không được giết vòng lặp
-            self._log.warning(
-                "Không xử lý được khung nhận diện khuôn mặt: %s", exc
-            )
+            # Chỉ log lần đầu và khi lỗi đổi khác: thiếu tệp mô hình là lỗi
+            # lặp lại MỖI khung, ghi hết sẽ ngập log (xem bài học cooldown).
+            message = str(exc)
+            if message != self._processor_error:
+                self._processor_error = message
+                self._log.warning(
+                    "Không xử lý được khung nhận diện khuôn mặt: %s", exc
+                )
             raw = None
+        else:
+            self._processor_error = None
         self._apply_observation(raw, moment)
 
     def update_signals(
@@ -474,7 +541,10 @@ class PeopleService:
                 None,
                 "Không thấy khuôn mặt dùng được trong khung.",
             )
-        if self._threshold is None:
+        # Ngưỡng trong config luôn thắng; nếu chưa có thì dùng ngưỡng tự suy
+        # từ dữ liệu đăng ký. Cả hai đều None mới là "chưa có ngưỡng".
+        effective = self._threshold if self._threshold is not None else self._auto_threshold
+        if effective is None:
             return (
                 IDENTITY_UNKNOWN,
                 None,
@@ -516,7 +586,7 @@ class PeopleService:
             # Có người đang học: MATCH chỉ khi chính người đó trên ngưỡng.
             selected_score = scores.get(selected)
             if selected_score is not None and not best_disqualified(
-                selected_score, self._threshold
+                selected_score, effective
             ):
                 return IDENTITY_MATCH, selected, ""
             return (
@@ -524,7 +594,7 @@ class PeopleService:
                 None,
                 "Khuôn mặt không phải người đang được chọn.",
             )
-        if best_disqualified(best_score, self._threshold):
+        if best_disqualified(best_score, effective):
             return (
                 IDENTITY_MISMATCH,
                 None,
@@ -680,11 +750,40 @@ class PeopleService:
             return
         record["state"] = STATE_DONE
         record["error"] = None
+        # Ngưỡng chỉ tự suy khi người dùng KHÔNG đặt tay trong config.
+        if self._threshold is None:
+            self._derive_auto_threshold(record["samples"])
         self._log.info(
             "Đã đăng ký khuôn mặt '%s' từ %d mẫu ở %d bước.",
             record["name"],
             len(record["samples"]),
             len(record["sampled_steps"]),
+        )
+
+    def _derive_auto_threshold(self, samples: Sequence[np.ndarray]) -> None:
+        """Suy ngưỡng từ các mẫu vừa đăng ký và giữ trong bộ nhớ.
+
+        Chỉ chạy khi ``self._threshold is None`` (config không đặt tay).
+        Không đủ mẫu để suy thì **giữ nguyên** trạng thái chưa có ngưỡng và
+        ghi log lý do — tuyệt đối không điền một con số bịa. Ngưỡng này
+        **không** được ghi xuống kho (kho chỉ chứa vector, spec §5.13.1);
+        khởi động lại sẽ mất cho tới lần đăng ký kế tiếp.
+        """
+        derived = derive_threshold(samples)
+        if derived is None:
+            self._log.warning(
+                "Chưa tự suy được ngưỡng nhận diện: cần ít nhất 3 mẫu hợp lệ "
+                "cùng số chiều (hiện có %d). Mọi quan sát vẫn là UNKNOWN.",
+                len(samples),
+            )
+            return
+        self._auto_threshold = derived
+        self._log.info(
+            "Đã tự suy ngưỡng nhận diện khuôn mặt %.2f từ dữ liệu đăng ký "
+            "(%d mẫu, khoảng cách an toàn %.2f); giữ tới khi khởi động lại.",
+            derived,
+            len(samples),
+            AUTO_THRESHOLD_MARGIN,
         )
 
     def _status_payload(self, record: dict[str, Any]) -> dict[str, Any]:
