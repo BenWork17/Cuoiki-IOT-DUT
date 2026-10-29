@@ -450,7 +450,12 @@ def _build_face_processor(recognizer, face, logger, *, skip_gate=None):
 
     interval_s = float(getattr(face, "interval_s", 2.0) or 2.0)
     #: Lượt đầu phải luôn chạy: ``-inf`` bảo đảm ``now - last_at >= interval_s``.
-    state = {"last_at": -math.inf}
+    #: ``error`` là thông điệp lỗi của lần trước, để cảnh báo chỉ ghi khi lỗi
+    #: **đổi**: thiếu/hỏng ``yunet.onnx`` là lỗi lặp lại mọi lượt, ghi hết sẽ
+    #: ngập log. ``process_frame`` có cơ chế tương tự nhưng chỉ áp cho exception
+    #: thoát ra ngoài ``processor``; ở đây lỗi được nuốt bên trong nên phải có
+    #: bộ chống ngập riêng.
+    state = {"last_at": -math.inf, "error": None}
 
     def processor(frame):
         now = time.monotonic()
@@ -466,16 +471,22 @@ def _build_face_processor(recognizer, face, logger, *, skip_gate=None):
             prepared = frame  # KHÔNG thu nhỏ — xem docstring ở trên.
             faces = recognizer.detect(prepared)
             if not faces:
+                state["error"] = None
                 return None
             largest = max(faces, key=lambda detected: detected.area)
-            return recognizer.embedding(prepared, largest)
+            embedding = recognizer.embedding(prepared, largest)
         except Exception as exc:  # noqa: BLE001 - lỗi model không phải vắng mặt
-            logger.warning(
-                "Không nhận diện được khuôn mặt ở khung này (%s); giữ nguyên "
-                "danh tính gần nhất.",
-                exc,
-            )
+            message = str(exc)
+            if message != state["error"]:
+                state["error"] = message
+                logger.warning(
+                    "Không nhận diện được khuôn mặt ở khung này (%s); giữ "
+                    "nguyên danh tính gần nhất.",
+                    exc,
+                )
             return OBSERVATION_SKIPPED
+        state["error"] = None
+        return embedding
 
     return processor
 
