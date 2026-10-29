@@ -442,8 +442,33 @@ def _monitor_loop(
     #: Nhãn đang có sự kiện cảnh báo đang mở, để dựng chữ ``alert`` cho web.
     active_alerts: dict[str, str] = {}
 
-    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
-    logger.info("Cửa sổ xem trước đã mở. Bấm q hoặc Esc để thoát.")
+    #: Cửa sổ xem trước còn dùng được không. Không phải máy nào cũng có
+    #: display/backend Qt lành: trên Pi qua xrdp, thiếu thư mục font làm Qt
+    #: không tạo được ``guiReceiver``, và mọi lời gọi cửa sổ ném ``cv2.error``
+    #: (-27:Null pointer). Spec §11.3: thiếu display/phần cứng không được giết
+    #: chạy giám sát — chỉ mất cửa sổ xem trước, dashboard web vẫn chạy. Hỏng
+    #: lần đầu thì cảnh báo đúng một lần rồi thôi thử lại, tránh spam ở 5 FPS.
+    preview_ok = True
+
+    def _disable_preview(exc) -> None:
+        """Đánh dấu cửa sổ hỏng và cảnh báo đúng một lần cho cả phiên."""
+        nonlocal preview_ok
+        if not preview_ok:
+            return
+        preview_ok = False
+        logger.warning(
+            "Không dùng được cửa sổ xem trước OpenCV (%s); vẫn tiếp tục giám "
+            "sát, xem trực tiếp trên dashboard web. Sẽ không thử mở lại cửa "
+            "sổ trong phiên chạy này.",
+            exc,
+        )
+
+    try:
+        cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_AUTOSIZE)
+    except Exception as exc:  # noqa: BLE001 - spec §11.3: thiếu display không được chết
+        _disable_preview(exc)
+    else:
+        logger.info("Cửa sổ xem trước đã mở. Bấm q hoặc Esc để thoát.")
 
     try:
         while True:
@@ -539,16 +564,28 @@ def _monitor_loop(
                 else:
                     dispatcher.dispatch(update)
 
-            cv2.imshow(WINDOW_NAME, drawn)
-            # waitKey phải được gọi để OpenCV xử lý sự kiện cửa sổ.
-            key = cv2.waitKey(1) & 0xFF
-            if key in QUIT_KEYS:
-                logger.info("Nhận phím thoát; đóng cửa sổ.")
-                return 0
-            if cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
-                # Người dùng bấm nút X của cửa sổ.
-                logger.info("Cửa sổ đã đóng; thoát.")
-                return 0
+            if preview_ok:
+                try:
+                    cv2.imshow(WINDOW_NAME, drawn)
+                    # waitKey phải được gọi để OpenCV xử lý sự kiện cửa sổ.
+                    key = cv2.waitKey(1) & 0xFF
+                except Exception as exc:  # noqa: BLE001 - spec §11.3
+                    _disable_preview(exc)
+                else:
+                    if key in QUIT_KEYS:
+                        logger.info("Nhận phím thoát; đóng cửa sổ.")
+                        return 0
+                    try:
+                        visible = cv2.getWindowProperty(
+                            WINDOW_NAME, cv2.WND_PROP_VISIBLE
+                        )
+                    except Exception as exc:  # noqa: BLE001 - spec §11.3
+                        _disable_preview(exc)
+                    else:
+                        if visible < 1:
+                            # Người dùng bấm nút X của cửa sổ.
+                            logger.info("Cửa sổ đã đóng; thoát.")
+                            return 0
 
             # Giữ nhịp theo target_fps, không ngủ nếu xử lý đã lâu hơn.
             elapsed = time.monotonic() - started
@@ -556,7 +593,11 @@ def _monitor_loop(
             if remaining > 0:
                 time.sleep(remaining)
     finally:
-        cv2.destroyAllWindows()
+        if preview_ok:
+            try:
+                cv2.destroyAllWindows()
+            except Exception as exc:  # noqa: BLE001 - spec §11.3
+                _disable_preview(exc)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
