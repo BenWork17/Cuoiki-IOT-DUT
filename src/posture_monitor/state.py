@@ -51,6 +51,10 @@ EVENT_ESCALATE = "escalate"
 EVENT_DROWSY = "DROWSY_SUSPECT"
 EVENT_BREAK = "break_reminder"
 EVENT_ABSENT_RESET = "absent_reset"
+#: Loa đã thật sự phát cảnh báo (spec v3 §8.2 tiêu chí 2).
+EVENT_SPEAK_OK = "SPEAK_OK"
+#: Loa không phát được (spec v3 §5.15, §6). **Không** dùng cho ca tắt tiếng.
+EVENT_SPEAK_FAILED = "SPEAK_FAILED"
 
 
 @dataclass(frozen=True)
