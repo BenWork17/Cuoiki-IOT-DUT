@@ -130,6 +130,20 @@ PRESENCE_AGE_LIMIT_S = 3.0
 PHONE_AGE_LIMIT_S = 3.0
 IDENTITY_AGE_LIMIT_S = 10.0
 
+#: Sentinel "lượt này **không nhìn**", khác hẳn "nhìn mà không thấy mặt".
+#:
+#: ``processor`` trả ``None`` khi nó đã chạy và kết luận khung không có khuôn
+#: mặt dùng được — đó là ``UNKNOWN``, một kết quả. Nhưng cổng ``interval_s``
+#: hay một lỗi model thì **không phải** kết quả: chưa ai nhìn khung này. Nếu
+#: trả ``None`` cho cả hai, :meth:`PeopleService.process_frame` sẽ ghi đè danh
+#: tính vừa nhận ra bằng ``UNKNOWN`` ngay khung kế tiếp, khiến ``MATCH`` chỉ
+#: sống một khung và bộ tích luỹ "người lạ" bị reset liên tục.
+#:
+#: Vì vậy ``processor`` trả sentinel này để báo "bỏ qua lượt", và
+#: ``process_frame`` trả về sớm: danh tính cũ giữ nguyên, ``age_s`` tự lớn
+#: dần rồi ``fresh`` tự thành ``False`` sau :data:`IDENTITY_AGE_LIMIT_S`.
+OBSERVATION_SKIPPED = object()
+
 
 class PeopleServiceError(ValueError):
     """Lỗi nghiệp vụ; route trả 400 kèm thông điệp tiếng Việt."""
@@ -478,7 +492,13 @@ class PeopleService:
 
         Tách khỏi :meth:`observe` để test điều khiển thời điểm một cách tất
         định, không phụ thuộc luồng. Lỗi của ``processor`` không làm sập vòng
-        lặp: coi như khung đó không có khuôn mặt.
+        lặp, nhưng **cũng không** bị hiểu thành "khung này không có mặt": một
+        lỗi model chỉ nghĩa là lượt này không quan sát được, nên danh tính cũ
+        được giữ nguyên và tự hết hạn theo :data:`IDENTITY_AGE_LIMIT_S`.
+
+        ``processor`` có thể trả :data:`OBSERVATION_SKIPPED` để báo "bỏ qua
+        lượt" (ví dụ cổng ``interval_s``); khi đó hàm trả về ngay, **không**
+        gọi :meth:`_apply_observation`.
         """
         try:
             moment = self._clock() if now is None else float(now)
@@ -499,9 +519,13 @@ class PeopleService:
                 self._log.warning(
                     "Không xử lý được khung nhận diện khuôn mặt: %s", exc
                 )
-            raw = None
+            # Lỗi model KHÔNG phải "không có mặt trong khung": giữ nguyên
+            # danh tính cũ thay vì ghi đè thành UNKNOWN.
+            raw = OBSERVATION_SKIPPED
         else:
             self._processor_error = None
+        if raw is OBSERVATION_SKIPPED:
+            return
         self._apply_observation(raw, moment)
 
     def update_signals(
