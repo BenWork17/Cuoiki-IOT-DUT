@@ -646,8 +646,21 @@ class PeopleService:
         được giữ nguyên và tự hết hạn theo :data:`IDENTITY_AGE_LIMIT_S`.
 
         ``processor`` có thể trả :data:`OBSERVATION_SKIPPED` để báo "bỏ qua
-        lượt" (ví dụ cổng ``interval_s``); khi đó hàm trả về ngay, **không**
-        gọi :meth:`_apply_observation`.
+        lượt" (ví dụ cổng ``interval_s``); khi đó **không** gọi
+        :meth:`_apply_observation` — danh tính cũ giữ nguyên, không bị ghi đè
+        thành ``UNKNOWN``.
+
+        Nhưng lượt bị bỏ **vẫn phải là một nhịp của đồng hồ đăng ký**. Lý do
+        là một lỗi thật đã đo: model khuôn mặt hỏng ở *mọi* khung thì
+        ``processor`` nào cũng trả sentinel; về sớm trước ``_collect_sample``
+        nghĩa là ``_expire`` không bao giờ chạy (nó chỉ được gọi từ
+        ``_collect_sample`` và ``enroll_status``, mà ``enroll_status`` chỉ có
+        người gọi khi dashboard hỏi). Phiên ``running`` treo vĩnh viễn →
+        :meth:`is_enrolling` mãi ``True`` → cổng ``interval_s`` bị tắt mãi →
+        detect mỗi khung. Vì vậy ở đây vẫn gọi ``_collect_sample(None, ...)``:
+        ``vector is None`` nên **không** thêm mẫu, chỉ cập nhật ``step_index``
+        và chạy ``_expire``. Đây cũng là chỗ ``_lock`` cần: ``processor``
+        chạy ngoài lock.
         """
         try:
             moment = self._clock() if now is None else float(now)
@@ -674,6 +687,9 @@ class PeopleService:
         else:
             self._processor_error = None
         if raw is OBSERVATION_SKIPPED:
+            # Lượt bị bỏ vẫn tick đồng hồ phiên đăng ký (xem docstring).
+            with self._lock:
+                self._collect_sample(None, moment)
             return
         self._apply_observation(raw, moment)
 
