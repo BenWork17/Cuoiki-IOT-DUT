@@ -31,9 +31,9 @@ if str(_SRC) not in sys.path:
 
 from posture_monitor import faces  # noqa: E402
 from posture_monitor.faces import (  # noqa: E402
-    DEFAULT_MATCH_THRESHOLD,
     EMBEDDING_DIM,
     MIN_ENROL_FRAMES,
+    REFERENCE_LFW_THRESHOLD,
     STORE_FILENAME,
     UNKNOWN_NAME,
     FaceError,
@@ -50,6 +50,7 @@ from posture_monitor.faces import (  # noqa: E402
     enrol_embeddings,
     normalise_embedding,
     parse_store_payload,
+    validate_threshold,
 )
 
 #: Mốc thời gian cố định để ``enrolled_at`` tất định.
@@ -579,7 +580,8 @@ def test_missing_model_recognize_raises_not_silent(tmp_path: Path) -> None:
     )
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     with pytest.raises(FaceModelError):
-        recognizer.recognize(store, frame)
+        # Ngưỡng phải truyền tường minh: đây là lỗi mô hình, không phải ngưỡng.
+        recognizer.recognize(store, frame, threshold=0.5)
 
 
 def test_detect_rejects_invalid_frame(tmp_path: Path) -> None:
@@ -618,11 +620,109 @@ def test_embeddings_are_never_logged(
     assert "An" in text
 
 
-def test_default_threshold_is_documented_opencv_value() -> None:
-    """Ngưỡng mặc định là tham số, không phải hằng số nghiệp vụ; giữ đúng số."""
-    assert DEFAULT_MATCH_THRESHOLD == pytest.approx(0.363)
-
-
 def test_unknown_label_is_vietnamese() -> None:
     assert UNKNOWN_NAME == "không biết"
-    assert math.isfinite(DEFAULT_MATCH_THRESHOLD)
+
+
+# ---------------------------------------------------------------------------
+# Ngưỡng là tham số BẮT BUỘC — không có mặc định ẩn
+# ---------------------------------------------------------------------------
+def test_best_match_requires_threshold() -> None:
+    """Gọi thiếu ``threshold`` phải ``TypeError``, không chạy với số ẩn."""
+    with pytest.raises(TypeError):
+        best_match(unit(1.0, 0.0), _three_people())  # type: ignore[call-arg]
+
+
+def test_recognize_requires_threshold(tmp_path: Path) -> None:
+    """``recognize`` cũng không được có ngưỡng mặc định."""
+    store = make_store(tmp_path)
+    recognizer = FaceRecognizer(tmp_path / "a.onnx", tmp_path / "b.onnx")
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    with pytest.raises(TypeError):
+        recognizer.recognize(store, frame)  # type: ignore[call-arg]
+
+
+def test_threshold_is_keyword_only() -> None:
+    """Ngưỡng phải truyền bằng từ khoá, để lời gọi đọc ra ý nghĩa tại chỗ."""
+    with pytest.raises(TypeError):
+        best_match(          # type: ignore[misc]
+            unit(1.0, 0.0), _three_people(), 0.5
+        )
+
+
+@pytest.mark.parametrize(
+    "module_function",
+    ["best_match", "recognize"],
+)
+def test_threshold_none_is_rejected(
+    module_function: str, tmp_path: Path
+) -> None:
+    """``match_threshold: null`` chưa đo → phải nổi lỗi, không thay số bịa."""
+    if module_function == "best_match":
+        with pytest.raises(ValueError, match="ngưỡng"):
+            best_match(unit(1.0, 0.0), _three_people(), threshold=None)  # type: ignore[arg-type]
+    else:
+        store = make_store(tmp_path)
+        store.add("An", unit(1.0, 0.0))
+        recognizer = FaceRecognizer(tmp_path / "a.onnx", tmp_path / "b.onnx")
+        frame = np.zeros((240, 320, 3), dtype=np.uint8)
+        with pytest.raises(ValueError, match="ngưỡng"):
+            recognizer.recognize(store, frame, threshold=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("bad", [1.5, -1.5, 2.0, -0.0001 - 1.0])
+def test_threshold_out_of_range_is_rejected(bad: float) -> None:
+    with pytest.raises(ValueError, match=r"\[-1\.0, 1\.0\]"):
+        best_match(unit(1.0, 0.0), _three_people(), threshold=bad)
+
+
+@pytest.mark.parametrize(
+    "bad", [float("nan"), float("inf"), float("-inf")]
+)
+def test_threshold_non_finite_is_rejected(bad: float) -> None:
+    with pytest.raises(ValueError, match="hữu hạn"):
+        best_match(unit(1.0, 0.0), _three_people(), threshold=bad)
+
+
+@pytest.mark.parametrize("bad", ["0.5", [0.5], True, object()])
+def test_threshold_non_number_is_rejected(bad: object) -> None:
+    with pytest.raises(ValueError, match="số thực"):
+        best_match(unit(1.0, 0.0), _three_people(), threshold=bad)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("good", [-1.0, 0.0, 0.363, 1.0])
+def test_threshold_bounds_are_inclusive(good: float) -> None:
+    assert validate_threshold(good) == pytest.approx(good)
+
+
+def test_reference_threshold_is_not_used_as_default() -> None:
+    """Hằng số tài liệu chỉ để tham khảo; module không có mặc định nào.
+
+    Nếu ai đó thêm lại mặc định bằng ``REFERENCE_LFW_THRESHOLD`` thì test
+    ``test_best_match_requires_threshold`` sẽ đỏ; test này khoá thêm ý định:
+    con số 0.363 vẫn giữ đúng giá trị tài liệu để người đọc tham chiếu.
+    """
+    assert REFERENCE_LFW_THRESHOLD == pytest.approx(0.363)
+    assert "DEFAULT_MATCH_THRESHOLD" not in dir(faces)
+
+
+def test_recognize_validates_threshold_before_touching_models(
+    tmp_path: Path,
+) -> None:
+    """Ngưỡng sai phải báo ngay, kể cả khi mô hình cũng thiếu."""
+    store = make_store(tmp_path)
+    recognizer = FaceRecognizer(tmp_path / "a.onnx", tmp_path / "b.onnx")
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match=r"\[-1\.0, 1\.0\]"):
+        recognizer.recognize(store, frame, threshold=3.0)
+
+
+def test_recognize_none_threshold_rejected_even_with_empty_store(
+    tmp_path: Path,
+) -> None:
+    """Chưa đăng ký ai cũng không được "chạy tạm" với ngưỡng null."""
+    store = make_store(tmp_path)
+    recognizer = FaceRecognizer(tmp_path / "a.onnx", tmp_path / "b.onnx")
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="ngưỡng"):
+        recognizer.recognize(store, frame, threshold=None)  # type: ignore[arg-type]

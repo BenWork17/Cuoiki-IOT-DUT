@@ -60,13 +60,17 @@ logger = get_logger(__name__)
 #: Nhãn hiển thị khi không có ai khớp hoặc chưa ai được đăng ký.
 UNKNOWN_NAME = "không biết"
 
-#: Ngưỡng cosine mặc định để coi là cùng một người.
+#: Ngưỡng cosine mà tài liệu OpenCV nêu cho SFace trên bộ LFW.
 #:
-#: 0.363 là ngưỡng xác thực mà tài liệu OpenCV nêu cho SFace trên LFW
-#: (``cv2.FaceRecognizerSF`` — ``FR_COSINE``). Đây là **tham số**, không phải
-#: hằng số nghiệp vụ: người gọi truyền ngưỡng riêng. **Chưa đo** độ chính xác
-#: trên dữ liệu thật của dự án; chỉnh ngưỡng phải kèm số đo.
-DEFAULT_MATCH_THRESHOLD = 0.363
+#: **Chỉ là con số tham khảo trong tài liệu, KHÔNG phải mặc định của dự án và
+#: KHÔNG được dùng làm giá trị rơi.** Ngưỡng nhận diện phải do người gọi truyền
+#: (`best_match`/`FaceRecognizer.recognize` đều yêu cầu ``threshold`` bắt buộc)
+#: và phải được đặt sau khi đo trên dữ liệu thật của dự án — chép số của bộ dữ
+#: liệu khác vào làm "đã kiểm chứng" là điều spec V3 cấm
+#: (``docs/SPEC_V3.md``, ``match_threshold: null  # BẮT BUỘC đặt sau khi đo``).
+#:
+#: Không có chỗ nào trong module này tự dùng hằng số này.
+REFERENCE_LFW_THRESHOLD = 0.363
 
 #: Ngưỡng tin cậy phát hiện khuôn mặt của YuNet.
 DEFAULT_SCORE_THRESHOLD = 0.9
@@ -296,10 +300,68 @@ def average_embedding(
         return None
 
 
+def validate_threshold(threshold: Any) -> float:
+    """Kiểm tra ngưỡng cosine và trả về dạng ``float``.
+
+    Ngưỡng **bắt buộc** phải do người gọi cung cấp và phải đến từ phép đo
+    trên dữ liệu thật của dự án (spec V3: ``match_threshold`` chỉ được đặt sau
+    khi đo). Vì vậy ``None`` — giá trị của ``match_threshold: null`` lúc chưa
+    đo — phải nổi lên thành lỗi, **không** được lặng lẽ thay bằng một con số
+    bịa: khi chưa đo thì tính năng nhận diện phải không chạy.
+
+    Args:
+        threshold: giá trị người gọi truyền vào.
+
+    Returns:
+        Ngưỡng dạng ``float``.
+
+    Raises:
+        ValueError: ``threshold`` là ``None``, không phải số, NaN/vô cực, hoặc
+            nằm ngoài ``[-1.0, 1.0]`` (miền giá trị của cosine).
+    """
+    if threshold is None:
+        raise ValueError(
+            "Chưa có ngưỡng nhận diện khuôn mặt: 'threshold' là bắt buộc và "
+            "phải được đặt sau khi đo trên dữ liệu thật của dự án "
+            "(match_threshold hiện là null). Không dùng ngưỡng mặc định."
+        )
+    if isinstance(threshold, bool):
+        # bool là lớp con của int; True/False không phải ngưỡng hợp lệ.
+        raise ValueError(
+            "Ngưỡng nhận diện khuôn mặt phải là số thực, không phải bool."
+        )
+    if isinstance(threshold, (str, bytes)):
+        # Chuỗi số ("0.5") thường là hệ quả của việc đọc cấu hình sai kiểu.
+        # Nhận nó là hợp lệ sẽ che mất lỗi cấu hình đó, nên từ chối thẳng.
+        raise ValueError(
+            f"Ngưỡng nhận diện khuôn mặt phải là số thực, nhận được chuỗi "
+            f"{threshold!r}. Sửa kiểu dữ liệu trong cấu hình."
+        )
+    try:
+        value = float(threshold)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Ngưỡng nhận diện khuôn mặt phải là số thực, nhận được "
+            f"{threshold!r}."
+        ) from exc
+    if not math.isfinite(value):
+        raise ValueError(
+            f"Ngưỡng nhận diện khuôn mặt phải hữu hạn, nhận được "
+            f"{threshold!r}."
+        )
+    if not (-1.0 <= value <= 1.0):
+        raise ValueError(
+            f"Ngưỡng nhận diện khuôn mặt phải nằm trong [-1.0, 1.0] (miền "
+            f"giá trị của cosine), nhận được {value!r}."
+        )
+    return value
+
+
 def best_match(
     query: Sequence[float] | np.ndarray,
     entries: Iterable[tuple[str, Sequence[float] | np.ndarray]],
-    threshold: float = DEFAULT_MATCH_THRESHOLD,
+    *,
+    threshold: float,
 ) -> MatchResult:
     """Chọn người khớp nhất với ``query`` theo cosine.
 
@@ -307,17 +369,22 @@ def best_match(
         query: embedding của khuôn mặt cần nhận diện.
         entries: các cặp ``(tên, embedding)`` đã đăng ký.
         threshold: ngưỡng cosine tối thiểu để trả về tên người; thấp hơn thì
-            trả :data:`UNKNOWN_NAME` (``name=None``).
+            trả :data:`UNKNOWN_NAME` (``name=None``). **Bắt buộc**, keyword-only,
+            không có giá trị mặc định — xem :func:`validate_threshold`.
 
     Returns:
         :class:`MatchResult`. Khi kho rỗng hoặc mọi vector bị bỏ qua, ``score``
         là ``0.0`` và ``name`` là ``None``. Dưới ngưỡng nhưng có so được,
         ``score`` vẫn là điểm cao nhất để người vận hành chỉnh ngưỡng.
 
+    Raises:
+        ValueError: ``threshold`` không dùng được (``None``, ngoài khoảng, ...).
+
     Không raise vì dữ liệu bẩn: vector sai số chiều hoặc không hữu hạn bị bỏ
     qua (có log DEBUG), để một bản ghi hỏng không làm mất khả năng nhận diện
     những người còn lại.
     """
+    limit = validate_threshold(threshold)
     try:
         q = np.asarray(query, dtype=np.float64).reshape(-1)
     except (TypeError, ValueError):
@@ -344,7 +411,7 @@ def best_match(
             None, 0.0, "Chưa có ai được đăng ký hoặc dữ liệu đã đăng ký "
             "không dùng được."
         )
-    if best_disqualified(best_score, threshold):
+    if best_disqualified(best_score, limit):
         return MatchResult(
             None,
             best_score,
@@ -986,7 +1053,8 @@ class FaceRecognizer:
         self,
         store: FaceStore,
         image: Any,
-        threshold: float = DEFAULT_MATCH_THRESHOLD,
+        *,
+        threshold: float,
     ) -> MatchResult:
         """Nhận diện khuôn mặt lớn nhất trong khung so với kho đã đăng ký.
 
@@ -998,9 +1066,18 @@ class FaceRecognizer:
         Args:
             store: kho người đã đăng ký.
             image: khung BGR.
-            threshold: ngưỡng cosine; truyền tham số chứ không đọc config ở
-                đây (module không sở hữu config).
+            threshold: ngưỡng cosine. **Bắt buộc**, keyword-only, không có mặc
+                định: truyền tham số chứ không đọc config ở đây (module không
+                sở hữu config), và giá trị phải đến từ phép đo thật. ``None``
+                (config ``match_threshold: null``) ném ``ValueError`` thay vì
+                chạy với một con số bịa.
+
+        Raises:
+            ValueError: ``threshold`` không dùng được (``None``, ngoài khoảng).
         """
+        # Kiểm tra ngưỡng TRƯỚC mọi việc khác: cấu hình chưa đo thì tính năng
+        # không được chạy, kể cả khi nhìn bề ngoài "không có gì để nhận diện".
+        limit = validate_threshold(threshold)
         entries = store.pairs()
         if not entries:
             return MatchResult(
@@ -1017,4 +1094,4 @@ class FaceRecognizer:
             return MatchResult(
                 None, 0.0, "Không thấy khuôn mặt nào trong khung."
             )
-        return best_match(query, entries, threshold)
+        return best_match(query, entries, threshold=limit)
