@@ -502,6 +502,7 @@ def _monitor_loop(
     from .overlay import draw_pose  # noqa: PLC0415
     from .sensors import apply_distance  # noqa: PLC0415
     from .state import (  # noqa: PLC0415
+        ALERT_EVENT_TYPE,
         EVENT_ALERT_END,
         EVENT_ALERT_START,
         EVENT_SPEAK_FAILED,
@@ -884,6 +885,27 @@ def _monitor_loop(
                         # ĐÂY, trước lời gọi loa; cổng GPIO phía dưới chỉ chặn
                         # tiếng của dispatcher, không chặn loa camera.
                         muted = bool(state is not None and state.muted)
+                        # Spec v3 §6: quyết định cảnh báo phải vào bảng
+                        # ``events``, không chỉ khi loa kêu. Ghi theo QUYẾT
+                        # ĐỊNH nên vẫn có bản ghi khi tắt tiếng hoặc loa lỗi
+                        # (hai ca đó có ``SPEAK_FAILED``/không phát riêng).
+                        # Một mốc thời gian duy nhất với cảnh báo: ``alert_now``.
+                        event_type = ALERT_EVENT_TYPE.get(decision.kind)
+                        if event_type is None:
+                            logger.warning(
+                                "Không có loại sự kiện cho cảnh báo '%s'; "
+                                "không ghi vào bảng events.",
+                                decision.kind,
+                            )
+                        elif storage is not None:
+                            storage.record_event(
+                                Event(
+                                    ts=float(alert_now),
+                                    type=event_type,
+                                    label=decision.kind,
+                                    alert=True,
+                                )
+                            )
                         if speaker_alerter is not None:
                             # ``speaker_alerter is None`` nghĩa là chưa cấu
                             # hình loa: không có gì để nói, nên cũng không ghi
