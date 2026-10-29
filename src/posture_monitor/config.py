@@ -1321,7 +1321,6 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
     value = value.strip()
 
     if kind == "rtsp" and text.lower().startswith("rtsp://"):
-        value = f"rtsp:{value}"  # MUTATION
         # Dạng URL trần ``rtsp://user:pass@host:554/1/2`` (không tiền tố loại
         # nguồn, đúng cú pháp RTSP chuẩn): dấu ``:`` đầu tiên nằm trong
         # ``://``, nên phép tách ở trên cho ra ``kind='rtsp'`` và
