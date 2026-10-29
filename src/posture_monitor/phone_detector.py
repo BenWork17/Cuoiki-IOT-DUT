@@ -18,10 +18,21 @@ trạng thái. Module này là hai mảnh còn thiếu:
 
 Vì sao nhịp detect phải cấu hình được
 -------------------------------------
-Đo thật trên Pi 4 (2026-10-29): ``yolo11n`` ncnn @320 = **98,6 ms/khung**.
-Chạy pose mỗi khung + detect mỗi 2 khung = **6,18 FPS** (đạt mục tiêu ≥ 5);
-chạy cả hai mỗi khung = 4,74–4,90 FPS (không đạt). Vì vậy
-``phone.detect_every_n_frames`` là khóa cấu hình, mặc định ``2``, và test
+Số liệu duy nhất đã đo cho model detect là ``yolo11n`` ncnn @320 =
+**98,6 ms cho một lần suy luận**, đo trên khung **tổng hợp** 640x480
+(``np.zeros`` + ``cv2.rectangle``), 20 vòng, trên Pi 4 ngày 2026-10-29.
+Phép đo đó **chỉ có inference**: không capture và không phải khung camera
+thật, nên nó không phải thời gian xử lý một khung của pipeline. Cùng lần
+chạy đó, bật pose và detect ở **mọi** khung đo được **4,90 FPS**.
+
+Chi phí của detect **trong pipeline thật thì chưa được đo**. Phép đo
+pipeline thật duy nhất của dự án là pose-only trên camera thật 704x576:
+199,39 ms/khung → 5,01 FPS. Ghép detect cách khung vào đúng phép đo đó
+(199,39 + 49,35 ms) ra ≈ 4,02 FPS, **không đạt** mục tiêu ≥ 5 FPS — nên
+chưa có cơ sở nào để nói cấu hình detect cách khung đạt mục tiêu. Vì vậy
+``phone.detect_every_n_frames`` vẫn là khóa cấu hình, mặc định ``2``, nhưng
+đó là **giá trị mặc định chưa có ngân sách đo**: phải chứng minh lại bằng
+``benchmark --profile pose_phone`` thật trên Pi khi camera trở lại. Test
 đếm đúng số lần gọi ``detect``.
 
 Nạp model lười, cùng quy ước với ``pose.PoseEstimator``
