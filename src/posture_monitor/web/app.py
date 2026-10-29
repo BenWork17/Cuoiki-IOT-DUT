@@ -33,6 +33,7 @@ from flask import Flask, Response, jsonify, render_template, request
 from .. import camera_control
 from ..classifier import LABEL_ORDER
 from ..logging_setup import get_logger
+from .people_service import PeopleService, PeopleServiceError
 from ..camera_audio import (
     CameraAudioBusy,
     CameraAudioConfigError,
@@ -91,6 +92,18 @@ STREAM_WAIT_S = 2.0
 
 #: Khoảng nghỉ giữa hai lần kiểm tra khung mới trong ``/stream``.
 STREAM_POLL_S = 0.05
+
+#: Câu trả về khi phiên chạy không được tiêm dịch vụ người học.
+#: Trang chủ vẫn render bình thường; chỉ các khối liên quan hiện câu này
+#: thay cho lỗi, và mọi route người học trả 503 (không phải 500).
+PEOPLE_DISABLED_MESSAGE = (
+    "Tính năng người học chưa được bật trong phiên chạy này."
+)
+
+#: Ba khóa công khai của một người học. **Danh sách trắng** là lớp chặn
+#: quyền riêng tư: kể cả dịch vụ lỡ trả thêm ``embedding``/``vector`` thì
+#: route cũng không đẩy chúng ra HTTP (spec §5.13.1, §8.3).
+PUBLIC_PERSON_FIELDS = ("id", "name", "created_ts")
 
 
 class DashboardState:
@@ -250,6 +263,8 @@ def create_app(
     storage=None,
     speak_controller: SpeakController | None = None,
     ptz=None,
+    *,
+    people: PeopleService | None = None,
 ) -> Flask:
     """Tạo ứng dụng Flask.
 
@@ -271,6 +286,11 @@ def create_app(
             ``config.camera.onvif`` ở lần gọi ``/api/ptz`` đầu tiên — nhờ vậy
             không mở phiên ONVIF khi người dùng chưa từng bấm nút xoay, và
             test tiêm được bản giả mà không cần camera.
+        people: dịch vụ người học theo :class:`PeopleService` (spec v3 §5.16).
+            Keyword-only, mặc định ``None``: khi chưa nối dây, mọi route
+            ``/api/people*``, ``/api/enroll*``, ``/api/select``,
+            ``/api/schedule``, ``/api/signals`` trả 503 kèm thông điệp tiếng
+            Việt, và trang chủ vẫn render bình thường.
 
     Returns:
         :class:`flask.Flask` đã gắn đủ route.
@@ -294,6 +314,8 @@ def create_app(
     app.config["STREAM_ENABLED"] = stream_enabled
     app.config["MIN_DISTANCE_CM"] = min_distance
     app.config["SPEAK_CONTROLLER"] = speak_controller
+    app.config["PEOPLE"] = people
+    people_enabled = people is not None
 
     _speak_lock = threading.Lock()
     _speak_state: dict[str, SpeakController | None] = {"controller": speak_controller}
@@ -336,6 +358,8 @@ def create_app(
             "index.html",
             stream_enabled=stream_enabled,
             min_distance_cm=min_distance,
+            people_enabled=people_enabled,
+            people_disabled_message=PEOPLE_DISABLED_MESSAGE,
         )
 
     @app.get("/api/status")
@@ -549,6 +573,181 @@ def create_app(
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
 
+    # ------------------------------------------------------------------
+    # Người học (spec v3 §5.16). Mọi route dưới đây đều đi qua một lớp
+    # chuyển đổi lỗi chung: lỗi nghiệp vụ -> 400, lỗi hệ thống -> 503.
+    # Không route nào trả embedding (spec §5.13.1, §8.3).
+    # ------------------------------------------------------------------
+    def _people_unavailable() -> Response:
+        """503 khi phiên chạy không được tiêm dịch vụ người học."""
+        return _json_error(PEOPLE_DISABLED_MESSAGE, 503)
+
+    def _people_call(call: Callable[[], Any]) -> tuple[bool, Any]:
+        """Gọi dịch vụ; trả ``(True, kết_quả)`` hoặc ``(False, response_lỗi)``.
+
+        ``PeopleServiceError`` là lỗi người dùng sửa được (tên rỗng, không
+        tìm thấy người…) nên thành 400. Mọi lỗi khác là sự cố hệ thống: ghi
+        log đầy đủ ở phía máy chủ nhưng chỉ trả câu tiếng Việt chung — traceback
+        không bao giờ đi ra client.
+        """
+        try:
+            return True, call()
+        except PeopleServiceError as exc:
+            return False, _json_error(str(exc), 400)
+        except Exception:  # noqa: BLE001 - web không được sập vì dịch vụ
+            _logger.exception("Lỗi không lường trước từ dịch vụ người học.")
+            return False, _json_error(
+                "Dịch vụ người học đang gặp sự cố. Xem log để biết chi tiết.",
+                503,
+            )
+
+    @app.get("/api/people")
+    def api_people() -> Response:
+        """Danh sách người đã đăng ký + ai đang được chọn cho phiên này."""
+        if people is None:
+            return _people_unavailable()
+        ok, result = _people_call(
+            lambda: (
+                [_public_person(item) for item in people.list_people()],
+                people.selected_person(),
+            )
+        )
+        if not ok:
+            return result
+        directory, selected = result
+        return jsonify({"people": directory, "selected": selected})
+
+    @app.post("/api/people")
+    def api_people_add() -> Response:
+        """Bắt đầu đăng ký một người mới: ``{"name": "..."}`` → 201."""
+        if people is None:
+            return _people_unavailable()
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping):
+            return _json_error(
+                'Thân request phải là JSON dạng {"name": "..."}.', 400
+            )
+        name = body.get("name")
+        if not isinstance(name, str):
+            return _json_error("Tên người học phải là chữ.", 400)
+        name = name.strip()
+        if not name:
+            return _json_error("Tên người học không được để trống.", 400)
+
+        ok, result = _people_call(lambda: people.start_enroll(name))
+        if not ok:
+            return result
+        payload = {"ok": True, "name": name}
+        payload.update(result)
+        return jsonify(payload), 201
+
+    @app.delete("/api/people/<person_id>")
+    def api_people_delete(person_id: str) -> Response:
+        """Xoá một người học (bản ghi + vector); 404 nếu không tồn tại."""
+        if people is None:
+            return _people_unavailable()
+        ok, result = _people_call(lambda: people.delete_person(person_id))
+        if not ok:
+            return result
+        if not result:
+            return _json_error(
+                f"Không tìm thấy người học có mã {person_id!r}.", 404
+            )
+        return jsonify({"ok": True, "message": "Đã xoá người học."})
+
+    @app.get("/api/enroll/<enroll_id>")
+    def api_enroll_status(enroll_id: str) -> Response:
+        """Tiến độ một phiên đăng ký: bước hiện tại, số mẫu, lỗi (nếu có)."""
+        if people is None:
+            return _people_unavailable()
+        ok, result = _people_call(lambda: people.enroll_status(enroll_id))
+        if not ok:
+            return result
+        return jsonify({"ok": True, "enroll_id": enroll_id, **dict(result)})
+
+    @app.post("/api/enroll/<enroll_id>/cancel")
+    def api_enroll_cancel(enroll_id: str) -> Response:
+        """Huỷ phiên đăng ký; không ghi gì thêm."""
+        if people is None:
+            return _people_unavailable()
+        ok, result = _people_call(lambda: people.cancel_enroll(enroll_id))
+        if not ok:
+            return result
+        if not result:
+            return _json_error(
+                f"Không có phiên đăng ký nào đang chạy với mã {enroll_id!r}.",
+                404,
+            )
+        return jsonify({"ok": True, "message": "Đã huỷ phiên đăng ký."})
+
+    @app.post("/api/select")
+    def api_select() -> Response:
+        """Chọn người đang học cho phiên này; ``person_id: null`` = bỏ chọn."""
+        if people is None:
+            return _people_unavailable()
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping) or "person_id" not in body:
+            return _json_error(
+                'Thân request phải có khóa "person_id" (chuỗi hoặc null).',
+                400,
+            )
+        person_id = body["person_id"]
+        if person_id is not None and not isinstance(person_id, str):
+            return _json_error('"person_id" phải là chuỗi hoặc null.', 400)
+
+        ok, result = _people_call(lambda: people.select_person(person_id))
+        if not ok:
+            return result
+        if not result:
+            return _json_error(
+                f"Không tìm thấy người học có mã {person_id!r}.", 404
+            )
+        message = (
+            "Đã bỏ chọn người đang học."
+            if person_id is None
+            else "Đã chọn người đang học."
+        )
+        return jsonify({"ok": True, "selected": person_id, "message": message})
+
+    @app.get("/api/signals")
+    def api_signals() -> Response:
+        """Tín hiệu thô gần nhất (presence/phone/identity) + tuổi tín hiệu.
+
+        Dịch vụ đã hứa không trả embedding; lớp này soát lại lần nữa để một
+        lần nối dây lơ đãng không biến dashboard thành đường rò vector.
+        """
+        if people is None:
+            return _people_unavailable()
+        ok, result = _people_call(lambda: people.signals())
+        if not ok:
+            return result
+        return jsonify(_scrub_biometrics(dict(result)))
+
+    @app.get("/api/schedule")
+    def api_schedule_get() -> Response:
+        """Khung giờ học hiện tại."""
+        if people is None:
+            return _people_unavailable()
+        ok, result = _people_call(lambda: people.get_schedule())
+        if not ok:
+            return result
+        return jsonify({"ok": True, "schedule": result})
+
+    @app.put("/api/schedule")
+    def api_schedule_put() -> Response:
+        """Ghi khung giờ học; dịch vụ kiểm tra và báo lỗi tiếng Việt."""
+        if people is None:
+            return _people_unavailable()
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping):
+            return _json_error(
+                "Thân request phải là một đối tượng JSON mô tả giờ học.", 400
+            )
+        ok, result = _people_call(lambda: people.put_schedule(dict(body)))
+        if not ok:
+            return result
+        return jsonify({"ok": True, "schedule": result})
+
     @app.errorhandler(404)
     def not_found(error):  # pragma: no cover - Flask tự lo phần HTML
         if request.path.startswith("/api/"):
@@ -584,6 +783,35 @@ def _mjpeg(dashboard: DashboardState):
             continue
         seq = new_seq
         yield boundary + frame + b"\r\n"
+
+
+def _public_person(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Lọc một bản ghi người học xuống đúng ba khóa công khai.
+
+    Danh sách trắng chứ không phải danh sách đen: thêm một trường nội bộ vào
+    dịch vụ (embedding, đường dẫn ảnh…) không tự động rò ra HTTP. Đây là lớp
+    chặn §8.3 "không route nào trả vector", độc lập với việc dịch vụ có giữ
+    lời hứa hay không.
+    """
+    return {key: item.get(key) for key in PUBLIC_PERSON_FIELDS}
+
+
+#: Tên khóa mang dữ liệu sinh trắc học; so khớp không phân biệt hoa thường và
+#: ở mọi cấp lồng, vì một dict lồng sai vẫn là rò rỉ.
+_BIOMETRIC_KEYS = ("embedding", "embeddings", "vector", "vectors", "feature")
+
+
+def _scrub_biometrics(value: Any) -> Any:
+    """Bỏ mọi khóa sinh trắc học khỏi cấu trúc JSON trước khi trả cho client."""
+    if isinstance(value, Mapping):
+        return {
+            key: _scrub_biometrics(item)
+            for key, item in value.items()
+            if str(key).lower() not in _BIOMETRIC_KEYS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_scrub_biometrics(item) for item in value]
+    return value
 
 
 def _json_error(message: str, status: int) -> Response:

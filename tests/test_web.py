@@ -5,9 +5,9 @@ nhớ, còn lịch sử đọc từ một DB tạm do :class:`posture_monitor.st
 sinh ra. Dùng ``app.test_client()`` nên không cần mở cổng thật.
 
 Kiểm tra ``GET /`` **có nội dung thật**, không chỉ mã 200: assert có chuỗi
-tiếng Việt, có phần tử ``<canvas>`` cho biểu đồ, có ô hiển thị điểm/thời
-gian/khoảng cách, và có viewport cho điện thoại. Một trang trắng cũng trả 200
-nên mã trạng thái một mình không chứng minh được gì.
+tiếng Việt, có thẻ "Trạng thái học" với ba dòng tín hiệu, có khung cho phần
+"Người học", và có viewport cho điện thoại. Một trang trắng cũng trả 200 nên
+mã trạng thái một mình không chứng minh được gì.
 """
 
 from __future__ import annotations
@@ -194,7 +194,7 @@ def test_wait_frame_het_gio_khong_treo(state):
 # ---------------------------------------------------------------------------
 
 
-def test_trang_chu_la_html_tieng_viet_co_bieu_do(tmp_path, state):
+def test_trang_chu_la_html_tieng_viet_co_the_trang_thai_hoc(tmp_path, state):
     client = make_client(make_config(tmp_path / "p.db"), state)
     response = client.get("/")
     assert response.status_code == 200
@@ -204,38 +204,37 @@ def test_trang_chu_la_html_tieng_viet_co_bieu_do(tmp_path, state):
     # 1) Có nội dung tiếng Việt thật, không phải trang trắng.
     for text in (
         "Giám sát tư thế học tập",
-        "Trạng thái hiện tại",
-        "Điểm tư thế",
-        "Thời gian ngồi",
-        "Khoảng cách",
-        "Tỉ lệ tư thế đúng",
+        "Trạng thái học",
+        "Có mặt",
+        "Điện thoại",
+        "Danh tính",
+        "Người học",
         "Tắt tiếng cảnh báo",
         "Hiệu chỉnh lại",
     ):
         assert text in html, f"thiếu chuỗi tiếng Việt: {text}"
 
-    # 2) Có phần tử biểu đồ để Chart.js vẽ vào.
-    assert "<canvas" in html and 'id="chart"' in html
+    # 2) Đề tài đã bỏ nhận diện tư thế: không còn biểu đồ tư thế trên trang.
+    assert "<canvas" not in html and 'id="chart"' not in html
 
     # 3) Dùng được trên điện thoại.
     assert 'name="viewport"' in html
     assert "width=device-width" in html
 
-    # 4) Chart.js nạp cục bộ, tuyệt đối không CDN.
-    assert "chart.umd.min.js" in html
+    # 4) Không nạp gì từ Internet.
     assert "cdn" not in html.lower()
     assert "http://" not in html and "https://" not in html
 
 
-def test_trang_chu_hien_gia_tri_trang_thai_da_cap_nhat(tmp_path, state):
+def test_trang_chu_hien_khung_cho_ba_tin_hieu_trang_thai_hoc(tmp_path, state):
     client = make_client(make_config(tmp_path / "p.db"), state)
     state.update(state="BAD", labels=["HEAD_DOWN"], score=42.0, sitting_s=3725)
     html = client.get("/").get_data(as_text=True)
-    # Dữ liệu trạng thái đi qua JS, nhưng khung hiển thị phải có sẵn chỗ điền.
-    assert 'id="status-text"' in html
-    assert 'id="score"' in html
-    assert 'id="sitting"' in html
-    assert 'id="distance"' in html
+    # Dữ liệu tín hiệu đi qua JS, nhưng khung hiển thị phải có sẵn chỗ điền.
+    for kind in ("presence", "phone", "identity"):
+        assert f'id="sign-{kind}"' in html, kind
+        assert f'id="sign-{kind}-text"' in html, kind
+        assert f'id="sign-{kind}-age"' in html, kind
 
 
 def test_chart_js_ton_tai_trong_static_va_la_ban_that(tmp_path, state):

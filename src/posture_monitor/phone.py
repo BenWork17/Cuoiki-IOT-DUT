@@ -10,10 +10,21 @@ Vì sao cần model thứ hai
 ``yolo11n-pose`` (model hiện tại) chỉ có **một** lớp ``person``; nó không bao
 giờ trả về hộp điện thoại. Muốn có hộp đó phải chạy thêm một model detect
 COCO, ví dụ ``yolo11n``, và lấy lớp ``cell phone`` = :data:`PHONE_CLASS_ID`
-(index 67). Trên Pi 4, ``yolo11n`` ncnn @320 đo được **98.6 ms/khung**, nên
-module này cố ý **không** tự chạy detect và không tự đặt nhịp: nó chỉ là hàm
-thuần. Người gọi quyết định chạy detect mỗi N khung, ở độ phân giải nào, và
-truyền hộp đã quy về pixel của khung pose.
+(index 67).
+
+**Về con số 98,6 ms.** Trên Pi 4, ``yolo11n`` ncnn @320 đo được 98,6 ms cho
+**một lần suy luận**, trên một khung **tổng hợp** 640x480 (20 vòng). Con số
+này **không** gồm thời gian đọc khung và **không** phải khung camera thật.
+Nó **không** được dùng để khẳng định FPS nào: chi phí detect *trong pipeline
+thật* chưa từng được đo. Ghép nó vào phép đo pipeline thật duy nhất của dự
+án (pose-only, 199,39 ms → 5,01 FPS) cho 4,02 FPS ở nhịp 1/2 khung — tức
+**chưa đạt** 5 FPS. Muốn có số thật thì chạy
+``python -m posture_monitor benchmark --profile pose_phone``
+(SPEC_V3 §4.3, §14 bước G).
+
+Vì vậy module này cố ý **không** tự chạy detect và không tự đặt nhịp: nó chỉ
+là hàm thuần. Người gọi quyết định chạy detect mỗi N khung, ở độ phân giải
+nào, và truyền hộp đã quy về pixel của khung pose.
 
 Hệ toạ độ
 ---------

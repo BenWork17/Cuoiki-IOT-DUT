@@ -68,6 +68,28 @@ tracking:
   enabled: true          # chọn người theo track id (spec §5.6)
   tracker: botsort.yaml
 
+# Phát hiện "đang dùng điện thoại" (spec §5).
+# Model pose yolo11n-pose CHỈ có lớp 'person' nên không bao giờ trả hộp điện
+# thoại; mục này nạp thêm một model detect COCO 80 lớp và lấy lớp 'cell phone'.
+# Số duy nhất đã đo cho model detect: yolo11n ncnn @320 = 98,6 ms cho một lần
+# suy luận trên khung TỔNG HỢP 640x480 (chỉ inference, KHÔNG gồm capture,
+# không phải khung camera thật). Cùng lần chạy đó, pose + detect ở MỌI khung
+# đo được 4,90 FPS.
+# Chi phí detect trong pipeline thật CHƯA ĐO. Phép đo pipeline thật duy nhất
+# là pose-only 199,39 ms -> 5,01 FPS; ghép detect cách khung theo số đo đó ra
+# ~4,02 FPS, KHÔNG đạt >= 5 FPS. Vì vậy detect_every_n_frames = 2 chỉ là
+# mặc định CHƯA CÓ NGÂN SÁCH ĐO - cần đo lại bằng benchmark --profile pose_phone.
+phone:
+  enabled: true
+  detect_model: yolo11n        # model COCO 80 lớp (có 'cell phone' = lớp 67)
+  detect_weights: ""           # trống = "<detect_model>.pt"
+  detect_every_n_frames: 2     # mặc định chưa có ngân sách đo, xem chú thích trên
+  imgsz: 320
+  conf_threshold: 0.25
+  box_ttl_s: 0.5               # hộp detect còn dùng được bao lâu (giây)
+  hold_s: 2.0                  # chạm liên tục bao lâu thì thành sự kiện
+  touching_slack_px: 0         # 0 = đúng yêu cầu "khoảng cách = 0"
+
 thresholds:
   head_down_ratio: 0.70
   too_close_ratio: 1.25
@@ -105,6 +127,25 @@ hardware:
 sensors:
   ultrasonic_enabled: true
   min_distance_cm: 35
+
+# Nhận diện khuôn mặt (YuNet phát hiện + SFace đặc trưng — spec V3 §5.13, §6).
+# Mặc định TẮT vì 'match_threshold' còn null: ngưỡng cosine phải được ĐO trên
+# dữ liệu thật của chính dự án rồi mới điền vào (spec §5.13, §14 bước H).
+# Không chép ngưỡng từ tài liệu OpenCV hay repo khác vào làm mặc định.
+# 'enabled' để trống = tự động: bật khi đã có match_threshold, tắt khi chưa.
+# Ghi 'enabled: true' khi match_threshold vẫn null là LỖI cấu hình ngay lúc nạp.
+face:
+  enabled: false               # chưa đo ngưỡng thì để false
+  detector: yunet.onnx         # 228 KB — đường dẫn tới tệp mô hình phát hiện
+  recognizer: sface.onnx       # 37 MB — tệp mô hình đặc trưng
+  interval_s: 2.0              # KHÔNG chạy mỗi khung (86,1 ms/lượt, spec §4.2)
+  match_threshold: null        # BẮT BUỘC đặt sau khi đo — null = không chạy
+  impostor_hold_s: 5.0
+  enroll_step_s: 1.5
+  enroll_min_samples: 3
+  detect_width: 320            # BẮT BUỘC thu nhỏ trước khi detect (§5.13)
+  clahe_enabled: true          # phòng ngừa ngược sáng, 11,4 ms — rẻ
+  store_path: "data/faces.json"  # chỉ chứa vector + tên, KHÔNG có ảnh
 
 storage:
   db_path: data/posture.db

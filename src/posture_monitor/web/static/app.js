@@ -1,75 +1,149 @@
-/* Logic dashboard: hỏi /api/status mỗi giây, vẽ biểu đồ từ /api/history.
+/* Logic dashboard: hỏi /api/signals mỗi giây, hiện ba tín hiệu trạng thái học
+ * (có mặt / điện thoại / danh tính) kèm tuổi tín hiệu, và điều khiển phần
+ * "Người học" (thêm người, chọn người đang học, xoá, đọc giờ học).
  *
- * Không phụ thuộc mạng ngoài: Chart.js được nạp cục bộ từ static/. Nếu file
- * đó vì lý do nào không nạp được (hỏng, chặn), phần biểu đồ tự vẽ bằng SVG
- * thay vì để trống — dashboard không bao giờ "trắng xoá" khi offline.
+ * Nguyên tắc bắt buộc (spec v3 §5.16):
+ * - Màu không bao giờ là kênh truyền đạt duy nhất: mỗi dòng có biểu tượng và
+ *   nhãn chữ đi kèm.
+ * - Tín hiệu cũ (fresh = false) phải hiện "chưa có dữ liệu mới", KHÔNG được
+ *   lặp lại kết luận cũ như vừa đo được. Đây là yêu cầu chống hiểu nhầm.
+ * - Không nạp gì từ Internet; không lưu dữ liệu người vào localStorage.
  */
 (function () {
   "use strict";
 
   var STATUS_INTERVAL_MS = 1000;
-  var HISTORY_REFRESH_MS = 30000;
+  var ENROLL_POLL_MS = 1000;
+
+  var el = function (id) {
+    return document.getElementById(id);
+  };
 
   var els = {
-    card: document.getElementById("status-card"),
-    icon: document.getElementById("status-icon"),
-    statusText: document.getElementById("status-text"),
-    labelsText: document.getElementById("labels-text"),
-    score: document.getElementById("score"),
-    sitting: document.getElementById("sitting"),
-    distance: document.getElementById("distance"),
-    updated: document.getElementById("updated"),
-    stale: document.getElementById("stale-warning"),
-    muteBtn: document.getElementById("mute-btn"),
-    muteIcon: document.getElementById("mute-icon"),
-    muteText: document.getElementById("mute-text"),
-    calibrateBtn: document.getElementById("calibrate-btn"),
-    message: document.getElementById("action-message"),
+    signsCard: el("status-card"),
+    updated: el("updated"),
+    stale: el("stale-warning"),
+    muteBtn: el("mute-btn"),
+    muteIcon: el("mute-icon"),
+    muteText: el("mute-text"),
+    calibrateBtn: el("calibrate-btn"),
+    message: el("action-message"),
     ptzButtons: Array.prototype.slice.call(
       document.querySelectorAll("[data-ptz-direction]")
     ),
-    chart: document.getElementById("chart"),
-    chartEmpty: document.getElementById("chart-empty"),
-    caption: document.getElementById("chart-caption"),
-    table: document.getElementById("chart-table"),
-    camera: document.getElementById("camera-stream"),
-    cameraNote: document.getElementById("camera-note"),
-    tabs: Array.prototype.slice.call(document.querySelectorAll(".tab"))
+    camera: el("camera-stream"),
+    cameraNote: el("camera-note"),
+    addBtn: el("add-person-btn"),
+    addForm: el("add-person-form"),
+    addSubmit: el("add-person-submit"),
+    addCancel: el("add-person-cancel"),
+    nameInput: el("new-person-name"),
+    pickBtn: el("pick-person-btn"),
+    peopleListWrap: el("people-list-wrap"),
+    peopleList: el("people-list"),
+    peopleEmpty: el("people-list-empty"),
+    selected: el("selected-person"),
+    enrollPanel: el("enroll-panel"),
+    enrollName: el("enroll-name"),
+    enrollStep: el("enroll-step"),
+    enrollSamples: el("enroll-samples"),
+    enrollCancel: el("enroll-cancel-btn"),
+    schedule: el("schedule-summary")
   };
 
-  var minDistance = parseFloat(document.body.dataset.minDistance || "35");
-  var currentRange = "today";
-  var chart = null;
-  var chartBroken = false;
+  var peopleEnabled =
+    (document.body.dataset.peopleEnabled === "1") ||
+    (els.signsCard && els.signsCard.dataset.peopleEnabled === "1");
 
-  var STATE_CLASS = {
-    GOOD: "status--good",
-    WARN: "status--warn",
-    BAD: "status--bad",
-    ABSENT: "status--absent"
+  var enrollTimer = null;
+  var enrollId = null;
+
+  /* ---- Thẻ "Trạng thái học" ---------------------------------------- */
+
+  /* Biểu tượng + nhãn chữ đi cùng màu: màu không bao giờ là kênh duy nhất. */
+  var PRESENCE_TEXT = { present: "Có mặt", absent: "Vắng mặt" };
+  var PRESENCE_ICON = { present: "●", absent: "○" };
+  var PHONE_TEXT = { none: "Không dùng", use: "Đang dùng" };
+  var PHONE_ICON = { none: "✓", use: "!" };
+  var IDENTITY_TEXT = {
+    MATCH: "Đúng người",
+    MISMATCH: "Khác người",
+    UNKNOWN: "Chưa nhận ra"
   };
+  var IDENTITY_ICON = { MATCH: "✓", MISMATCH: "✕", UNKNOWN: "?" };
 
-  /* Biểu tượng + nhãn chữ đi cùng màu trạng thái: màu không bao giờ là
-   * kênh truyền đạt duy nhất. */
-  var STATE_ICON = {
-    GOOD: "✓",
-    WARN: "!",
-    BAD: "✕",
-    ABSENT: "○"
-  };
+  /* Câu bắt buộc khi tín hiệu không còn mới (§5.16). Không được thay bằng
+   * kết luận cũ: người dùng sẽ tưởng hệ thống vừa đo. */
+  var NO_FRESH_TEXT = "Chưa có dữ liệu mới";
 
-  function cssVar(name) {
-    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  function formatAge(seconds) {
+    if (seconds === null || seconds === undefined) return "—";
+    var value = Number(seconds);
+    if (!isFinite(value)) return "—";
+    return "cập nhật " + value.toFixed(1).replace(".", ",") + " s trước";
   }
 
-  function formatDuration(seconds) {
-    var total = Math.max(0, Math.round(Number(seconds) || 0));
-    var h = Math.floor(total / 3600);
-    var m = Math.floor((total % 3600) / 60);
-    var s = total % 60;
-    if (h > 0) return h + " giờ " + m + " phút";
-    if (m > 0) return m + " phút " + s + " giây";
-    return s + " giây";
+  /* Hàm thuần: quyết định chữ của một dòng tín hiệu. Tách khỏi DOM để test
+   * được bằng cách đọc file và để nhánh "dữ liệu cũ" có đúng một chỗ. */
+  function signalPresentation(kind, signal) {
+    var data = signal || {};
+    if (data.fresh !== true) {
+      return { text: NO_FRESH_TEXT, icon: "…", state: "stale", age: "—" };
+    }
+    var state = String(data.state || "").toLowerCase();
+    if (kind === "presence") {
+      var known = Object.prototype.hasOwnProperty.call(PRESENCE_TEXT, state);
+      return {
+        text: known ? PRESENCE_TEXT[state] : "Chưa rõ",
+        icon: known ? PRESENCE_ICON[state] : "•",
+        state: known ? state : "unknown",
+        age: formatAge(data.age_s)
+      };
+    }
+    if (kind === "phone") {
+      var phoneKnown = Object.prototype.hasOwnProperty.call(PHONE_TEXT, state);
+      return {
+        text: phoneKnown ? PHONE_TEXT[state] : "Chưa rõ",
+        icon: phoneKnown ? PHONE_ICON[state] : "•",
+        state: phoneKnown ? state : "unknown",
+        age: formatAge(data.age_s)
+      };
+    }
+    var upper = String(data.state || "").toUpperCase();
+    var identityKnown = Object.prototype.hasOwnProperty.call(
+      IDENTITY_TEXT,
+      upper
+    );
+    var label = identityKnown ? IDENTITY_TEXT[upper] : "Chưa rõ";
+    if (identityKnown && upper === "MATCH" && data.name) {
+      label += " (" + data.name + ")";
+    }
+    return {
+      text: label,
+      icon: identityKnown ? IDENTITY_ICON[upper] : "•",
+      state: identityKnown ? upper.toLowerCase() : "unknown",
+      age: formatAge(data.age_s)
+    };
+  }
+
+  function renderSign(kind, signal) {
+    var row = el("sign-" + kind);
+    if (!row) return;
+    var presentation = signalPresentation(kind, signal);
+    row.dataset.fresh = signal && signal.fresh === true ? "true" : "false";
+    row.dataset.state = presentation.state;
+    var icon = el("sign-" + kind + "-icon");
+    var text = el("sign-" + kind + "-text");
+    var age = el("sign-" + kind + "-age");
+    if (icon) icon.textContent = presentation.icon;
+    if (text) text.textContent = presentation.text;
+    if (age) age.textContent = presentation.age;
+  }
+
+  function renderSignals(data) {
+    ["presence", "phone", "identity"].forEach(function (kind) {
+      renderSign(kind, data[kind] || null);
+    });
   }
 
   function showMessage(text) {
@@ -85,39 +159,6 @@
   }
 
   function renderStatus(data) {
-    var state = STATE_CLASS[data.state] ? data.state : "ABSENT";
-    if (els.card) {
-      els.card.className = "card status " + STATE_CLASS[state];
-    }
-    if (els.icon) els.icon.textContent = STATE_ICON[state] || "•";
-    if (els.statusText) {
-      els.statusText.textContent = data.state_text || data.state || "—";
-    }
-    if (els.labelsText) {
-      var texts = data.label_texts || [];
-      els.labelsText.textContent = texts.length
-        ? "Nhãn: " + texts.join(" · ")
-        : "Không có nhãn bất thường.";
-    }
-    if (els.score) {
-      els.score.textContent =
-        typeof data.score === "number" && data.state !== "ABSENT"
-          ? Math.round(data.score) + " / 100"
-          : "—";
-    }
-    if (els.sitting) els.sitting.textContent = formatDuration(data.sitting_s);
-    if (els.distance) {
-      els.distance.textContent =
-        data.distance_cm === null || data.distance_cm === undefined
-          ? "Chưa có cảm biến"
-          : Math.round(data.distance_cm) + " cm";
-      if (
-        typeof data.distance_cm === "number" &&
-        data.distance_cm < minDistance
-      ) {
-        els.distance.textContent += " (quá gần)";
-      }
-    }
     if (els.stale) els.stale.hidden = !data.stale;
     if (els.updated) {
       els.updated.textContent = data.stale
@@ -148,250 +189,18 @@
       });
   }
 
-  /* ---- Biểu đồ ---------------------------------------------------- */
-
-  function chartColors() {
-    return {
-      series: cssVar("--series-1") || "#2a78d6",
-      grid: cssVar("--grid") || "#e1e0d9",
-      axis: cssVar("--axis") || "#c3c2b7",
-      ink: cssVar("--ink") || "#0b0b0b",
-      ink2: cssVar("--ink-2") || "#52514e",
-      surface: cssVar("--surface-1") || "#fcfcfb"
-    };
-  }
-
-  function renderTable(data) {
-    if (!els.table) return;
-    els.table.innerHTML = "";
-    data.labels.forEach(function (label, index) {
-      var row = document.createElement("tr");
-      var cells = [
-        label,
-        data.good_pct[index] === null ? "—" : data.good_pct[index] + " %",
-        data.avg_score[index] === null ? "—" : data.avg_score[index],
-        data.absent_s[index] === null ? "—" : Math.round(data.absent_s[index])
-      ];
-      cells.forEach(function (value) {
-        var td = document.createElement("td");
-        td.textContent = value;
-        row.appendChild(td);
-      });
-      els.table.appendChild(row);
-    });
-  }
-
-  function drawFallback(data, colors) {
-    /* Bản vẽ tay bằng SVG: chỉ dùng khi Chart.js không nạp được. Cột một
-     * chuỗi duy nhất, nhãn trục thưa, không cần thư viện. */
-    var wrap = els.chart ? els.chart.parentNode : null;
-    if (!wrap) return;
-    var old = wrap.querySelector("svg.chart-fallback");
-    if (old) old.remove();
-
-    var width = wrap.clientWidth || 320;
-    var height = wrap.clientHeight || 240;
-    var padLeft = 34;
-    var padBottom = 26;
-    var padTop = 8;
-    var plotW = width - padLeft - 6;
-    var plotH = height - padTop - padBottom;
-    var n = data.labels.length || 1;
-    var gap = 2;
-    var barW = Math.max(1, plotW / n - gap);
-
-    var svgNS = "http://www.w3.org/2000/svg";
-    var svg = document.createElementNS(svgNS, "svg");
-    svg.setAttribute("class", "chart-fallback");
-    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
-    svg.setAttribute("width", "100%");
-    svg.setAttribute("height", "100%");
-    svg.setAttribute("role", "img");
-    svg.setAttribute(
-      "aria-label",
-      "Biểu đồ cột tỉ lệ tư thế đúng: " + data.labels.join(", ")
-    );
-
-    [0, 50, 100].forEach(function (tick) {
-      var y = padTop + plotH * (1 - tick / 100);
-      var line = document.createElementNS(svgNS, "line");
-      line.setAttribute("x1", padLeft);
-      line.setAttribute("x2", width - 4);
-      line.setAttribute("y1", y);
-      line.setAttribute("y2", y);
-      line.setAttribute("stroke", tick === 0 ? colors.axis : colors.grid);
-      line.setAttribute("stroke-width", "1");
-      svg.appendChild(line);
-
-      var text = document.createElementNS(svgNS, "text");
-      text.setAttribute("x", padLeft - 6);
-      text.setAttribute("y", y + 4);
-      text.setAttribute("text-anchor", "end");
-      text.setAttribute("font-size", "10");
-      text.setAttribute("fill", colors.ink2);
-      text.textContent = tick + "%";
-      svg.appendChild(text);
-    });
-
-    data.labels.forEach(function (label, index) {
-      var value = data.good_pct[index];
-      if (value === null || value === undefined) return;
-      var barH = Math.max(0, (plotH * value) / 100);
-      var x = padLeft + index * (plotW / n) + gap / 2;
-      var y = padTop + plotH - barH;
-      var rect = document.createElementNS(svgNS, "rect");
-      rect.setAttribute("x", x);
-      rect.setAttribute("y", y);
-      rect.setAttribute("width", Math.max(1, barW));
-      rect.setAttribute("height", barH);
-      rect.setAttribute("rx", "4");
-      rect.setAttribute("fill", colors.series);
-      var title = document.createElementNS(svgNS, "title");
-      title.textContent = label + ": " + value + "%";
-      rect.appendChild(title);
-      svg.appendChild(rect);
-    });
-
-    /* Nhãn trục X thưa: tối đa 6 nhãn để không chồng chữ trên điện thoại. */
-    var step = Math.max(1, Math.ceil(n / 6));
-    data.labels.forEach(function (label, index) {
-      if (index % step !== 0) return;
-      var text = document.createElementNS(svgNS, "text");
-      text.setAttribute("x", padLeft + (index + 0.5) * (plotW / n));
-      text.setAttribute("y", height - 8);
-      text.setAttribute("text-anchor", "middle");
-      text.setAttribute("font-size", "10");
-      text.setAttribute("fill", colors.ink2);
-      text.textContent = label;
-      svg.appendChild(text);
-    });
-
-    wrap.appendChild(svg);
-  }
-
-  function renderChart(data) {
-    var colors = chartColors();
-    var hasData = (data.labels || []).length > 0 && data.has_data !== false;
-    if (els.chartEmpty) els.chartEmpty.hidden = hasData;
-    renderTable(data);
-    if (!hasData) {
-      if (chart) {
-        chart.destroy();
-        chart = null;
-      }
-      return;
-    }
-
-    if (typeof window.Chart === "undefined") {
-      chartBroken = true;
-      drawFallback(data, colors);
-      return;
-    }
-
-    if (chartBroken) return; // đã chuyển hẳn sang bản vẽ tay
-
-    var config = {
-      type: "bar",
-      data: {
-        labels: data.labels,
-        datasets: [
-          {
-            label: "Tỉ lệ tư thế đúng (%)",
-            data: data.good_pct,
-            backgroundColor: colors.series,
-            borderRadius: 4,
-            borderSkipped: "bottom",
-            /* Khe 2px giữa các cột để hai cột cạnh nhau không dính thành
-             * một khối. */
-            barPercentage: 0.85,
-            categoryPercentage: 0.85
-          }
-        ]
-      },
-      options: {
-        responsive: true,
-        maintainAspectRatio: false,
-        animation: false,
-        layout: { padding: { top: 6 } },
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            displayColors: false,
-            backgroundColor: colors.ink,
-            titleColor: colors.surface,
-            bodyColor: colors.surface,
-            callbacks: {
-              label: function (item) {
-                var value = item.parsed.y;
-                return value === null || value === undefined
-                  ? "Không có dữ liệu"
-                  : value.toFixed(1) + "% thời gian đúng tư thế";
-              }
-            }
-          }
-        },
-        scales: {
-          x: {
-            grid: { display: false },
-            border: { color: colors.axis },
-            ticks: {
-              color: colors.ink2,
-              maxRotation: 0,
-              autoSkip: true,
-              maxTicksLimit: 6,
-              font: { size: 11 }
-            }
-          },
-          y: {
-            min: 0,
-            max: 100,
-            grid: { color: colors.grid, drawTicks: false },
-            border: { display: false },
-            ticks: {
-              color: colors.ink2,
-              stepSize: 25,
-              callback: function (value) {
-                return value + "%";
-              },
-              font: { size: 11 }
-            }
-          }
-        }
-      }
-    };
-
-    if (chart) {
-      chart.data.labels = data.labels;
-      chart.data.datasets[0].data = data.good_pct;
-      chart.data.datasets[0].backgroundColor = colors.series;
-      chart.update("none");
-    } else {
-      chart = new window.Chart(els.chart, config);
-    }
-  }
-
-  function fetchHistory() {
-    fetch("/api/history?range=" + encodeURIComponent(currentRange), {
-      cache: "no-store"
-    })
+  function fetchSignals() {
+    if (!peopleEnabled) return;
+    fetch("/api/signals", { cache: "no-store" })
       .then(function (res) {
         if (!res.ok) throw new Error("HTTP " + res.status);
         return res.json();
       })
-      .then(function (data) {
-        if (els.caption) {
-          els.caption.textContent =
-            currentRange === "today"
-              ? "Phần trăm thời gian có người ngồi đúng tư thế trong mỗi giờ."
-              : "Phần trăm thời gian có người ngồi đúng tư thế trong 7 ngày qua.";
-        }
-        renderChart(data);
-      })
+      .then(renderSignals)
       .catch(function () {
-        if (els.chartEmpty) {
-          els.chartEmpty.textContent = "Không tải được số liệu.";
-          els.chartEmpty.hidden = false;
-        }
+        /* Không có dữ liệu: mọi dòng phải rơi về "chưa có dữ liệu mới"
+         * thay vì giữ kết luận cũ trên màn hình. */
+        renderSignals({ presence: null, phone: null, identity: null });
       });
   }
 
@@ -454,6 +263,24 @@
         button.textContent = button.dataset.originalText;
       }
     }
+  }
+
+  function readJson(response) {
+    return response.json().catch(function () {
+      return null;
+    });
+  }
+
+  /* Lỗi dịch vụ luôn là {"ok": false, "message": "..."} tiếng Việt; giữ
+   * nguyên câu đó để người dùng biết phải làm gì. */
+  function failText(response, data) {
+    if (data && typeof data.message === "string" && data.message) {
+      return data.message;
+    }
+    if (response && response.status === 503) {
+      return "Tính năng người học chưa được bật trong phiên chạy này.";
+    }
+    return "Máy chủ không xử lý được yêu cầu này.";
   }
 
   if (els.muteBtn) {
@@ -620,35 +447,331 @@
     if (document.hidden) stopHold();
   });
 
-  els.tabs.forEach(function (tab) {
-    tab.addEventListener("click", function () {
-      currentRange = tab.dataset.range;
-      els.tabs.forEach(function (other) {
-        var active = other === tab;
-        other.classList.toggle("tab--active", active);
-        other.setAttribute("aria-selected", active ? "true" : "false");
-      });
-      fetchHistory();
-    });
-  });
+  /* ---- Người học -------------------------------------------------- */
 
-  /* Cập nhật lại biểu đồ khi đổi chế độ sáng/tối để màu bám đúng bề mặt. */
-  if (window.matchMedia) {
-    var media = window.matchMedia("(prefers-color-scheme: dark)");
-    if (media.addEventListener) {
-      media.addEventListener("change", function () {
-        if (chartBroken) {
-          fetchHistory();
-        } else if (chart) {
-          fetchHistory();
-        }
+  function setSelected(personId, people) {
+    if (!els.selected) return;
+    if (personId === null || personId === undefined) {
+      els.selected.textContent = "Chưa chọn người đang học.";
+      return;
+    }
+    var match = (people || []).filter(function (person) {
+      return person.id === personId;
+    })[0];
+    els.selected.textContent = match
+      ? "Đang chọn: " + match.name
+      : "Đang chọn người học có mã " + personId + ".";
+  }
+
+  function renderPeople(data) {
+    var people = (data && data.people) || [];
+    setSelected(data ? data.selected : null, people);
+    if (!els.peopleList) return;
+    els.peopleList.innerHTML = "";
+    people.forEach(function (person) {
+      var item = document.createElement("li");
+      item.className = "people__item";
+
+      var name = document.createElement("span");
+      name.className = "people__name";
+      name.textContent = person.name;
+      item.appendChild(name);
+
+      var choose = document.createElement("button");
+      choose.type = "button";
+      choose.className = "btn btn--quiet people__pick";
+      choose.textContent = "Chọn";
+      choose.addEventListener("click", function () {
+        selectPerson(person.id);
       });
+      item.appendChild(choose);
+
+      /* Xoá là hành động không hoàn tác được: luôn hỏi lại trước khi gọi. */
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "btn btn--quiet people__delete";
+      remove.textContent = "Xoá";
+      remove.addEventListener("click", function () {
+        if (!window.confirm("Xoá người học \"" + person.name + "\"?")) return;
+        deletePerson(person.id);
+      });
+      item.appendChild(remove);
+
+      els.peopleList.appendChild(item);
+    });
+    if (els.peopleEmpty) els.peopleEmpty.hidden = people.length > 0;
+  }
+
+  function fetchPeople() {
+    if (!peopleEnabled) return;
+    fetch("/api/people", { cache: "no-store" })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok) {
+            showMessage(failText(res, data));
+            return;
+          }
+          renderPeople(data);
+        });
+      })
+      .catch(function () {
+        showMessage("Không tải được danh sách người học.");
+      });
+  }
+
+  function selectPerson(personId) {
+    fetch("/api/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ person_id: personId })
+    })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok || !data || data.ok !== true) {
+            showMessage(failText(res, data));
+            return;
+          }
+          showMessage(data.message || "Đã chọn người đang học.");
+          fetchPeople();
+        });
+      })
+      .catch(function () {
+        showMessage("Không gửi được lựa chọn người đang học.");
+      });
+  }
+
+  function deletePerson(personId) {
+    fetch("/api/people/" + encodeURIComponent(personId), { method: "DELETE" })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok || !data || data.ok !== true) {
+            showMessage(failText(res, data));
+            return;
+          }
+          showMessage(data.message || "Đã xoá người học.");
+          fetchPeople();
+        });
+      })
+      .catch(function () {
+        showMessage("Không xoá được người học.");
+      });
+  }
+
+  var ENROLL_STATE_TEXT = {
+    running: "Đang thu mẫu…",
+    done: "Đã đăng ký xong.",
+    cancelled: "Đã huỷ phiên đăng ký.",
+    failed: "Đăng ký thất bại."
+  };
+
+  function stopEnrollPolling() {
+    window.clearTimeout(enrollTimer);
+    enrollTimer = null;
+  }
+
+  function finishEnroll(state, message) {
+    stopEnrollPolling();
+    enrollId = null;
+    if (els.enrollPanel) els.enrollPanel.hidden = true;
+    showMessage(message || ENROLL_STATE_TEXT[state] || "Đã xong.");
+    if (state === "done") fetchPeople();
+  }
+
+  function renderEnroll(data) {
+    var state = String(data.state || "failed");
+    if (state !== "running") {
+      finishEnroll(state, data.error || ENROLL_STATE_TEXT[state]);
+      return;
+    }
+    if (els.enrollStep) {
+      els.enrollStep.textContent =
+        "Bước " + (Number(data.step_index) + 1) + ": " + (data.step_name || "—");
+    }
+    if (els.enrollSamples) {
+      els.enrollSamples.textContent =
+        "Mẫu hợp lệ: " + Number(data.samples || 0) + " / " +
+        Number(data.samples_needed || 0);
     }
   }
 
+  function pollEnroll() {
+    if (!enrollId) return;
+    var current = enrollId;
+    fetch("/api/enroll/" + encodeURIComponent(current), { cache: "no-store" })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (enrollId !== current) return; // đã huỷ/đổi phiên
+          if (!res.ok || !data) {
+            finishEnroll("failed", failText(res, data));
+            return;
+          }
+          renderEnroll(data);
+          if (data.state === "running") {
+            enrollTimer = window.setTimeout(pollEnroll, ENROLL_POLL_MS);
+          }
+        });
+      })
+      .catch(function () {
+        if (enrollId !== current) return;
+        finishEnroll("failed", "Mất kết nối khi đang theo dõi đăng ký.");
+      });
+  }
+
+  function startEnroll(name) {
+    fetch("/api/people", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: name })
+    })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if ((res.status !== 201 && !res.ok) || !data) {
+            showMessage(failText(res, data));
+            return;
+          }
+          enrollId = data.enroll_id || null;
+          if (!enrollId) {
+            showMessage("Máy chủ không trả về mã phiên đăng ký.");
+            return;
+          }
+          if (els.addForm) els.addForm.hidden = true;
+          if (els.enrollPanel) els.enrollPanel.hidden = false;
+          if (els.enrollName) els.enrollName.textContent = name;
+          if (els.enrollStep) {
+            els.enrollStep.textContent =
+              "Bước 1: " + ((data.steps || [])[0] || "Nhìn thẳng");
+          }
+          if (els.enrollSamples) els.enrollSamples.textContent = "Mẫu hợp lệ: 0";
+          pollEnroll();
+        });
+      })
+      .catch(function () {
+        showMessage("Không bắt đầu được phiên đăng ký.");
+      });
+  }
+
+  function cancelEnroll() {
+    if (!enrollId) return;
+    var current = enrollId;
+    fetch("/api/enroll/" + encodeURIComponent(current) + "/cancel", {
+      method: "POST"
+    })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok || !data || data.ok !== true) {
+            showMessage(failText(res, data));
+            return;
+          }
+          finishEnroll("cancelled", data.message);
+        });
+      })
+      .catch(function () {
+        finishEnroll("failed", "Không huỷ được phiên đăng ký.");
+      });
+  }
+
+  function renderSchedule(data) {
+    if (!els.schedule) return;
+    var schedule = (data && data.schedule) || null;
+    if (!schedule) {
+      els.schedule.textContent = "Giờ học: chưa đọc được.";
+      return;
+    }
+    if (schedule.enabled === false) {
+      els.schedule.textContent = "Giờ học: không giới hạn giờ.";
+      return;
+    }
+    var windows = schedule.windows || [];
+    if (!windows.length) {
+      els.schedule.textContent = "Giờ học: chưa đặt khung giờ nào.";
+      return;
+    }
+    var dayNames = {
+      mon: "thứ 2",
+      tue: "thứ 3",
+      wed: "thứ 4",
+      thu: "thứ 5",
+      fri: "thứ 6",
+      sat: "thứ 7",
+      sun: "chủ nhật"
+    };
+    var parts = windows.map(function (window) {
+      var days = (window.days || []).map(function (day) {
+        return dayNames[day] || day;
+      });
+      return days.join(", ") + " " + window.start + "–" + window.end;
+    });
+    els.schedule.textContent = "Giờ học: " + parts.join("; ");
+  }
+
+  function fetchSchedule() {
+    if (!peopleEnabled) return;
+    fetch("/api/schedule", { cache: "no-store" })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok) {
+            if (els.schedule) {
+              els.schedule.textContent = failText(res, data);
+            }
+            return;
+          }
+          renderSchedule(data);
+        });
+      })
+      .catch(function () {
+        if (els.schedule) els.schedule.textContent = "Giờ học: mất kết nối.";
+      });
+  }
+
+  if (peopleEnabled) {
+    if (els.addBtn) {
+      els.addBtn.addEventListener("click", function () {
+        if (els.addForm) els.addForm.hidden = !els.addForm.hidden;
+        if (els.addForm && !els.addForm.hidden && els.nameInput) {
+          els.nameInput.focus();
+        }
+      });
+    }
+    if (els.addCancel) {
+      els.addCancel.addEventListener("click", function () {
+        if (els.addForm) els.addForm.hidden = true;
+      });
+    }
+    if (els.addForm) {
+      els.addForm.addEventListener("submit", function (event) {
+        event.preventDefault();
+        var name = els.nameInput ? els.nameInput.value.trim() : "";
+        if (!name) {
+          showMessage("Hãy nhập tên người học.");
+          return;
+        }
+        setBusy(els.addSubmit, true, "Đang bắt đầu…");
+        startEnroll(name);
+        window.setTimeout(function () {
+          setBusy(els.addSubmit, false);
+        }, 500);
+      });
+    }
+    if (els.pickBtn) {
+      els.pickBtn.addEventListener("click", function () {
+        if (els.peopleListWrap) {
+          els.peopleListWrap.hidden = !els.peopleListWrap.hidden;
+        }
+        fetchPeople();
+      });
+    }
+    if (els.enrollCancel) {
+      els.enrollCancel.addEventListener("click", cancelEnroll);
+    }
+  }
+
+  /* Cập nhật mỗi giây một lần. Dữ liệu người không bao giờ vào localStorage:
+   * đây là thông tin sinh trắc học, không phải sở thích giao diện. */
   fetchStatus();
   setupCamera();
-  fetchHistory();
+  fetchSignals();
+  fetchPeople();
+  fetchSchedule();
   window.setInterval(fetchStatus, STATUS_INTERVAL_MS);
-  window.setInterval(fetchHistory, HISTORY_REFRESH_MS);
+  window.setInterval(fetchSignals, STATUS_INTERVAL_MS);
 })();
