@@ -22,6 +22,15 @@ from typing import Any
 
 import yaml
 
+from .schedule import (
+    ALERT_KINDS,
+    DEFAULT_KINDS,
+    ScheduleConfig,
+    ScheduleError,
+    parse_kind_settings,
+    parse_window,
+)
+
 #: Biến môi trường ghi đè ``camera.source``; dùng để đặt URL camera IP kèm mật
 #: khẩu mà không phải ghi mật khẩu vào file cấu hình nào (kể cả
 #: ``config.local.yaml``). Có giá trị khác rỗng thì thắng cấu hình file.
@@ -190,6 +199,8 @@ class Config:
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     web: WebConfig = field(default_factory=WebConfig)
+    #: Giờ học quy định (``schedule``); mặc định tắt.
+    schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
 
     #: Đường dẫn file cấu hình đã nạp (rỗng nếu tạo bằng tay).
     path: str = ""
@@ -533,6 +544,71 @@ def _parse_alerts(raw: Any) -> AlertsConfig:
     )
 
 
+def _parse_schedule(raw: Any) -> ScheduleConfig:
+    """Nạp mục ``schedule``: giờ học quy định (mặc định tắt).
+
+    Lỗi giờ/thứ được báo **ngay lúc nạp** (spec v2 §1, §11.2) và đổi thành
+    :class:`ConfigError` để API công khai của cấu hình chỉ có một kiểu lỗi.
+
+    Mục ``kinds`` cho phép tắt riêng từng loại cảnh báo và đặt cooldown/thời
+    gian giữ riêng cho từng loại. Khóa không có trong ``kinds`` lấy mặc định
+    của module ``schedule``; khóa lạ bị báo lỗi để người dùng không tưởng
+    nhầm là đã bật.
+    """
+    data = _as_dict(raw, "schedule")
+    windows: list[Any] = []
+    raw_windows = data.get("windows")
+    if raw_windows is not None:
+        if not isinstance(raw_windows, (list, tuple)):
+            raise ConfigError(
+                "'schedule.windows' phải là danh sách khung giờ, nhận được "
+                f"{type(raw_windows).__name__}."
+            )
+        for index, item in enumerate(raw_windows):
+            try:
+                windows.append(parse_window(item, f"schedule.windows[{index}]"))
+            except ScheduleError as exc:
+                raise ConfigError(str(exc)) from exc
+
+    kinds: dict[str, Any] = {}
+    raw_kinds = data.get("kinds")
+    if raw_kinds is not None:
+        if not isinstance(raw_kinds, dict):
+            raise ConfigError(
+                "'schedule.kinds' phải là ánh xạ theo tên loại cảnh báo "
+                f"({', '.join(ALERT_KINDS)}), nhận được "
+                f"{type(raw_kinds).__name__}."
+            )
+        for name, item in raw_kinds.items():
+            if name not in ALERT_KINDS:
+                raise ConfigError(
+                    f"'schedule.kinds.{name}' không phải loại cảnh báo hợp lệ; "
+                    f"dùng một trong {ALERT_KINDS}."
+                )
+            try:
+                kinds[name] = parse_kind_settings(
+                    item, f"schedule.kinds.{name}"
+                )
+            except ScheduleError as exc:
+                raise ConfigError(str(exc)) from exc
+
+    enabled = _get_bool(
+        data, "enabled", ScheduleConfig.enabled, "schedule"
+    )
+    if enabled and not windows:
+        raise ConfigError(
+            "'schedule.enabled' là true nhưng 'schedule.windows' đang trống. "
+            "Thêm ít nhất một khung giờ học hoặc đặt enabled: false."
+        )
+
+    cfg = ScheduleConfig(
+        enabled=enabled,
+        windows=tuple(windows),
+        kinds={**DEFAULT_KINDS, **kinds},
+    )
+    return cfg
+
+
 def _parse_pins(raw: Any) -> PinsConfig:
     data = _as_dict(raw, "hardware.pins")
     base = PinsConfig()
@@ -806,5 +882,6 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         sensors=_parse_sensors(raw.get("sensors")),
         storage=_parse_storage(raw.get("storage")),
         web=_parse_web(raw.get("web")),
+        schedule=_parse_schedule(raw.get("schedule")),
         path=str(config_path),
     )

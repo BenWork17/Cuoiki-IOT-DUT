@@ -318,3 +318,131 @@ def test_speaker_host_with_rtsp_url_is_rejected_and_redacted(
     assert "mat-khau-gia" not in message
 
 
+# --------------------------------------------------------------------------
+# schedule: giờ học quy định (mặc định tắt)
+# --------------------------------------------------------------------------
+
+
+def test_schedule_defaults_to_disabled(tmp_path: Path) -> None:
+    config = load_config(_write(tmp_path, VALID_YAML))
+    assert config.schedule.enabled is False
+    assert config.schedule.windows == ()
+    # Có mặc định cho cả ba loại, để bật enabled là dùng được ngay.
+    assert set(config.schedule.kinds) == {
+        "leave_frame",
+        "phone",
+        "stranger",
+    }
+    assert config.schedule.kinds["leave_frame"].cooldown_s > 0
+
+
+def test_schedule_loads_windows_and_kinds(tmp_path: Path) -> None:
+    text = (
+        "schedule:\n"
+        "  enabled: true\n"
+        "  windows:\n"
+        "    - days: [mon, tue, wed, thu, fri]\n"
+        '      start: "19:00"\n'
+        '      end: "21:30"\n'
+        "    - days: [sat, sun]\n"
+        '      start: "08:00"\n'
+        '      end: "11:00"\n'
+        "  kinds:\n"
+        "    phone:\n"
+        "      enabled: false\n"
+        "      cooldown_s: 45.5\n"
+        "      hold_s: 0\n"
+    )
+    config = load_config(_write(tmp_path, text))
+
+    assert config.schedule.enabled is True
+    assert len(config.schedule.windows) == 2
+    first = config.schedule.windows[0]
+    assert first.days == ("mon", "tue", "wed", "thu", "fri")
+    assert (first.start.hour, first.start.minute) == (19, 0)
+    assert (first.end.hour, first.end.minute) == (21, 30)
+    assert first.overnight is False
+
+    # Tắt riêng "dien thoai" không ảnh hưởng hai loại còn lại.
+    assert config.schedule.kinds["phone"].enabled is False
+    assert config.schedule.kinds["phone"].cooldown_s == pytest.approx(45.5)
+    assert config.schedule.kinds["leave_frame"].enabled is True
+    assert config.schedule.kinds["stranger"].enabled is True
+
+
+def test_schedule_invalid_clock_raises_at_load_time(tmp_path: Path) -> None:
+    """Giờ sai định dạng phải lỗi lúc NẠP cấu hình, kèm đúng khóa."""
+    text = (
+        "schedule:\n"
+        "  enabled: true\n"
+        "  windows:\n"
+        "    - days: [mon]\n"
+        '      start: "7h00"\n'
+        '      end: "09:00"\n'
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "schedule.windows[0].start" in str(excinfo.value)
+
+
+def test_schedule_unquoted_clock_reports_yaml_trap(tmp_path: Path) -> None:
+    """``start: 19:00`` (không ngoặc kép) bị YAML đọc thành số 1140."""
+    text = (
+        "schedule:\n"
+        "  enabled: true\n"
+        "  windows:\n"
+        "    - days: [mon]\n"
+        "      start: 19:00\n"
+        "      end: 21:00\n"
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    message = str(excinfo.value)
+    assert "schedule.windows[0].start" in message
+    assert "19:00" in message  # gợi ý đặt trong ngoặc kép
+
+
+def test_schedule_unknown_day_raises(tmp_path: Path) -> None:
+    text = (
+        "schedule:\n"
+        "  enabled: true\n"
+        "  windows:\n"
+        "    - days: [monday]\n"
+        '      start: "19:00"\n'
+        '      end: "21:00"\n'
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "schedule.windows[0].days" in str(excinfo.value)
+
+
+def test_schedule_enabled_without_windows_raises(tmp_path: Path) -> None:
+    text = "schedule:\n  enabled: true\n"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "schedule.windows" in str(excinfo.value)
+
+
+def test_schedule_unknown_kind_raises(tmp_path: Path) -> None:
+    text = "schedule:\n  kinds:\n    sleeping: {enabled: true}\n"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "schedule.kinds.sleeping" in str(excinfo.value)
+
+
+def test_schedule_negative_cooldown_raises(tmp_path: Path) -> None:
+    text = "schedule:\n  kinds:\n    phone: {cooldown_s: -5}\n"
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(_write(tmp_path, text))
+    assert "schedule.kinds.phone.cooldown_s" in str(excinfo.value)
+
+
+def test_repo_config_yaml_schedule_section_is_valid() -> None:
+    """Mục ``schedule`` trong config.yaml của repo phải nạp được."""
+    config = load_config(_REPO_ROOT / "config.yaml")
+    assert isinstance(config.schedule.enabled, bool)
+    if config.schedule.enabled:
+        assert config.schedule.windows
+
+
+

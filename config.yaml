@@ -104,3 +104,38 @@ web:
   host: 0.0.0.0
   port: 8000
   stream_enabled: false
+
+# Giờ học quy định: chỉ phát cảnh báo trong các khung giờ dưới đây.
+# Module quyết định: src/posture_monitor/schedule.py. Mặc định TẮT (enabled:
+# false = cảnh báo bất cứ lúc nào, không giới hạn giờ).
+# Giờ PHẢI đặt trong ngoặc kép: YAML đọc 19:00 không ngoặc kép thành số 1140.
+schedule:
+  enabled: false
+  windows:
+    # Thứ trong tuần dùng tên: mon tue wed thu fri sat sun.
+    - days: [mon, tue, wed, thu, fri]
+      start: "19:00"
+      end: "21:30"
+    - days: [sat, sun]
+      start: "08:00"
+      end: "11:00"
+    # Khung qua đêm thuộc về ngày BẮT ĐẦU: khung thứ Sáu này bao cả
+    # thứ Bảy 00:30, nhưng thứ Bảy 23:30 thì không.
+    # - days: [fri]
+    #   start: "22:00"
+    #   end: "01:00"
+  # Tắt riêng từng loại cảnh báo và đặt cooldown/thời gian giữ riêng.
+  # Bỏ một loại thì loại đó dùng mặc định trong src/posture_monitor/schedule.py.
+  kinds:
+    leave_frame:           # rời khung hình
+      enabled: true
+      cooldown_s: 60
+      hold_s: 5
+    phone:                 # dùng điện thoại
+      enabled: true
+      cooldown_s: 120
+      hold_s: 10
+    stranger:              # có người lạ
+      enabled: true
+      cooldown_s: 300
+      hold_s: 5
