@@ -68,6 +68,24 @@
     </section>
     <p id="action-message" class="message" role="status" hidden></p>
 
+    <!-- Xoay camera IP (PTZ qua ONVIF). Nút to, bấm được bằng ngón tay ở một
+         tay; bấm giữ thì camera xoay liên tục cho tới khi nhả. Nếu PTZ chưa
+         cấu hình, bấm vào sẽ hiện thông báo tiếng Việt chỉ cách bật. -->
+    <section class="card ptz" aria-labelledby="ptz-title">
+      <h2 id="ptz-title" class="ptz__title">Xoay camera</h2>
+      <div class="ptz__grid" role="group" aria-label="Điều khiển xoay camera">
+        <button id="ptz-up" type="button" class="btn ptz__btn ptz__btn--up"
+                data-ptz-direction="up" aria-label="Xoay camera lên">↑</button>
+        <button id="ptz-left" type="button" class="btn ptz__btn ptz__btn--left"
+                data-ptz-direction="left" aria-label="Xoay camera sang trái">←</button>
+        <button id="ptz-down" type="button" class="btn ptz__btn ptz__btn--down"
+                data-ptz-direction="down" aria-label="Xoay camera xuống">↓</button>
+        <button id="ptz-right" type="button" class="btn ptz__btn ptz__btn--right"
+                data-ptz-direction="right" aria-label="Xoay camera sang phải">→</button>
+      </div>
+      <p class="ptz__hint">Bấm giữ để xoay liên tục.</p>
+    </section>
+
     <section class="card chart-card">
       <div class="chart-head">
         <h2>Tỉ lệ tư thế đúng</h2>

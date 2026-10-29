@@ -25,6 +25,9 @@
     muteText: document.getElementById("mute-text"),
     calibrateBtn: document.getElementById("calibrate-btn"),
     message: document.getElementById("action-message"),
+    ptzButtons: Array.prototype.slice.call(
+      document.querySelectorAll("[data-ptz-direction]")
+    ),
     chart: document.getElementById("chart"),
     chartEmpty: document.getElementById("chart-empty"),
     caption: document.getElementById("chart-caption"),
@@ -441,6 +444,134 @@
         });
     });
   }
+
+  /* ---- Xoay camera (PTZ) ------------------------------------------ */
+
+  /* Bấm giữ = gửi liên tiếp từng bước ngắn cho tới khi nhả. Backend chặn mỗi
+   * lệnh tối đa 3 giây, nên chia nhỏ ở đây vẫn an toàn và phản hồi nhả tay
+   * nhanh hơn. Một cú bấm cũng đi qua đúng đường này với một bước. */
+  var PTZ_STEP_S = 0.4;
+  var ptzHold = null;
+
+  function ptzFailText(response, data) {
+    /* Backend luôn trả {"ok": false, "message": "..."} bằng tiếng Việt; giữ
+     * nguyên câu đó để người dùng biết phải sửa gì (bật ONVIF, đặt mật khẩu…).
+     * Vẫn có câu dự phòng nếu một proxy nào đó trả về thứ khác. */
+    if (data && typeof data.message === "string" && data.message) {
+      return data.message;
+    }
+    if (data && typeof data.error === "string" && data.error) {
+      return data.error;
+    }
+    if (response && response.status === 404) {
+      return "Máy chủ này không hỗ trợ điều khiển camera.";
+    }
+    return "Camera không nhận lệnh xoay.";
+  }
+
+  function requestPtz(direction, duration) {
+    return fetch("/api/ptz", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ direction: direction, duration: duration })
+    })
+      .then(function (response) {
+        return response
+          .json()
+          .catch(function () {
+            return null;
+          })
+          .then(function (data) {
+            if (!response.ok || !data || data.ok !== true) {
+              showMessage(ptzFailText(response, data));
+              return false;
+            }
+            showMessage(data.message || "Đã xoay camera.");
+            return true;
+          });
+      })
+      .catch(function () {
+        showMessage("Không gửi được lệnh xoay camera. Kiểm tra kết nối mạng.");
+        return false;
+      });
+  }
+
+  function setPtzBusy(busy) {
+    els.ptzButtons.forEach(function (button) {
+      button.classList.toggle("btn--busy", busy);
+      button.setAttribute("aria-busy", busy ? "true" : "false");
+    });
+  }
+
+  function stopHold() {
+    if (!ptzHold) return;
+    ptzHold.held = false;
+    ptzHold = null;
+    setPtzBusy(false);
+  }
+
+  function startHold(direction) {
+    if (ptzHold) return;
+    var state = { held: true, direction: direction };
+    ptzHold = state;
+    setPtzBusy(true);
+
+    function step() {
+      if (!state.held) return;
+      requestPtz(direction, PTZ_STEP_S).then(function (ok) {
+        if (!state.held) return;
+        if (!ok) {
+          /* Lỗi (PTZ chưa cấu hình, mất mạng): dừng ngay, đừng thử lại liên
+           * tục — người dùng đã thấy thông báo giải thích. */
+          if (ptzHold === state) stopHold();
+          return;
+        }
+        step();
+      });
+    }
+
+    step();
+  }
+
+  els.ptzButtons.forEach(function (button) {
+    var direction = button.dataset.ptzDirection;
+
+    button.addEventListener("pointerdown", function (event) {
+      /* Chuột phải / bút cảm ứng thứ hai: bỏ qua. Chặn luôn việc trình duyệt
+       * bôi chữ khi giữ lâu. */
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      event.preventDefault();
+      if (button.setPointerCapture) {
+        try {
+          button.setPointerCapture(event.pointerId);
+        } catch (err) {
+          /* Không bắt được con trỏ vẫn xoay được; chỉ mất khả năng nhận
+           * pointerup ngoài nút, nên vẫn gắn thêm pointerleave bên dưới. */
+        }
+      }
+      startHold(direction);
+    });
+
+    ["pointerup", "pointercancel", "pointerleave"].forEach(function (name) {
+      button.addEventListener(name, stopHold);
+    });
+
+    /* Bàn phím: Enter/Space phát sinh click với detail = 0. Cú click do chuột
+     * cũng có detail = 1 nhưng đã được xử lý ở pointerdown, nên bỏ qua để
+     * không xoay hai lần cho một cú bấm. */
+    button.addEventListener("click", function (event) {
+      if (event.detail === 0) {
+        requestPtz(direction, PTZ_STEP_S);
+      }
+    });
+  });
+
+  /* Chốt an toàn: nếu tab mất focus khi đang giữ (đổi ứng dụng trên điện
+   * thoại), nhả tay sẽ không bao giờ tới nơi — phải tự dừng. */
+  window.addEventListener("blur", stopHold);
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) stopHold();
+  });
 
   els.tabs.forEach(function (tab) {
     tab.addEventListener("click", function () {

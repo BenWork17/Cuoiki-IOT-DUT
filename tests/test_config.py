@@ -13,6 +13,8 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from posture_monitor.config import (  # noqa: E402
+    CAMERA_SOURCE_ENV,
+    ONVIF_PASSWORD_ENV,
     Config,
     ConfigError,
     load_config,
@@ -318,3 +320,189 @@ def test_speaker_host_with_rtsp_url_is_rejected_and_redacted(
     assert "mat-khau-gia" not in message
 
 
+
+
+# --------------------------------------------------------------------------
+# PTZ: suy host từ camera.source, mật khẩu, và thông điệp khi thiếu cấu hình
+# --------------------------------------------------------------------------
+
+SECRET = "mat-khau-ptz-gia"
+SECRET_URL = f"rtsp://admin:{SECRET}@192.0.2.77:554/1/2"
+
+
+def _write_source(tmp_path: Path, source_yaml: str, extra: str = "") -> Path:
+    """File cấu hình tối thiểu có đúng ``camera.source`` cần khảo sát."""
+    text = f"camera:\n  source: {source_yaml}\n" + extra
+    return _write(tmp_path, text)
+
+
+def test_onvif_host_duoc_suy_ra_tu_camera_source_rtsp(tmp_path, monkeypatch):
+    """``onvif.host`` trống + nguồn RTSP → host lấy từ URL nguồn.
+
+    Đây là quy ước "một địa chỉ camera, một nơi khai": người dùng chỉ đặt
+    ``POSTURE_CAMERA_SOURCE`` là đủ cho cả xem ảnh lẫn điều khiển PTZ.
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, SECRET_URL)
+
+    config = load_config(_write_source(tmp_path, "usb:0"))
+
+    assert config.camera.source == f"rtsp:{SECRET_URL}"
+    assert config.camera.onvif.host == "192.0.2.77"
+    assert config.camera.onvif.enabled is True, "có host + mật khẩu là tự bật"
+    assert SECRET not in repr(config), "repr() lọt vào log — phải che"
+
+
+def test_onvif_host_trong_camera_source_khong_phai_rtsp_thi_tat(tmp_path, monkeypatch):
+    """Nguồn không mang host (usb/picamera) → không suy được, PTZ tắt."""
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, "usb:0")
+
+    config = load_config(_write_source(tmp_path, "usb:0"))
+
+    assert config.camera.onvif.host == ""
+    assert config.camera.onvif.enabled is False
+
+
+def test_onvif_host_trong_config_thang_camera_source(tmp_path, monkeypatch):
+    """``camera.onvif.host`` điền tay là đường ghi đè, không bị suy lại.
+
+    Dùng cho trường hợp camera PTZ nằm ở host khác luồng ảnh (hiếm nhưng
+    có thật với camera đặt sau đầu ghi).
+    """
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, SECRET)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, SECRET_URL)
+
+    path = _write(
+        tmp_path,
+        "camera:\n"
+        "  source: usb:0\n"
+        "  onvif:\n"
+        "    enabled: true\n"
+        "    host: 192.0.2.99\n",
+    )
+    config = load_config(path)
+
+    assert config.camera.onvif.host == "192.0.2.99"
+    assert config.camera.onvif.enabled is True
+
+
+def test_onvif_tu_bat_khi_chi_co_source_co_mat_khau(tmp_path, monkeypatch):
+    """Không khai gì ở ``camera.onvif`` + nguồn RTSP có mật khẩu → PTZ chạy.
+
+    Đây chính là lỗi người dùng gặp: bấm nút mà không có gì xảy ra vì cấu
+    hình cũ bắt phải bật tay và chép lại IP lần thứ hai.
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, SECRET_URL)
+
+    config = load_config(_write_source(tmp_path, "usb:0"))
+
+    assert config.camera.onvif.enabled is True
+    assert config.camera.onvif.host == "192.0.2.77"
+
+
+def test_onvif_tu_tat_khi_source_khong_co_mat_khau(tmp_path, monkeypatch):
+    """Nguồn RTSP không kèm tài khoản + không có biến mật khẩu → tắt, không lỗi.
+
+    Chương trình vẫn xem được ảnh; chỉ PTZ tắt và ``/api/ptz`` sẽ nói rõ vì sao.
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, "rtsp://192.0.2.77:554/1/2")
+
+    config = load_config(_write_source(tmp_path, "usb:0"))
+
+    assert config.camera.onvif.host == "192.0.2.77"
+    assert config.camera.onvif.enabled is False
+
+
+def test_onvif_enabled_true_thieu_ca_hai_nguon_mat_khau_bao_ro_cach_sua(
+    tmp_path, monkeypatch
+):
+    """``enabled: true`` mà không có mật khẩu ở đâu → lỗi nêu cả hai đường.
+
+    Thông điệp phải cho người dùng biết sửa bằng gì, và không được chứa mật
+    khẩu nào (cả file này lẫn URL nguồn).
+    """
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, "rtsp://admin@192.0.2.77:554/1/2")
+
+    path = _write(
+        tmp_path,
+        "camera:\n"
+        "  source: usb:0\n"
+        "  onvif:\n"
+        "    enabled: true\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert "POSTURE_ONVIF_PASSWORD" in message
+    assert CAMERA_SOURCE_ENV in message
+    assert SECRET not in message
+
+
+def test_onvif_enabled_false_thang_su_tu_dong(tmp_path, monkeypatch):
+    """Người dùng chủ động tắt thì tôn trọng, dù nguồn có đủ thông tin."""
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, SECRET)
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, SECRET_URL)
+
+    path = _write(
+        tmp_path,
+        "camera:\n  source: usb:0\n  onvif:\n    enabled: false\n",
+    )
+    config = load_config(path)
+
+    assert config.camera.onvif.enabled is False
+    assert config.camera.onvif.host == "192.0.2.77", "host vẫn suy ra được"
+
+
+def test_onvif_cau_hinh_cu_enabled_true_va_host_van_chay(tmp_path, monkeypatch):
+    """Cấu hình kiểu cũ (``enabled: true`` + ``host`` + biến mật khẩu) không vỡ."""
+    monkeypatch.setenv(ONVIF_PASSWORD_ENV, SECRET)
+
+    path = _write(
+        tmp_path,
+        "camera:\n"
+        "  source: usb:0\n"
+        "  onvif:\n"
+        "    enabled: true\n"
+        "    host: 192.0.2.10\n"
+        "    port: 8080\n"
+        "    user: admin\n",
+    )
+    config = load_config(path)
+
+    assert config.camera.onvif.enabled is True
+    assert config.camera.onvif.host == "192.0.2.10"
+    assert config.camera.onvif.port == 8080
+
+
+def test_onvif_enabled_sai_kieu_bao_loi(tmp_path):
+    path = _write(
+        tmp_path,
+        "camera:\n  source: usb:0\n  onvif:\n    enabled: 5\n",
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+    assert "camera.onvif.enabled" in str(excinfo.value)
+
+
+def test_onvif_host_dang_url_rtsp_bi_che_trong_thong_diep(tmp_path, monkeypatch):
+    """Dán URL RTSP có mật khẩu vào ``camera.onvif.host`` → mật khẩu bị che."""
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+
+    path = _write(
+        tmp_path,
+        "camera:\n"
+        "  source: usb:0\n"
+        "  onvif:\n"
+        "    enabled: true\n"
+        f'    host: "{SECRET_URL}"\n',
+    )
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(path)
+
+    message = str(excinfo.value)
+    assert SECRET not in message

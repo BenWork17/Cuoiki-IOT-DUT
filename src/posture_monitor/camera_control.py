@@ -33,7 +33,12 @@ import threading
 import time
 from typing import Any, Callable, Mapping
 
-from .config import ONVIF_PASSWORD_ENV, onvif_password, redact_camera_source
+from .config import (
+    CAMERA_SOURCE_ENV,
+    ONVIF_PASSWORD_ENV,
+    onvif_credentials,
+    redact_camera_source,
+)
 from .logging_setup import get_logger
 
 _logger = get_logger(__name__)
@@ -163,7 +168,8 @@ class PtzController:
         port: cổng HTTP ONVIF (mặc định 80).
         user: tài khoản ONVIF.
         password: mật khẩu ONVIF. Đọc từ biến môi trường bởi
-            :func:`posture_monitor.config.onvif_password` ở nơi tạo đối tượng,
+            :func:`posture_monitor.config.onvif_credentials` ở nơi tạo đối
+            tượng,
             **không** đặt trong ``config.yaml``.
         profile_token: mã profile media, ``None`` để thư viện tự chọn.
         timeout: thời gian chờ tối đa của một lệnh SOAP (giây).
@@ -413,32 +419,40 @@ def from_config(config: Any) -> PtzController:
         PtzError: ONVIF đang tắt, chưa có ``host``, hoặc thiếu mật khẩu trong
             biến môi trường. Thông điệp tiếng Việt, đã che ``host``.
     """
-    onvif = getattr(getattr(config, "camera", None), "onvif", None)
+    camera = getattr(config, "camera", None)
+    onvif = getattr(camera, "onvif", None)
     if onvif is None or not getattr(onvif, "enabled", False):
         raise PtzError(
-            "Điều khiển PTZ đang tắt. Bật 'camera.onvif.enabled: true' trong "
-            "config.yaml và điền host.",
+            "Điều khiển PTZ đang tắt hoặc chưa cấu hình. Đặt "
+            "POSTURE_CAMERA_SOURCE thành URL RTSP của camera (host sẽ được "
+            "suy ra), hoặc bật 'camera.onvif.enabled: true' và điền "
+            "'camera.onvif.host' trong config.yaml.",
             status=503,
         )
     host = str(getattr(onvif, "host", "")).strip()
     if not host:
         raise PtzError(
-            "Chưa cấu hình 'camera.onvif.host' nên không điều khiển được PTZ.",
+            "Chưa xác định được 'camera.onvif.host'. Đặt "
+            "POSTURE_CAMERA_SOURCE thành URL RTSP của camera, hoặc điền "
+            "'camera.onvif.host' trong config.yaml.",
             status=503,
         )
 
-    # Đọc mật khẩu tại thời điểm tạo (không lưu vào ``onvif``) để nó không bao
-    # giờ nằm trong dataclass cấu hình, ``repr`` hay log.
-    password = onvif_password()
+    # Đọc thông tin đăng nhập tại thời điểm tạo (không lưu vào ``onvif``) để
+    # nó không bao giờ nằm trong dataclass cấu hình, ``repr`` hay log. Thứ tự
+    # ưu tiên: biến môi trường, rồi tài khoản nhúng trong ``camera.source``.
+    source = str(getattr(camera, "source", "") or "")
+    user, password = onvif_credentials(onvif, source)
     if not password:
         raise PtzError(
             "Chưa có mật khẩu ONVIF. Đặt biến môi trường "
-            f"{ONVIF_PASSWORD_ENV} trước khi chạy.",
+            f"{ONVIF_PASSWORD_ENV}, hoặc đặt biến môi trường "
+            f"{CAMERA_SOURCE_ENV} thành URL RTSP có kèm tài khoản.",
             status=503,
         )
     return PtzController(
         host,
         port=int(getattr(onvif, "port", 80)),
-        user=str(getattr(onvif, "user", "")),
+        user=user or str(getattr(onvif, "user", "")),
         password=password,
     )

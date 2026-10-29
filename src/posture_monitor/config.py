@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 import yaml
 
@@ -49,14 +50,24 @@ class ConfigError(ValueError):
 
 @dataclass
 class OnvifConfig:
-    """Điều khiển PTZ qua ONVIF (tuỳ chọn, mặc định tắt).
+    """Điều khiển PTZ qua ONVIF (tuỳ chọn).
+
+    ``enabled`` có **ba trạng thái**: ``True`` (bắt buộc bật, thiếu host/mật
+    khẩu là lỗi cấu hình), ``False`` (bắt buộc tắt), và ``None`` (**tự động**,
+    giá trị mặc định). Ở chế độ tự động, PTZ bật khi xác định được ``host`` —
+    hoặc vì ``camera.onvif.host`` được điền, hoặc vì ``host`` suy ra từ
+    ``camera.source`` khi đó là URL ``rtsp://``. Nhờ vậy một người dùng chỉ đặt
+    ``POSTURE_CAMERA_SOURCE`` là camera IP không phải khai địa chỉ thêm lần nữa.
+
+    Ngoại lệ duy nhất: ``camera.onvif.enabled: true`` ghi đè lên nguồn —
+    xem :func:`_resolve_onvif`.
 
     **Không có trường mật khẩu.** Mật khẩu đọc từ biến môi trường
     :data:`ONVIF_PASSWORD_ENV` qua :func:`onvif_password`, nên ``repr`` của
     cấu hình, log và ``config.yaml`` (file được commit) không bao giờ chứa nó.
     """
 
-    enabled: bool = False
+    enabled: bool | None = None
     host: str = ""
     port: int = 80
     user: str = "admin"
@@ -93,6 +104,16 @@ class CameraConfig:
     view: str = "front"
     onvif: OnvifConfig = field(default_factory=OnvifConfig)
     speaker: CameraSpeakerConfig = field(default_factory=CameraSpeakerConfig)
+
+    def __repr__(self) -> str:
+        # ``source`` có thể là URL RTSP kèm mật khẩu (đặt qua biến môi trường).
+        # ``repr(config)`` hay lọt vào log và traceback, nên che ngay tại đây —
+        # dataclass mặc định in nguyên giá trị.
+        return (
+            f"CameraConfig(source={redact_camera_source(self.source)!r}, "
+            f"width={self.width}, height={self.height}, view={self.view!r}, "
+            f"onvif={self.onvif!r}, speaker={self.speaker!r})"
+        )
 
 
 @dataclass
@@ -310,39 +331,182 @@ def _normalize_env_source(override: str) -> str:
     return text
 
 
-def _parse_onvif(raw: Any) -> OnvifConfig:
-    """Nạp mục ``camera.onvif`` (tuỳ chọn; thiếu mục = tắt).
+def _get_optional_bool(
+    data: dict[str, Any], key: str, section: str
+) -> bool | None:
+    """Như :func:`_get_bool` nhưng thiếu khóa/``null`` trả ``None`` (tự động).
 
-    Mật khẩu **không** đọc từ YAML. Khi ``enabled: true`` mà biến môi trường
-    :data:`ONVIF_PASSWORD_ENV` chưa được đặt, báo lỗi ngay lúc nạp cấu hình
-    thay vì để route ``/api/ptz`` hỏng lần đầu có người bấm nút. Thông điệp
-    chỉ nêu **tên biến môi trường**, không bao giờ chứa giá trị mật khẩu, và
-    mọi chỗ chèn ``host`` đều đi qua :func:`redact_camera_source`.
+    ``None`` không phải giá trị sai kiểu — nó là trạng thái "người dùng không
+    quyết định", để :func:`_resolve_onvif` tự suy ra. Chuỗi ``"auto"`` cũng
+    được chấp nhận để YAML đọc dễ hơn ``null``.
+    """
+    if key not in data or data[key] is None:
+        return None
+    value = data[key]
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return None
+    raise ConfigError(
+        f"'{_where(section, key)}' phải là true, false hoặc auto/để trống, "
+        f"nhận được {value!r}."
+    )
+
+
+def _parse_onvif(raw: Any) -> OnvifConfig:
+    """Nạp mục ``camera.onvif`` (tuỳ chọn; thiếu mục = tự động).
+
+    Chỉ đọc và kiểm tra kiểu. Việc suy ra ``host``/``enabled`` từ
+    ``camera.source`` nằm ở :func:`_resolve_onvif`, vì nó cần nguồn ảnh đã
+    được chuẩn hoá (kể cả phần ghi đè bằng biến môi trường).
+
+    Mật khẩu **không** đọc từ YAML.
     """
     data = _as_dict(raw, "camera.onvif")
     cfg = OnvifConfig(
-        enabled=_get_bool(data, "enabled", OnvifConfig.enabled, "camera.onvif"),
+        enabled=_get_optional_bool(data, "enabled", "camera.onvif"),
         host=_get_str(data, "host", OnvifConfig.host, "camera.onvif"),
         port=_get_int(data, "port", OnvifConfig.port, "camera.onvif"),
         user=_get_str(data, "user", OnvifConfig.user, "camera.onvif"),
     )
     if not 0 < cfg.port < 65536:
         raise ConfigError("'camera.onvif.port' phải nằm trong khoảng 1..65535.")
-    if cfg.enabled:
-        safe_host = redact_camera_source(cfg.host)
-        if not cfg.host.strip():
-            raise ConfigError(
-                "'camera.onvif.enabled' là true nhưng 'camera.onvif.host' "
-                "đang trống. Điền địa chỉ camera IP (ví dụ 192.168.1.50)."
-            )
-        if not onvif_password():
-            raise ConfigError(
-                "'camera.onvif.enabled' là true nhưng chưa có mật khẩu ONVIF "
-                f"cho camera {safe_host!r}. Đặt biến môi trường "
-                f"{ONVIF_PASSWORD_ENV} (mật khẩu không được ghi vào "
-                "config.yaml)."
-            )
     return cfg
+
+
+def _source_host(source: str) -> str:
+    """Host của camera suy ra từ ``camera.source``; ``""`` nếu không suy được.
+
+    Chỉ URL ``rtsp://``/``rtsps://`` mới mang một địa chỉ máy. ``usb:``,
+    ``file:`` và ``picamera`` không có host nên trả rỗng — khi đó PTZ phải
+    được cấu hình tay ở ``camera.onvif.host``.
+    """
+    try:
+        kind, value = parse_camera_source(source)
+    except ConfigError:
+        return ""
+    if kind != "rtsp" or not isinstance(value, str):
+        return ""
+    try:
+        host = urlsplit(value).hostname or ""
+    except ValueError:
+        return ""
+    return host
+
+
+def _source_credentials(source: str) -> tuple[str, str]:
+    """``(user, password)`` nhúng trong URL ``camera.source``; rỗng nếu không có.
+
+    Camera IP thường được đặt bằng ``POSTURE_CAMERA_SOURCE="rtsp://user:pass@host/..."``,
+    nên URL đó đã mang sẵn tài khoản của chính camera. Dùng lại cho ONVIF tránh
+    bắt người dùng nhập cùng một mật khẩu hai lần. Giá trị chỉ sống trong bộ
+    nhớ của tiến trình, không ghi vào file cấu hình.
+    """
+    try:
+        kind, value = parse_camera_source(source)
+    except ConfigError:
+        return "", ""
+    if kind != "rtsp" or not isinstance(value, str):
+        return "", ""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return "", ""
+    return unquote(parts.username or ""), unquote(parts.password or "")
+
+
+def _resolve_onvif(onvif: OnvifConfig, source: str, *, from_env: bool) -> OnvifConfig:
+    """Chốt ``host`` và ``enabled`` của PTZ, kèm kiểm tra nhất quán.
+
+    Quy ước (một địa chỉ camera, một nơi khai):
+
+    1. ``camera.onvif.host`` điền tay thì dùng luôn — đây là đường ghi đè.
+    2. Trống thì suy ra từ ``camera.source`` khi đó là URL ``rtsp://``. Nhờ
+       vậy đặt ``POSTURE_CAMERA_SOURCE`` là đủ để cả xem ảnh lẫn điều khiển
+       PTZ, không phải lặp lại IP ở ba nơi.
+    3. ``enabled`` để trống/``auto`` → bật khi có ``host``. ``true`` vẫn bắt
+       buộc bật (và thiếu thông tin thì báo lỗi ngay lúc nạp), ``false`` tắt
+       hẳn — người dùng chủ động tắt thì tôn trọng, route sẽ báo rõ.
+
+    Args:
+        onvif: cấu hình đã nạp từ YAML.
+        source: ``camera.source`` **sau** khi áp dụng biến môi trường.
+        from_env: nguồn ảnh đến từ ``POSTURE_CAMERA_SOURCE`` hay không; chỉ để
+            chọn câu hướng dẫn trong thông điệp lỗi.
+
+    Raises:
+        ConfigError: ``enabled: true`` mà không xác định được ``host`` hoặc
+            không có mật khẩu khả dụng. Thông điệp không chứa mật khẩu.
+    """
+    if not onvif.host.strip():
+        onvif.host = _source_host(source)
+
+    explicit = onvif.enabled is not None
+    if not explicit:
+        onvif.enabled = bool(onvif.host.strip())
+
+    if onvif.enabled and explicit:
+        # Người dùng nói rõ ``enabled: true``: thiếu thông tin là lỗi cấu hình,
+        # báo ngay lúc nạp (giữ nguyên hành vi cũ).
+        _check_onvif_ready(onvif, source, from_env=from_env)
+    elif onvif.enabled:
+        # Chế độ tự động: không chặn chương trình chạy chỉ vì chưa có mật khẩu
+        # — người dùng có thể chỉ muốn xem ảnh. Thiếu mật khẩu thì
+        # ``POST /api/ptz`` báo lỗi tiếng Việt riêng, còn luồng camera chạy
+        # bình thường.
+        if not onvif_credentials(onvif, source)[1]:
+            onvif.enabled = False
+    return onvif
+
+
+def _check_onvif_ready(
+    onvif: OnvifConfig, source: str, *, from_env: bool
+) -> None:
+    """Kiểm tra ``enabled: true`` có đủ host và mật khẩu; ném ``ConfigError``.
+
+    Thông điệp chỉ nêu **tên biến môi trường**, không bao giờ chứa giá trị mật
+    khẩu, và mọi chỗ chèn ``host`` đều đi qua :func:`redact_camera_source`.
+    """
+    safe_host = redact_camera_source(onvif.host)
+    if not onvif.host.strip():
+        hint = (
+            f"Đặt biến môi trường {CAMERA_SOURCE_ENV} thành URL RTSP của "
+            "camera, hoặc điền 'camera.onvif.host'."
+            if not from_env
+            else "Điền 'camera.onvif.host' trong config.yaml."
+        )
+        raise ConfigError(
+            "'camera.onvif.enabled' là true nhưng không xác định được "
+            "'camera.onvif.host'. " + hint
+        )
+    if not onvif_credentials(onvif, source)[1]:
+        raise ConfigError(
+            "'camera.onvif.enabled' là true nhưng chưa có mật khẩu ONVIF "
+            f"cho camera {safe_host!r}. Đặt biến môi trường "
+            f"{ONVIF_PASSWORD_ENV}, hoặc đặt {CAMERA_SOURCE_ENV} thành URL "
+            "RTSP có kèm tài khoản (mật khẩu không được ghi vào "
+            "config.yaml)."
+        )
+
+
+def onvif_credentials(onvif: OnvifConfig, source: str) -> tuple[str, str]:
+    """``(user, password)`` để mở phiên ONVIF, theo thứ tự ưu tiên.
+
+    1. ``POSTURE_ONVIF_PASSWORD`` có giá trị → dùng ``camera.onvif.user`` (mặc
+       định ``admin``) với mật khẩu đó. Biến môi trường luôn thắng.
+    2. Không có thì lấy cặp tài khoản nhúng trong URL ``camera.source`` — cùng
+       một camera nên cùng một tài khoản.
+    3. Không có nguồn nào → ``""`` cho mật khẩu; nơi gọi tự báo lỗi.
+
+    Không bao giờ trả mật khẩu đọc từ file cấu hình.
+    """
+    env_password = onvif_password()
+    if env_password:
+        return onvif.user, env_password
+    user, password = _source_credentials(source)
+    if password:
+        return user, password
+    return onvif.user, ""
 
 
 def _parse_speaker(raw: Any) -> CameraSpeakerConfig:
@@ -413,6 +577,11 @@ def _parse_camera(raw: Any) -> CameraConfig:
 
     # Kiểm tra cú pháp nguồn ngay lúc nạp, để lỗi hiện ra trước khi mở camera.
     parse_camera_source(cfg.source)
+
+    # PTZ được chốt **sau** khi biết nguồn ảnh cuối cùng (kể cả phần ghi đè
+    # bằng biến môi trường), nên host suy ra từ URL RTSP phản ánh đúng camera
+    # đang dùng.
+    cfg.onvif = _resolve_onvif(cfg.onvif, cfg.source, from_env=bool(override))
     if cfg.width <= 0 or cfg.height <= 0:
         raise ConfigError(
             f"'camera.width' và 'camera.height' phải là số dương, nhận được "

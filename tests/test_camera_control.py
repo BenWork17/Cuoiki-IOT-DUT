@@ -546,3 +546,82 @@ def test_duong_mo_phien_that_dung_dung_api_thu_vien(monkeypatch):
     assert options["device_urls"] == ["http://192.0.2.10:8080/onvif/device_service"]
     assert recorded["pan_tilt"] == (0.0, -1.0)
     assert recorded["stop"] == (True, True)
+
+
+# ---------------------------------------------------------------------------
+# from_config: tài khoản lấy từ tài khoản nhúng trong camera.source
+# ---------------------------------------------------------------------------
+
+SOURCE_USER = "camera-user"
+SOURCE_URL = f"rtsp://{SOURCE_USER}:{FAKE_PASSWORD}@192.0.2.77:554/1/2"
+
+
+def _config_with_source(source: str, **onvif_kwargs) -> Config:
+    config = Config()
+    config.camera = CameraConfig(
+        source=source,
+        onvif=OnvifConfig(**onvif_kwargs),
+    )
+    return config
+
+
+def test_from_config_dung_tai_khoan_nhung_trong_camera_source(monkeypatch):
+    """Không có ``POSTURE_ONVIF_PASSWORD``: lấy tài khoản trong URL nguồn.
+
+    Người dùng đặt camera IP bằng một biến môi trường duy nhất
+    (``POSTURE_CAMERA_SOURCE``); cùng một camera thì cùng một tài khoản, nên
+    không phải nhập mật khẩu lần thứ hai.
+    """
+    monkeypatch.delenv(camera_control.ONVIF_PASSWORD_ENV, raising=False)
+    config = _config_with_source(f"rtsp:{SOURCE_URL}", enabled=True, host="192.0.2.77")
+
+    controller = from_config(config)
+
+    assert controller.user == SOURCE_USER
+    assert controller._password == FAKE_PASSWORD
+    assert controller._session is None
+    assert FAKE_PASSWORD not in repr(controller)
+    assert FAKE_PASSWORD not in repr(config), "repr(config) cũng phải che"
+
+
+def test_from_config_bien_moi_truong_thang_tai_khoan_trong_source(monkeypatch):
+    """Có ``POSTURE_ONVIF_PASSWORD`` thì nó thắng tài khoản trong URL nguồn."""
+    monkeypatch.setenv(camera_control.ONVIF_PASSWORD_ENV, "mat-khau-khac")
+    config = _config_with_source(
+        f"rtsp:{SOURCE_URL}", enabled=True, host="192.0.2.77", user="admin"
+    )
+
+    controller = from_config(config)
+
+    assert controller.user == "admin"
+    assert controller._password == "mat-khau-khac"
+
+
+def test_from_config_khi_that_bai_chi_ro_ca_hai_duong_sua(monkeypatch):
+    """Thiếu mật khẩu ở mọi nơi → thông điệp nêu cả hai biến môi trường."""
+    monkeypatch.delenv(camera_control.ONVIF_PASSWORD_ENV, raising=False)
+    config = _config_with_source(
+        "rtsp:rtsp://192.0.2.77:554/1/2", enabled=True, host="192.0.2.77"
+    )
+
+    with pytest.raises(PtzError) as excinfo:
+        from_config(config)
+
+    message = str(excinfo.value)
+    assert camera_control.ONVIF_PASSWORD_ENV in message
+    assert camera_control.CAMERA_SOURCE_ENV in message
+    assert FAKE_PASSWORD not in message
+    assert excinfo.value.status == 503
+
+
+def test_from_config_tat_thi_thong_diep_chi_cach_bat(monkeypatch):
+    """PTZ tắt → lỗi nêu đường bật mới (biến môi trường) lẫn đường cũ."""
+    monkeypatch.delenv(camera_control.ONVIF_PASSWORD_ENV, raising=False)
+    config = _config_with_source("usb:0", enabled=False)
+
+    with pytest.raises(PtzError) as excinfo:
+        from_config(config)
+
+    message = str(excinfo.value)
+    assert camera_control.CAMERA_SOURCE_ENV in message
+    assert "camera.onvif.enabled" in message
