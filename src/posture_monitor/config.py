@@ -684,7 +684,8 @@ def _parse_speaker(raw: Any) -> CameraSpeakerConfig:
         )
     # Kiểm tra "enabled nhưng thiếu host" **không** làm ở đây: host có thể suy
     # từ ``camera.source``, mà nguồn chưa được chốt (biến môi trường áp sau).
-    # Việc đó nằm ở :func:`_parse_camera`, sau khi biết nguồn cuối cùng.
+    # Việc đó nằm ở :func:`_parse_camera`, sau khi biết nguồn cuối cùng — và ở
+    # đó chỉ **cảnh báo**, không chặn nạp (xem chú thích tại chỗ).
     if "://" in cfg.host:
         # Lỗi hay gặp: dán cả URL RTSP (có mật khẩu) vào ô host. Thông điệp
         # phải che userinfo — URL đó chứa mật khẩu thật.
@@ -724,15 +725,26 @@ def _parse_camera(raw: Any) -> CameraConfig:
     # Loa cũng nhận host từ cùng nguồn đó, nên phép kiểm tra phải chạy **sau**
     # khi nguồn đã chốt: ``enabled: true`` + host trống là hợp lệ khi
     # ``camera.source`` là URL RTSP — ``speaker_config_from_config`` (nơi thật
-    # sự mở phiên) mới suy host. Ở đây chỉ chặn trường hợp chắc chắn không có
-    # cách nào suy ra, để lỗi hiện lúc nạp chứ không đợi tới lúc phát tiếng.
+    # sự mở phiên) mới suy host.
+    #
+    # Không suy được host thì **không** chặn nạp, chỉ cảnh báo — cùng hợp đồng
+    # với ``face.enabled: true`` + ``match_threshold: null``. Lý do: ``config.yaml``
+    # được commit đặt ``source: usb:0``, nên ``enabled: true`` + ném lỗi ở đây
+    # làm app không khởi động được trên mọi máy không đặt
+    # ``POSTURE_CAMERA_SOURCE`` — một hồi quy môi trường, không phải lỗi của
+    # người dùng. Khi thiếu host, ``/api/speak`` vẫn báo lỗi tiếng Việt riêng
+    # và vòng lặp giám sát chỉ ghi sự kiện.
     if cfg.speaker.enabled and not cfg.speaker.host.strip():
         if not _source_host(cfg.source):
-            raise ConfigError(
+            _LOGGER.warning(
                 "'camera.speaker.enabled' là true nhưng không xác định được "
                 "'camera.speaker.host': mục đó đang trống và 'camera.source' "
-                "không phải URL RTSP có host. Điền 'camera.speaker.host' (ví "
-                "dụ 192.168.1.50) hoặc đặt 'camera.source' thành URL RTSP."
+                "(%s) không phải URL RTSP có host. Loa sẽ CHỈ ghi sự kiện, "
+                "không phát tiếng. Muốn có tiếng, đặt biến môi trường %s thành "
+                "'rtsp:rtsp://...' hoặc điền 'camera.speaker.host' (ví dụ "
+                "192.168.1.50).",
+                redact_camera_source(cfg.source),
+                CAMERA_SOURCE_ENV,
             )
     if cfg.width <= 0 or cfg.height <= 0:
         raise ConfigError(
@@ -1268,11 +1280,22 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
     - ``file:a.mp4``   → ``("file", "a.mp4")``
     - ``rtsp:rtsp://user:matkhau@host:554/1/2``
                        → ``("rtsp", "rtsp://user:matkhau@host:554/1/2")``
+    - ``rtsp://user:matkhau@host:554/1/2`` (URL trần, không tiền tố)
+                       → ``("rtsp", "rtsp://user:matkhau@host:554/1/2")``
 
     Đường dẫn file và URL RTSP được giữ nguyên phần sau dấu ``:`` đầu tiên,
     nên đường dẫn Windows (``file:C:\\video\\a.mp4``) và URL có ``:`` trong
     thông tin đăng nhập lẫn cổng (``rtsp://user:pass@host:554/...``) vẫn đọc
     đúng.
+
+    Dạng **URL trần** được nhận từ 29/10/2026: dấu ``:`` đầu tiên của
+    ``rtsp://...`` nằm trong ``://``, nên phép tách đơn giản cho ra
+    ``value="//user:pass@host:554/..."`` — một chuỗi **không có scheme**, làm
+    mọi nơi suy host (:func:`_source_host`, dùng bởi PTZ và loa) nhận ``None``
+    và im lặng mất host. Ghép lại ``"rtsp:" + value`` để cả hai dạng cho cùng
+    một URL có scheme. ``rtsps://...`` trần vẫn bị từ chối như trước (chỉ
+    ``rtsp`` được sửa trong thay đổi này; dùng tiền tố ``rtsp:`` nếu nguồn là
+    ``rtsps://``).
 
     Raises:
         ConfigError: cú pháp không hợp lệ. Thông điệp đã che thông tin đăng
@@ -1296,6 +1319,24 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
     kind, _, value = text.partition(":")
     kind = kind.strip().lower()
     value = value.strip()
+
+    if kind == "rtsp" and text.lower().startswith("rtsp://"):
+        value = f"rtsp:{value}"  # MUTATION
+        # Dạng URL trần ``rtsp://user:pass@host:554/1/2`` (không tiền tố loại
+        # nguồn, đúng cú pháp RTSP chuẩn): dấu ``:`` đầu tiên nằm trong
+        # ``://``, nên phép tách ở trên cho ra ``kind='rtsp'`` và
+        # ``value='//user:pass@host:554/1/2'`` — một chuỗi **không có scheme**.
+        # Ghép lại để ``value`` là một URL có scheme; thiếu bước này
+        # ``urlsplit(value).hostname`` là ``None`` và mọi nơi suy host (PTZ,
+        # loa) im lặng mất host.
+        #
+        # Điều kiện xét trên ``text`` (chuỗi gốc **trước** khi tách), không chỉ
+        # trên ``value.startswith('//')``: dạng đã có tiền tố đúng
+        # (``rtsp:rtsp://...``) phải giữ nguyên ``value``. Xét trên chuỗi gốc
+        # nên hai dạng loại trừ nhau tuyệt đối, không thể ghép đôi thành
+        # ``rtsp:rtsp:rtsp://...``.
+        if value.startswith("//"):
+            value = f"rtsp:{value}"
 
     if kind == "usb":
         try:

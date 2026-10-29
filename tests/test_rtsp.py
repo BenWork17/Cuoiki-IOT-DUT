@@ -21,6 +21,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import numpy as np
 import pytest
@@ -42,6 +43,7 @@ from posture_monitor.config import (  # noqa: E402
     CAMERA_SOURCE_ENV,
     Config,
     ConfigError,
+    camera_source_host,
     load_config,
     parse_camera_source,
     redact_camera_source,
@@ -196,12 +198,84 @@ def test_redact_hides_credentials_in_embedded_urls() -> None:
 
 
 def test_config_error_does_not_leak_password() -> None:
-    """``parse_camera_source`` chèn nguồn vào lỗi — phải che trước khi chèn."""
+    """``parse_camera_source`` chèn nguồn vào lỗi — phải che trước khi chèn.
+
+    Đổi 29/10/2026: trước đây ca này ném lỗi bằng chính ``URL`` (URL trần bị
+    coi là sai cú pháp). Từ khi URL trần được chấp nhận (xem
+    :func:`test_parse_bare_rtsp_url_keeps_url_intact`) đường lỗi phải dựng
+    bằng một cú pháp **thật sự** sai nhưng vẫn mang mật khẩu — ``tcp:`` là
+    tiền tố không được hỗ trợ.
+    """
     with pytest.raises(ConfigError) as excinfo:
-        parse_camera_source(URL)
+        parse_camera_source(f"tcp:{URL}")
     message = str(excinfo.value)
     assert SECRET not in message
     assert "admin" not in message
+
+
+def test_parse_bare_rtsp_url_keeps_url_intact() -> None:
+    """URL trần ``rtsp://...`` được chấp nhận và giữ nguyên một URL có scheme.
+
+    Trước 29/10/2026 dạng này bị tách sai thành ``value='//user:pass@host/...'``
+    (không có scheme), nên ``urlsplit(...).hostname`` là ``None`` và PTZ lẫn
+    loa im lặng mất host. Trả về đúng URL đầy đủ, không ghép đôi tiền tố.
+    """
+    kind, value = parse_camera_source(URL)
+    assert kind == "rtsp"
+    assert value == URL
+    assert urlsplit(str(value)).hostname == "192.168.1.50"
+
+
+def test_camera_source_host_agrees_for_both_rtsp_forms() -> None:
+    """Hai cú pháp của cùng một URL phải cho **cùng** host.
+
+    ``camera_source_host`` là đường duy nhất PTZ và loa dùng để suy địa chỉ
+    camera. Nếu dạng trần trả ``""`` còn dạng có tiền tố trả host, thì người
+    dùng đặt ``POSTURE_CAMERA_SOURCE`` bằng URL trần (cách tự nhiên nhất) sẽ
+    thấy loa im lặng dù cấu hình nạp thành công — đúng lỗi mà thay đổi
+    29/10/2026 sửa.
+    """
+    assert camera_source_host(URL) == "192.168.1.50"
+    assert camera_source_host(f"rtsp:{URL}") == "192.168.1.50"
+    assert camera_source_host("usb:0") == ""
+    # Dạng ``rtsps://`` trần **không** được mở rộng trong thay đổi này — giữ
+    # nguyên hành vi cũ (bị từ chối), chỉ ``rtsp`` được sửa.
+    with pytest.raises(ConfigError):
+        parse_camera_source(URL.replace("rtsp://", "rtsps://"))
+
+
+def test_prefixed_rtsp_url_is_not_double_prefixed() -> None:
+    """Dạng đã có tiền tố không được ghép thêm ``rtsp:`` lần nữa.
+
+    Bản sửa 29/10/2026 ghép ``"rtsp:" + value`` cho URL trần. Nếu phép ghép
+    chạy cả trên dạng đã có tiền tố, ``value`` thành ``rtsp:rtsp://...`` —
+    một URL không mở được. Ghép đôi còn **đúng** ở tầng phân tích nhưng sai
+    ở tầng thực thi, nên phải chặn ngay tại giá trị trả về.
+    """
+    for source in (URL, f"rtsp:{URL}"):
+        kind, value = parse_camera_source(source)
+        assert kind == "rtsp"
+        assert value == URL, f"{source!r} bị ghép tiền tố sai thành {value!r}"
+        assert str(value).count("rtsp:") == 1
+
+
+def test_env_override_bare_url_is_not_double_prefixed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``_normalize_env_source`` thêm ``rtsp:``; ``parse_camera_source`` không được thêm nữa.
+
+    Đây là đường thật của người dùng: dán URL trần vào
+    ``POSTURE_CAMERA_SOURCE``. Hai tầng cùng "sửa" URL trần là chỗ dễ sinh ra
+    ``rtsp:rtsp:rtsp://...``.
+    """
+    monkeypatch.setenv(CAMERA_SOURCE_ENV, URL)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("camera:\n  source: usb:0\n", encoding="utf-8")
+    config = load_config(config_path)
+
+    assert config.camera.source == f"rtsp:{URL}"
+    assert parse_camera_source(config.camera.source) == ("rtsp", URL)
+    assert camera_source_host(config.camera.source) == "192.168.1.50"
 
 
 def test_config_error_redacts_rtsp_url_in_unknown_kind() -> None:

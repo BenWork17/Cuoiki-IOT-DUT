@@ -45,7 +45,14 @@ camera:
   #   - speaker.port = cổng RTSP (554) để mở backchannel phát tiếng
   # Gộp hai mục làm một sẽ khiến cấu hình bên này ghi đè bên kia.
   speaker:
-    enabled: false       # true thì /api/speak mới phát được
+    # Bật sẵn: tính năng loa là hành vi đã kiểm chứng (PCMA 8 kHz, SPEAK_OK
+    # trên Pi). Host KHÔNG ghi ở đây mà suy từ 'camera.source' khi đó là URL
+    # rtsp:// (đặt qua POSTURE_CAMERA_SOURCE) — cùng quy ước với camera.onvif.
+    # Nếu không suy được host (ví dụ 'camera.source: usb:0' như file mẫu này),
+    # cấu hình VẪN nạp được và loa chỉ ghi sự kiện, không phát tiếng; /api/speak
+    # báo lỗi tiếng Việt chỉ rõ cách sửa. Muốn có tiếng thì đặt
+    # POSTURE_CAMERA_SOURCE='rtsp:rtsp://...' hoặc điền 'host' bên dưới.
+    enabled: true        # true thì /api/speak mới phát được
     host: ""             # trống = suy ra từ camera.source (giống camera.onvif)
     port: 554            # cổng RTSP (không phải cổng HTTP ONVIF)
     user: ""             # trống = tài khoản trong camera.source, không có thì "admin"

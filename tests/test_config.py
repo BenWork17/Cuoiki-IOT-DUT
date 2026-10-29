@@ -126,6 +126,50 @@ def test_repo_config_yaml_is_valid() -> None:
     assert hasattr(config, "tracking")
 
 
+def test_repo_config_yaml_enables_speaker(monkeypatch) -> None:
+    """``config.yaml`` được commit phải bật loa — nếu không, bản clone mất tính năng.
+
+    Đổi 29/10/2026: Pi đang phát tiếng được (``SPEAK_OK``, 56 gói PCMA) trong
+    khi ``config.yaml`` trong git ghi ``enabled: false``, tức Pi chạy một cấu
+    hình **không có trong git**: ai clone repo sẽ mất loa và không ai tái lập
+    được bản demo. Bài này khoá lại sự khớp giữa file commit và tính năng đã
+    kiểm chứng.
+    """
+    monkeypatch.delenv(CAMERA_SOURCE_ENV, raising=False)
+    config = load_config(_REPO_ROOT / "config.yaml")
+    assert config.camera.speaker.enabled is True
+    assert config.camera.speaker.port == 554, "cổng RTSP, không phải 80 của ONVIF"
+
+
+def test_repo_config_yaml_loads_without_any_env(monkeypatch, caplog) -> None:
+    """Bản clone mới (không đặt biến môi trường) phải khởi động được.
+
+    Đây là chống hồi quy môi trường cho thay đổi 29/10/2026: bật
+    ``camera.speaker.enabled: true`` trong ``config.yaml`` (``source: usb:0``)
+    mà vẫn ném ``ConfigError`` khi thiếu host thì app **không khởi động** trên
+    máy chưa đặt ``POSTURE_CAMERA_SOURCE``. Nạp phải thành công, và phần thiếu
+    được báo bằng đúng một dòng WARNING.
+    """
+    monkeypatch.delenv(CAMERA_SOURCE_ENV, raising=False)
+    monkeypatch.delenv(ONVIF_PASSWORD_ENV, raising=False)
+
+    with caplog.at_level("WARNING", logger="posture_monitor.config"):
+        config = load_config(_REPO_ROOT / "config.yaml")
+
+    assert config.camera.speaker.enabled is True
+    assert config.camera.source == "usb:0"
+
+    speaker_warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "posture_monitor.config"
+        and record.levelname == "WARNING"
+        and "camera.speaker.enabled" in record.getMessage()
+    ]
+    assert len(speaker_warnings) == 1, caplog.text
+    assert "không phát tiếng" in speaker_warnings[0]
+
+
 def test_missing_keys_use_defaults(tmp_path: Path) -> None:
     """File chỉ có một mục: các mục còn lại lấy mặc định, không lỗi."""
     config = load_config(_write(tmp_path, "camera:\n  source: picamera\n"))
@@ -243,8 +287,15 @@ def test_parse_camera_source_file_with_windows_path() -> None:
 
 
 def test_parse_camera_source_rejects_unknown_kind() -> None:
+    """Tiền tố lạ vẫn bị từ chối.
+
+    Đổi 29/10/2026: trước đây bài này dùng ``"rtsp://camera"`` làm ví dụ "loại
+    không hỗ trợ", nhưng từ khi URL RTSP trần được chấp nhận (xem
+    ``test_parse_bare_rtsp_url_is_accepted``) thì nó là cú pháp **hợp lệ**.
+    Dùng ``tcp:`` làm ví dụ thật cho loại không hỗ trợ.
+    """
     with pytest.raises(ConfigError):
-        parse_camera_source("rtsp://camera")
+        parse_camera_source("tcp://camera")
 
 
 # --------------------------------------------------------------------------
@@ -282,7 +333,23 @@ def test_speaker_and_onvif_ports_do_not_share_one_key(tmp_path: Path) -> None:
     assert config.camera.speaker.port == 554
 
 
-def test_speaker_enabled_without_host_raises_config_error(tmp_path: Path) -> None:
+def test_speaker_enabled_without_host_warns_but_still_loads(
+    tmp_path: Path, caplog
+) -> None:
+    """``enabled: true`` + không suy được host → **cảnh báo**, cấu hình vẫn nạp.
+
+    Đổi 29/10/2026: trước đây ca này ném ``ConfigError``. Lý do đổi:
+    ``config.yaml`` được commit đặt ``source: usb:0`` và nay bật
+    ``camera.speaker.enabled: true``, nên ném lỗi ở đây làm app không khởi
+    động được trên mọi máy không đặt ``POSTURE_CAMERA_SOURCE`` — hồi quy môi
+    trường chứ không phải lỗi người dùng. Theo cùng hợp đồng đã áp cho
+    ``face.enabled: true`` + ``match_threshold: null``: thiếu điều kiện tùy
+    chọn thì cảnh báo, không chặn nạp.
+
+    Bài này vẫn **kiểm** đúng thứ cần kiểm — không chỉ "không ném lỗi":
+    cấu hình nạp được, ``enabled`` vẫn true, và có đúng một dòng WARNING nêu
+    cả khóa cấu hình lẫn hệ quả "chỉ ghi sự kiện, không phát tiếng".
+    """
     text = (
         "camera:\n"
         "  source: usb:0\n"
@@ -290,9 +357,24 @@ def test_speaker_enabled_without_host_raises_config_error(tmp_path: Path) -> Non
         "    enabled: true\n"
         '    host: ""\n'
     )
-    with pytest.raises(ConfigError) as excinfo:
-        load_config(_write(tmp_path, text))
-    assert "camera.speaker.host" in str(excinfo.value)
+    with caplog.at_level("WARNING", logger="posture_monitor.config"):
+        config = load_config(_write(tmp_path, text))
+
+    assert config.camera.speaker.enabled is True
+    assert config.camera.speaker.host == ""
+
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "posture_monitor.config"
+        and record.levelname == "WARNING"
+        and "camera.speaker.enabled" in record.getMessage()
+    ]
+    assert len(warnings) == 1, caplog.text
+    message = warnings[0].getMessage()
+    assert "camera.speaker.host" in message
+    assert "không phát tiếng" in message
+    assert "POSTURE_CAMERA_SOURCE" in message
 
 
 def test_speaker_enabled_without_host_loads_when_source_is_rtsp(
