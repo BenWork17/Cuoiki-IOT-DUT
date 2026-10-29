@@ -25,7 +25,7 @@ Tài liệu giao việc cho AI agent · **Bản v3, 29/10/2026** · Thay đề t
 | §5.14 | Viết lại theo **API đã ACCEPT** của `schedule.py`: `days` dùng **tên thứ** (`mon`..`sun`), hàm `is_active(schedule, now)` / `should_alert(schedule, now, *, held, last_alert_at, kinds)`, `enabled: false` = **không giới hạn giờ** | Spec đi theo code đã chạy và đã có test, không phải ngược lại |
 | §5.7 | Kênh cảnh báo chính đổi từ **buzzer trên GPIO** sang **loa của camera IP** (RTSP backchannel) | Yêu cầu đề tài; loa camera to hơn buzzer và không cần đấu dây |
 | §5.2 | Thêm model thứ hai `yolo11n` (detect) chạy **cách khung**; thêm `yunet.onnx` + `sface.onnx` cho khuôn mặt | Nhận diện điện thoại và nhận diện người |
-| §8 | Ngân sách FPS mới theo 3 model; ghi rõ cấu hình nào **đã đo**, cấu hình nào **chưa đo** | Số đo 6,18 FPS chỉ đúng cho 2 model, chưa gồm khuôn mặt |
+| §8 | Ngân sách FPS mới theo 3 model; ghi rõ cấu hình nào **đã đo**, cấu hình nào **chưa đo** | Trước đây ghi một con số FPS cho cấu hình 2 model như thể đã đo trong pipeline; số đó đã bị gỡ (§19) |
 | §11 | Giữ nguyên toàn bộ, **bổ sung** quy tắc dữ liệu sinh trắc học (§11.9 mới) | Khuôn mặt là dữ liệu nhạy cảm hơn tư thế ngồi |
 | §5.10, §5.16 | **`web.stream_enabled` mặc định `true`** (v2 để `false`). Hiển thị camera là chức năng chính của đề tài | Đề tài yêu cầu web hiển thị luồng camera; khung vẫn chỉ nằm trong RAM, không lưu |
 | §5.13 | Bắt buộc **thu nhỏ về 320 trước khi detect mặt** + **trả hộp về hệ pixel khung gốc**; CLAHE bật mặc định nhưng không phải điều kiện để chạy | Đo thật 2026-10-29: YuNet 99,9 ms @704x576 so với 19,3 ms @320x262 |
@@ -228,9 +228,15 @@ Quy tắc luồng:
 
 | Model | Chu kỳ | Chi phí | Trạng thái số liệu |
 | --- | --- | --- | --- |
-| `yolo11n-pose` NCNN @320 | **mỗi khung** | 105,5–112,5 ms/khung, 1 lớp `person` | **ĐÃ ĐO** |
-| `yolo11n` (detect) NCNN @320 | **mỗi 2 khung** | 98,6 ms/lần chạy | **ĐÃ ĐO** (thời gian một lần chạy) |
+| `yolo11n-pose` NCNN @320 | **mỗi khung** | 105,5 ms/khung là **min** của 549 lần chạy; median 107,3 ms, p95 116,2 ms (SPEC_V2 §5.3, ảnh tĩnh 640x480) | **ĐÃ ĐO** (một lần suy luận, ảnh tĩnh — xem ghi chú dưới bảng) |
+| `yolo11n` (detect) NCNN @320 | **mỗi 2 khung** | 98,6 ms/lần chạy (bench2: 98,7 ms) | **ĐÃ ĐO** — một lần suy luận trên **khung tổng hợp** 640x480, không phải khung camera |
 | **Cả đường ống khuôn mặt** @320x262 (thu nhỏ + CLAHE + YuNet + alignCrop + SFace feature) | mỗi `face_interval_s` (mặc định 2 s) **hoặc** khi có người mới vào khung | **86,1 ms/lượt → 11,6 lượt/giây** | **ĐÃ ĐO** |
+
+> **Ghi chú bắt buộc đọc kèm hai dòng model YOLO.** Hai con số 105,5/98,6 ms là
+> **thời gian một lần suy luận** trên một khung **tổng hợp** (pose: ảnh tĩnh
+> 640x480, 549 lần; detect: `np.zeros` + `cv2.rectangle` 640x480, 20 lần). Cả
+> hai **không gồm** thời gian capture và **không** phải khung camera thật
+> (704x576). Không được dùng chúng để khẳng định FPS nào — xem §4.3.
 
 Số **ĐÃ ĐO** ngày 2026-10-29, trên Pi 4, khung thật từ camera của dự án (704x576):
 
@@ -246,32 +252,74 @@ Số **ĐÃ ĐO** ngày 2026-10-29, trên Pi 4, khung thật từ camera của d
 Lý do chu kỳ khác nhau:
 
 - **Pose mỗi khung** vì presence và quy tắc bàn tay đều cần keypoint, và đây là tín hiệu tươi nhất.
-- **Detect điện thoại cách khung** vì đo thật cho thấy chạy cả hai mỗi khung chỉ đạt **4,74–4,90 FPS**, dưới mục tiêu 5 FPS (**ĐÃ ĐO**). Cách khung đạt **6,18 FPS**.
-- **Khuôn mặt không chạy mỗi khung**: 86,1 ms cho một lượt (đường ống đầy đủ). Chạy mỗi khung sẽ ăn gần một nửa ngân sách 200 ms chỉ cho danh tính — trong khi danh tính không đổi sau vài trăm ms. Chu kỳ 2 s là đủ và rẻ (≈7,2 ms/khung khi chạy 6 FPS).
+- **Detect điện thoại cách khung**: đây là **quyết định thiết kế dựa trên GIẢ THIẾT**, không phải trên một phép đo pipeline có detect. Chi phí detect mỗi khung **chưa được đo trong pipeline thật**; ghép chi phí detect đã đo vào phép đo pipeline thật duy nhất cho thấy mọi nhịp đều **chưa đạt** 5 FPS (§4.3). Vì vậy không có câu "cách khung đạt ≥ 5 FPS" trong tài liệu này nữa.
+- **Khuôn mặt không chạy mỗi khung**: 86,1 ms cho một lượt (đường ống đầy đủ). Chạy mỗi khung sẽ ăn gần một nửa ngân sách 200 ms chỉ cho danh tính — trong khi danh tính không đổi sau vài trăm ms. Chi phí trung bình khi chạy cách 2 s phụ thuộc FPS cuối cùng, mà FPS đó **chưa đo**; chỉ ghi công thức, không ghi số.
 
 ### 4.3 Ngân sách FPS
 
-Mô hình chi phí một khung (**TÍNH TỪ ĐO**): `T_khung ≈ T_pose + (T_detect nếu khung này chạy detect)`. Kiểm chứng lại với số đo:
+> **ĐÍNH CHÍNH 2026-10-29.** Bản trước của mục này công bố một dải FPS và một
+> con số FPS cho cấu hình có detect, gắn nhãn **ĐÃ ĐO**, và dựng trên đó kết
+> luận "detect cách khung đạt ≥ 5 FPS". **Sai.** Dải đó dựa trên một giá trị
+> thời gian **không tồn tại ở bất kỳ bài đo nào**, và con số FPS thứ hai còn
+> **bỏ qua hoàn toàn thời gian capture**. Các số đó đã bị **xoá khỏi tài liệu**.
+> Dấu vết đầy đủ — số nào bị hạ nhãn, công thức nào sai, phát hiện ngày nào —
+> nằm ở **§19** để người đọc sau biết vì sao con số đổi.
 
-| Cấu hình | Tính ra | Đo được | Khớp |
+#### Cái đã đo thật
+
+Chỉ có **hai** nhóm số đo tồn tại:
+
+| Phép đo | Số | Nguồn / điều kiện |
+| --- | --- | --- |
+| Một lần suy luận pose | 105,5 ms (**min**), median 107,3 ms, p95 116,2 ms | SPEC_V2, 549 lần, **ảnh tĩnh 640x480**, không gồm capture |
+| Một lần suy luận pose (đo độc lập) | 105,5 ms | `bench2.py` trên Pi, 20 vòng, **khung tổng hợp** |
+| Một lần suy luận detect | 98,6 ms (bench2: 98,7) | `bench2.py` trên Pi, 20 vòng, **khung tổng hợp** 640x480 |
+| **Pipeline đầy đủ, chỉ pose** | capture 63,88 + pose 135,06 = **199,39 ms median → 5,01 FPS** | SPEC_V2, **camera thật 704x576**, 150 khung |
+
+Phép đo **pipeline thật duy nhất** của dự án là dòng cuối: 5,01 FPS, và nó
+**chỉ có pose**. Ba dòng đầu là thời gian suy luận thuần trên khung tổng hợp,
+**không** cộng được thẳng vào 199,39 ms của phép đo pipeline thật.
+
+#### Chi phí detect khi ghép vào phép đo thật duy nhất (**TÍNH TỪ ĐO**)
+
+Lấy pipeline thật 199,39 ms và cộng chi phí detect 98,6 ms chia theo nhịp.
+Vì đây là phép cộng suy ra, nhãn là **TÍNH TỪ ĐO**, không phải ĐÃ ĐO:
+
+| Nhịp detect | Chi phí mỗi khung | FPS suy ra | Đạt ≥ 5 FPS? |
 | --- | --- | --- | --- |
-| pose + detect mỗi khung | 105,5+98,6 = 204,1 ms → 4,90 FPS<br>112,5+98,6 = 211,1 ms → 4,74 FPS | 4,74–4,90 FPS | **khớp** |
-| pose mỗi khung + detect 1/2 khung | ≈109,0 + 49,3 = 158,3 ms → 6,32 FPS | 6,18 FPS | khớp trong ~2% |
+| Mỗi khung | 199,39 + 98,6 = 297,99 ms | 3,36 | **KHÔNG** |
+| 1/2 khung | 199,39 + 49,3 = 248,69 ms | 4,02 | **KHÔNG** |
+| 1/3 khung | 199,39 + 32,87 = 232,26 ms | 4,31 | **KHÔNG** |
+| 1/4 khung | 199,39 + 24,65 = 224,04 ms | 4,46 | **KHÔNG** |
 
-Nghĩa là chi phí pipeline gần như chỉ là hai lần suy luận, phần quản lý vòng lặp không đáng kể. Đây là cơ sở để lập ngân sách **GIẢ THIẾT**:
+**Kết luận bắt buộc:** trên phép đo thật hiện có, **mọi** nhịp detect đều
+**chưa đạt** 5 FPS. Cấu hình `detect_every_n_frames: 2` **không** có cơ sở nào
+để nói là đạt. Chi phí detect **chưa từng được đo trong pipeline thật** (kèm
+capture, khung camera thật); đến khi đo được, mọi con số FPS cho cấu hình có
+detect đều là **GIẢ THIẾT**.
+
+#### Ngân sách (**GIẢ THIẾT**, không dùng để nghiệm thu)
 
 | Hạng mục | Chi phí mỗi khung (trung bình) | Căn cứ |
 | --- | --- | --- |
-| pose | 109,0 ms (trung bình hai đầu 105,5–112,5) | **ĐÃ ĐO** |
-| detect điện thoại, 1/2 khung | 49,3 ms | **TÍNH TỪ ĐO** |
-| Cả đường ống khuôn mặt, chu kỳ 2 s @ ~6 FPS (≈12 khung) | ≈7,2 ms | **TÍNH TỪ ĐO** (86,1 / 12) |
-| **Tổng** | **≈165,5 ms → 6,04 FPS** | **GIẢ THIẾT — chưa đo cấu hình này** |
+| capture | 63,88 ms | **ĐÃ ĐO** (SPEC_V2, camera thật) |
+| pose (đường ống thật) | 135,06 ms (median), trong đó inference 100,30 ms | **ĐÃ ĐO** (SPEC_V2) |
+| detect điện thoại, 1/2 khung | 49,3 ms | **TÍNH TỪ ĐO** (98,6 / 2) |
+| Đường ống khuôn mặt, chu kỳ 2 s | 86,1 / (số khung trong 2 s) — **công thức**, chưa điền số | phụ thuộc FPS cuối cùng, mà FPS đó chưa đo |
 | Ngân sách để đạt 5 FPS | 200 ms | mục tiêu §8 |
 
-**Kết luận phải nói rõ:** con số 6,04 FPS là **suy ra**, không phải đo. Cấu hình ba model chạy cùng nhau trên Pi **chưa từng được đo**. Nếu chi phí thật vượt ngân sách, thứ tự cắt giảm là:
+Ghép ba dòng đầu đã vượt 200 ms (63,88 + 135,06 + 49,3 = 248,24 ms →
+4,03 FPS). **Không có con số tổng nào cho cấu hình ba model** — nó chưa được
+đo, và cộng dồn từ số đã đo với nhịp mặt chưa biết chỉ tạo ảo giác chính xác.
+
+**Việc phải làm trước khi tuyên bố bất kỳ FPS nào:** chạy §14 bước G với
+`--profile pose_phone_face` trên Pi (camera thật, ≥ 3 lần × ≥ 60 s,
+`throttled=0x0`). Đó là lí do lệnh `--profile` đã được cài vào `benchmark`.
+
+Nếu chi phí thật vượt ngân sách, thứ tự cắt giảm là:
 
 1. Giãn `face_interval_s` lên 3–5 s.
-2. Đổi detect điện thoại sang 1/3 khung.
+2. Đổi detect điện thoại sang 1/3 rồi 1/4 khung — biết trước là **có thể vẫn chưa đủ**; phải đo lại.
 3. Giảm `imgsz` 320 → 256 (áp cho cả ba model).
 4. Giảm `target_fps` xuống 4.
 5. Dừng và báo người dùng — **không** tự đổi sang model khác ngoài danh sách.
@@ -689,16 +737,16 @@ Giữ nguyên v2: `calibrate`, `replay`, `benchmark`. `benchmark` được mở 
 
 | Chỉ tiêu | Mục tiêu | Cách kiểm tra | Trạng thái |
 | --- | --- | --- | --- |
-| FPS pipeline, **cấu hình đầy đủ** (pose mỗi khung + detect 1/2 + face 1/2 s) | ≥ 5 FPS | `benchmark` trên Pi, ≥ 3 lần chạy ≥ 60 s | **CHƯA ĐO** — chỉ số đo hiện có là 6,18 FPS cho cấu hình **2 model** |
-| FPS pipeline, 2 model (pose + detect 1/2) | ≥ 5 FPS | **ĐÃ ĐO**: 6,18 FPS | đạt |
-| FPS pipeline, 2 model mỗi khung | — | **ĐÃ ĐO**: 4,74–4,90 FPS | **không đạt** — đây là lý do detect chạy cách khung |
+| FPS pipeline, **cấu hình đầy đủ** (pose mỗi khung + detect 1/2 + face 1/2 s) | ≥ 5 FPS | `benchmark --profile pose_phone_face` trên Pi, ≥ 3 lần chạy ≥ 60 s | **CHƯA ĐO** |
+| FPS pipeline, 2 model (pose + detect 1/2) | ≥ 5 FPS | `benchmark --profile pose_phone` trên Pi | **CHƯA ĐO trong pipeline** — artifact duy nhất là thời gian suy luận trên khung tổng hợp; ghép vào phép đo thật duy nhất (pose-only 5,01 FPS) cho 4,02 FPS, tức **headroom gần như bằng 0** và **chưa có cơ sở nào để nói là đạt** |
+| FPS pipeline, 2 model mỗi khung | — | `benchmark --profile pose_phone` với `detect_every_n_frames: 1` | **CHƯA ĐO** — suy ra từ số TÍNH TỪ ĐO là 3,36 FPS, nhưng số đó cũng chưa được đo trong pipeline |
 | Độ trễ từ lúc vi phạm đủ `hold_s` tới lúc nghe tiếng | ≤ 2 s | log mốc thời gian (đo bằng tay, bấm giờ) | chưa đo |
 | Nhiệt CPU, chạy 30 phút | < 80 °C | `benchmark` | chưa đo cho cấu hình 3 model |
 | RAM cả tiến trình (2 model NCNN + face + web) | < 1 GB | `benchmark` | chưa đo |
 | Throttle | `vcgencmd get_throttled` = `0x0` suốt bài đo | `benchmark` | bắt buộc, nếu khác 0 thì mọi số FPS không hợp lệ |
 | Ổn định | 2 giờ liên tục, không crash, không rò rỉ | chạy dài | chưa đo |
 
-**Quy tắc:** chỉ được ghi "đạt ≥ 5 FPS" khi bài đo chạy **đúng cấu hình ba model** và không có throttle. Không được suy từ 6,18 FPS của cấu hình hai model.
+**Quy tắc:** chỉ được ghi "đạt ≥ 5 FPS" khi bài đo chạy **đúng cấu hình ba model** (`--profile pose_phone_face`) và không có throttle. Không được suy từ bất kỳ con số nào khác — hiện **không có** bài đo pipeline nào có detect, nên **không cấu hình nào đã đạt**.
 
 ### 8.2 Nghiệm thu theo chức năng
 
@@ -961,4 +1009,61 @@ Ghi lại minh bạch để người đọc biết chỗ nào tài liệu **đan
 
 1. **Ngưỡng cosine `face_match_threshold`** — không có số nào. Không chép ngưỡng của OpenCV hay repo khác, vì ngưỡng phụ thuộc camera, ánh sáng và người thật. Để `null` trong cấu hình mẫu và biến nó thành bước H bắt buộc.
 2. **Chất lượng và độ trễ giọng tiếng Việt của `espeak-ng`** — chỉ biết là công cụ **có** trên Pi và tạo được WAV. Chưa nghe, chưa đo độ trễ sinh file, chưa biết người học có hiểu không. Vì vậy spec có đường dự phòng (bíp + chữ trên dashboard) và không cam kết "phát câu tiếng Việt rõ ràng".
-3. **FPS và RAM của cấu hình ba model chạy đồng thời** — đã đo riêng lẻ từng model và đo hai model, và đã đo trọn đường ống khuôn mặt (86,1 ms), nhưng **chưa** đo ba thứ chạy cùng nhau trong một tiến trình. Con số 6,04 FPS trong §4.3 là **số học**, không phải số đo, và spec ghi rõ nó không dùng để nghiệm thu. Bước G tồn tại đúng vì thiếu số này.
+3. **FPS và RAM của cấu hình ba model chạy đồng thời** — đã đo riêng lẻ từng model và đo trọn đường ống khuôn mặt (86,1 ms), nhưng **chưa** đo ba thứ chạy cùng nhau trong một tiến trình. Phép đo pipeline thật duy nhất của dự án là pose-only (5,01 FPS), và nó **chưa** gồm detect hay khuôn mặt. Bước G tồn tại đúng vì thiếu số này; lệnh `--profile` của `benchmark` đã sẵn sàng để đo.
+
+---
+
+## 19. Đính chính số liệu ngày 2026-10-29 — số nào bị hạ nhãn và vì sao
+
+Mục này tồn tại để người đọc sau biết **vì sao con số trong tài liệu đổi**. Không
+xoá dấu vết việc từng ghi sai; giữ nguyên vết để lần sau không lặp lại.
+
+### Chuyện gì đã xảy ra
+
+§4.2/§4.3 và §8.1 từng ghi ba con số với nhãn **ĐÃ ĐO**:
+một dải FPS cho cấu hình `pose + detect mỗi khung`, và một con số FPS cho cấu
+hình `pose + detect 1/2 khung`, kèm kết luận "cách khung đạt ≥ 5 FPS". Kết luận
+đó đã bị chép vào `config.yaml` và docstring `phone.py` của nhánh `r3-phone`.
+
+### Sự thật
+
+| Con số từng ghi | Nhãn cũ | Sự thật |
+| --- | --- | --- |
+| Đầu dưới dải pose (105,5 ms) | "min của một dải" | **ĐO THẬT** — nhưng 105,5 là **min** của 549 lần (SPEC_V2 §5.3), không phải đầu dưới một dải đo được |
+| Đầu trên dải pose (**112,5 ms**) | ĐÃ ĐO | **BỊA** — `grep` toàn repo chỉ thấy trong SPEC_V3; không có trong SPEC_V2, không artifact nào |
+| 98,6 ms detect | ĐÃ ĐO | **ĐO THẬT** (bench2: 98,7) — nhưng một lần trên **khung tổng hợp** |
+| **4,74 FPS** | ĐÃ ĐO | **TÍNH** từ số bịa: `1000/(112,5+98,6)` |
+| **4,90 FPS** | ĐÃ ĐO | **ĐO THẬT** (bench2), nhưng đó là `max_fps` của suy luận trên khung tổng hợp — **không** phải FPS pipeline |
+| **6,18 FPS** | ĐÃ ĐO | **TÍNH** từ số bịa: `1000/(112,5+49,35)`, và **bỏ qua capture** |
+
+Lỗi kiểm chứng kèm theo: bảng §4.3 cũ ghi "khớp" và "khớp trong ~2%" — đó là
+số học tự khớp với chính nó vì "cột đo" và "cột tính" dùng chung một nguồn bịa.
+Câu "khớp trong ~2%" đã bị xoá vì nó nghịch đảo của chính nó, không phải kiểm
+chứng độc lập.
+
+### Con số đúng và cách nó được dùng lại
+
+Phép đo **pipeline thật duy nhất** của dự án là pose-only, camera thật
+704x576, 150 khung: **199,39 ms median → 5,01 FPS**. Ghép chi phí detect được
+đo (98,6 ms) vào phép đo đó (là **TÍNH TỪ ĐO**) cho: mỗi khung 3,36 FPS;
+1/2 khung 4,02; 1/3 khung 4,31; 1/4 khung 4,46 — **cả bốn đều không đạt 5 FPS**.
+Vì thế §8.1 hạ mọi dòng có detect xuống **CHƯA ĐO**, và `detect_every_n_frames:
+2` **không còn** được biện minh bằng FPS.
+
+### Đã sửa ở đâu
+
+- `docs/SPEC_V3.md` §4.2, §4.3, §8.1, §18 (mục này) — chỉ còn số ĐÃ ĐO hoặc
+  TÍNH TỪ ĐO, mọi chỗ khác ghi CHƯA ĐO.
+- `src/posture_monitor/benchmark.py` — thêm `--profile` để **đo được** ba cấu
+  hình §14 bước G; báo cáo ghi `profile` và `models` để không đọc nhầm.
+- `src/posture_monitor/phone.py` — docstring nêu rõ 98,6 ms là một lần suy
+  luận trên khung tổng hợp, không khẳng định FPS.
+- `tests/test_benchmark_profile.py` — test chống tái phát: spec không được
+  chứa lại các số trên trong §4.3 và §8.1.
+
+### Lưu ý còn mở
+
+Docstring `phone_detector.py` và `config.yaml` nhánh `r3-phone` vẫn chứa câu
+"cách khung đạt ≥ 5 FPS" (kèm nhãn ĐO THẬT). Việc sửa hai chỗ đó **không thuộc
+phạm vi** phiên này (nhánh `r3-fps` không sở hữu `phone_detector.py`); cần một
+bounded task riêng trên nhánh đó.

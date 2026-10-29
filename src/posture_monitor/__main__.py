@@ -187,6 +187,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ghi báo cáo JSON ra file (ngoài bảng in trên màn hình).",
     )
     benchmark.add_argument(
+        "--profile",
+        default=None,
+        metavar="HO_SO",
+        help=(
+            "Hồ sơ đo: pose (mặc định) | pose_phone | pose_phone_face. "
+            "Hồ sơ cần module/cấu hình chưa có sẽ bị từ chối rõ ràng, không "
+            "đo thiếu model."
+        ),
+    )
+    benchmark.add_argument(
         "--no-gpio",
         action="store_true",
         help="Tương thích CLI chung; benchmark không dùng GPIO.",
@@ -712,6 +722,8 @@ def cmd_benchmark(args: argparse.Namespace) -> int:
         argv += ["--source", args.source]
     if args.json is not None:
         argv += ["--json", args.json]
+    if getattr(args, "profile", None):
+        argv += ["--profile", args.profile]
     if args.no_gpio:
         argv.append("--no-gpio")
     argv += ["--log-level", args.log_level]

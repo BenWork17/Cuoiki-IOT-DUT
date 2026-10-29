@@ -12,6 +12,26 @@ Chuỗi khâu được đo đúng theo yêu cầu M5::
 Không gồm làm mượt (``Smoother``) và vẽ overlay — báo cáo ghi rõ điểm này để
 không ai đọc số ra rồi tưởng đó là toàn bộ ứng dụng.
 
+Hồ sơ đo (``--profile``)
+------------------------
+Spec §14 bước G yêu cầu đo **ba cấu hình** khác nhau. ``--profile`` chọn đúng
+cấu hình đó:
+
+===============  ===================================================
+``pose``         chỉ model tư thế (mặc định, hành vi cũ giữ nguyên)
+``pose_phone``   thêm model detect COCO cho điện thoại, cách khung
+``pose_phone_face``  thêm cả đường ống khuôn mặt, cách ``face.interval_s``
+===============  ===================================================
+
+**Không bao giờ âm thầm rơi về một hồ sơ khác.** Hồ sơ cần module hoặc khối
+cấu hình mà bản này chưa có sẽ bị từ chối bằng thông điệp tiếng Việt và mã
+thoát khác 0. Một bài đo in "6 FPS" trong khi thực chất chỉ chạy pose là đúng
+loại lỗi mà cơ chế này tồn tại để chặn.
+
+Báo cáo luôn ghi ``"profile"`` và ``"models"`` (mỗi model một mục, kèm vai trò
+và nhịp chạy) để người đọc không thể hiểu nhầm bài đo gồm những model nào.
+Các khóa mới chỉ được **thêm**, không đổi tên khóa cũ.
+
 Bốn nhóm số liệu:
 
 1. **Thời gian**: từng khâu và toàn khung, đơn vị ms, báo ``min``/``median``/
@@ -34,6 +54,7 @@ Cấu trúc dict trả về (ổn định để CLI/tầng khác đọc; ``null`
 
     {
       "report_version": int,
+      "profile": str, "models": [{"name", "role", "cadence", ...}],
       "generated_at": str, "duration_s": float,
       "host": {"platform", "machine", "python", "cpu", "cpu_count",
                "is_raspberry_pi"},
@@ -62,7 +83,8 @@ Cấu trúc dict trả về (ổn định để CLI/tầng khác đọc; ``null`
 Chạy trực tiếp::
 
     python -m posture_monitor.benchmark --seconds 60 \\
-        --config config.yaml [--source file:anh.jpg] [--json out.json] [--no-gpio]
+        --config config.yaml [--profile pose|pose_phone|pose_phone_face] \\
+        [--source file:anh.jpg] [--json out.json] [--no-gpio]
 
 Mã thoát: 0 khi đo xong (kể cả không đạt chỉ tiêu), khác 0 khi không đo được
 (không mở được nguồn, thiếu model). Mọi lỗi môi trường đều được bắt và báo
@@ -83,7 +105,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import cv2
 import numpy as np
@@ -172,6 +194,265 @@ SOURCE_KINDS = {
 
 _TEMP_RE = re.compile(r"temp=(-?\d+(?:\.\d+)?)")
 _THROTTLE_RE = re.compile(r"throttled=(0x[0-9a-fA-F]+)")
+
+
+# ---------------------------------------------------------------------------
+# Hồ sơ đo (--profile): cấu hình nào chạy model nào
+# ---------------------------------------------------------------------------
+
+#: Hồ sơ mặc định — **giữ nguyên hành vi cũ tuyệt đối**: chỉ pose.
+DEFAULT_PROFILE = "pose"
+
+#: Mô tả từng hồ sơ, dùng cho ``--help``, thông điệp lỗi và báo cáo.
+PROFILES: dict[str, str] = {
+    "pose": "chỉ model tư thế (hành vi gốc của benchmark)",
+    "pose_phone": "pose + model detect COCO cho điện thoại (cách khung)",
+    "pose_phone_face": "pose + detect điện thoại + đường ống khuôn mặt",
+}
+
+#: Hồ sơ cần module ``phone_detector`` (nằm trên nhánh ``r3-phone``).
+_PHONE_PROFILES = frozenset({"pose_phone", "pose_phone_face"})
+
+#: Hồ sơ cần thêm đường ống khuôn mặt.
+_FACE_PROFILES = frozenset({"pose_phone_face"})
+
+
+def normalise_profile(profile: Any) -> str:
+    """Kiểm tra tên hồ sơ; trả tên chuẩn hoá.
+
+    ``None`` được hiểu là :data:`DEFAULT_PROFILE` (tiện cho tầng gọi cũ).
+
+    Raises:
+        BenchmarkError: tên hồ sơ không nằm trong :data:`PROFILES`. Sai tên
+            phải **dừng**, không được lặng lẽ coi như ``pose`` — đo nhầm cấu
+            hình rồi in số là đúng loại lỗi module này tồn tại để chặn.
+    """
+    if profile is None:
+        return DEFAULT_PROFILE
+    name = str(profile).strip()
+    if name not in PROFILES:
+        raise BenchmarkError(
+            f"Hồ sơ đo --profile không hợp lệ: {name!r}. Chọn một trong "
+            + ", ".join(f"'{key}' ({value})" for key, value in PROFILES.items())
+            + "."
+        )
+    return name
+
+
+class _ExtraModel:
+    """Một model phụ chạy cạnh pose, kèm metadata cho báo cáo.
+
+    ``step`` nhận ``(frame, pose, now)`` và trả ``None``; ngoại lệ bên trong
+    được ghi cảnh báo và đếm, không được làm sập bài đo (spec §11.4).
+    """
+
+    def __init__(
+        self,
+        name: str,
+        role: str,
+        cadence: str,
+        step: Callable[[Any, Any, float], None],
+        meta: dict[str, Any],
+    ) -> None:
+        self.name = name
+        self.role = role
+        self.cadence = cadence
+        self._step = step
+        self.meta = meta
+        #: Số khung lỗi riêng của model phụ (không cộng vào ``frames.errors``).
+        self.errors = 0
+        #: Thời gian từng lần chạy model phụ, ms — để báo cáo có bằng chứng.
+        self.durations_ms: list[float] = []
+
+    def step(self, frame: Any, pose: Any, now: float) -> None:
+        start = time.perf_counter()
+        try:
+            self._step(frame, pose, now)
+        except Exception as exc:  # noqa: BLE001 - model phụ không được sập
+            self.errors += 1
+            logger.warning(
+                "Model phụ '%s' lỗi ở khung này: %s", self.name, exc
+            )
+            return
+        self.durations_ms.append((time.perf_counter() - start) * 1000.0)
+
+    def describe(self) -> dict[str, Any]:
+        """Mục trong ``report["models"]`` — không chứa trọng số/mật khẩu."""
+        entry: dict[str, Any] = {
+            "name": self.name,
+            "role": self.role,
+            "cadence": self.cadence,
+            "errors": self.errors,
+            "timing_ms": _stats(self.durations_ms),
+        }
+        entry.update(self.meta)
+        return entry
+
+
+#: Thông điệp khi hồ sơ cần ``phone_detector`` mà bản này chưa có module.
+PHONE_MISSING_MESSAGE = (
+    "Hồ sơ đo cần model detect điện thoại, nhưng bản này KHÔNG có module "
+    "'posture_monitor.phone_detector' (module nằm trên nhánh 'r3-phone'). "
+    "Không đo thay bằng cấu hình khác: một bài đo in FPS của riêng pose mà "
+    "dán nhãn 'pose_phone' là số liệu sai. Hãy merge nhánh 'r3-phone' (và khối "
+    "cấu hình 'phone') rồi chạy lại; muốn đo ngay bây giờ thì dùng "
+    "--profile pose và ghi rõ chỉ có pose."
+)
+
+#: Thông điệp khi hồ sơ cần đường ống khuôn mặt mà cấu hình chưa có.
+FACE_MISSING_MESSAGE = (
+    "Hồ sơ đo cần đường ống khuôn mặt, nhưng cấu hình này KHÔNG có khối "
+    "'face' (hoặc khối đó đang tắt, hoặc thiếu tệp 'yunet.onnx'/'sface.onnx'). "
+    "Không đo thay bằng cấu hình khác vì báo cáo sẽ mang nhãn sai. Hãy thêm "
+    "khối 'face' theo spec §6 và đặt sẵn hai tệp ONNX, rồi chạy lại; muốn đo "
+    "ngay bây giờ thì dùng --profile pose_phone hoặc --profile pose."
+)
+
+
+def _build_phone_extra(config: Config) -> _ExtraModel:
+    """Dựng model phụ detect điện thoại từ ``config.phone``.
+
+    Raises:
+        BenchmarkError: thiếu module :mod:`posture_monitor.phone_detector`
+            (nhánh ``r3-phone`` chưa merge) hoặc thiếu/tắt khối ``phone``.
+            Từ chối rõ ràng thay vì đo nhầm cấu hình.
+    """
+    try:  # noqa: PLC0415 - import muộn: module chỉ cần khi chọn hồ sơ này
+        from .phone_detector import PhoneSignal
+    except ImportError as exc:
+        raise BenchmarkError(PHONE_MISSING_MESSAGE) from exc
+
+    phone_cfg = getattr(config, "phone", None)
+    if phone_cfg is None:
+        raise BenchmarkError(
+            PHONE_MISSING_MESSAGE
+            + " (Cấu hình đang nạp không có khối 'phone'.)"
+        )
+    if not bool(getattr(phone_cfg, "enabled", False)):
+        raise BenchmarkError(
+            "Hồ sơ đo cần model detect điện thoại nhưng 'phone.enabled' đang "
+            "false, nên model đó sẽ không chạy. Không đo nhầm cấu hình: bật "
+            "'phone.enabled: true' hoặc dùng --profile pose."
+        )
+
+    signal = PhoneSignal(config)
+    every = int(getattr(phone_cfg, "detect_every_n_frames", 1) or 1)
+    detect_model = str(getattr(phone_cfg, "detect_model", "yolo11n"))
+
+    def step(frame: Any, pose: Any, now: float) -> None:
+        if pose is None:
+            # Không có keypoint thì PhoneSignal vẫn trả None; bỏ qua cho rẻ.
+            return
+        signal.observe(frame, _keypoints_array(pose), now)
+
+    return _ExtraModel(
+        name=detect_model,
+        role="phone_detect",
+        cadence=f"mỗi {every} khung",
+        step=step,
+        meta={
+            "imgsz": int(getattr(phone_cfg, "imgsz", 320)),
+            "format": config.model.format,
+            "detect_every_n_frames": every,
+        },
+    )
+
+
+def _build_face_extra(config: Config) -> _ExtraModel:
+    """Dựng model phụ đường ống khuôn mặt từ ``config.face``.
+
+    Raises:
+        BenchmarkError: thiếu khối ``face``, khối đang tắt, hoặc thiếu tệp
+            ``yunet.onnx``/``sface.onnx`` trên đĩa.
+    """
+    face_cfg = getattr(config, "face", None)
+    if face_cfg is None or not bool(getattr(face_cfg, "enabled", False)):
+        raise BenchmarkError(FACE_MISSING_MESSAGE)
+
+    from .faces import FaceRecognizer  # noqa: PLC0415
+
+    yunet = Path(str(getattr(face_cfg, "detector", "")))
+    sface = Path(str(getattr(face_cfg, "recognizer", "")))
+    missing = [str(path) for path in (yunet, sface) if not path.is_file()]
+    if missing:
+        raise BenchmarkError(
+            FACE_MISSING_MESSAGE
+            + " (Thiếu tệp: " + ", ".join(missing) + ".)"
+        )
+
+    detect_width = int(getattr(face_cfg, "detect_width", 320) or 320)
+    recognizer = FaceRecognizer(
+        yunet,
+        sface,
+        input_size=(detect_width, detect_width),
+    )
+    interval_s = float(getattr(face_cfg, "interval_s", 2.0) or 2.0)
+    state: dict[str, Any] = {"next_at": 0.0}
+
+    def step(frame: Any, pose: Any, now: float) -> None:
+        # Chạy theo nhịp ``face.interval_s`` như vòng lặp thật; đo chi phí một
+        # lượt là mục đích, nên chỉ cần kích hoạt đúng nhịp. Lỗi model (thiếu
+        # OpenCV, ONNX hỏng) do ``_ExtraModel.step`` bắt và đếm — không được
+        # làm sập khung pose.
+        if now < state["next_at"]:
+            return
+        state["next_at"] = now + interval_s
+        recognizer.embed_largest(frame)
+
+    return _ExtraModel(
+        name="yunet+sface",
+        role="face",
+        cadence=f"mỗi {interval_s:g} s",
+        step=step,
+        meta={
+            "detect_width": detect_width,
+            "format": "onnx",
+            "interval_s": interval_s,
+        },
+    )
+
+
+def _keypoints_array(pose: Any) -> Any:
+    """Ghép ``xy``/``conf`` của :class:`PoseResult` thành ``(17, 3)``."""
+    xy = getattr(pose, "xy", None)
+    conf = getattr(pose, "conf", None)
+    if xy is None or conf is None:
+        return None
+    return np.concatenate(
+        [np.asarray(xy, dtype=float), np.asarray(conf, dtype=float)[:, None]],
+        axis=1,
+    )
+
+
+def _build_extras(config: Config, profile: str) -> list[_ExtraModel]:
+    """Dựng danh sách model phụ theo hồ sơ; từ chối nếu không dựng được.
+
+    Khi nhiều model phụ cùng thiếu, báo **tất cả** lý do trong một lần chứ
+    không chỉ cái đầu tiên: người sửa cần biết đủ việc phải làm (merge
+    ``r3-phone``, thêm khối ``face``, tải hai tệp ONNX).
+    """
+    builders: list[tuple[bool, Callable[[Config], _ExtraModel]]] = [
+        (profile in _PHONE_PROFILES, _build_phone_extra),
+        (profile in _FACE_PROFILES, _build_face_extra),
+    ]
+    extras: list[_ExtraModel] = []
+    problems: list[str] = []
+    for needed, builder in builders:
+        if not needed:
+            continue
+        try:
+            extras.append(builder(config))
+        except BenchmarkError as exc:
+            problems.append(str(exc))
+    if problems:
+        raise BenchmarkError(
+            problems[0]
+            if len(problems) == 1
+            else "Hồ sơ này chưa chạy được vì thiếu nhiều phần:\n- "
+            + "\n- ".join(problems)
+        )
+    return extras
+
 
 
 class BenchmarkError(RuntimeError):
@@ -654,6 +935,7 @@ def run_benchmark(
     config: Config,
     seconds: float,
     source_override: Any = None,
+    profile: str = DEFAULT_PROFILE,
 ) -> dict[str, Any]:
     """Đo hiệu năng pipeline trên máy đang chạy (spec §8, §11.6).
 
@@ -664,14 +946,16 @@ def run_benchmark(
             chuỗi ``usb:N`` / ``picamera`` / ``file:...``, một
             :class:`~posture_monitor.capture.FrameSource`, hoặc danh sách
             khung ``numpy`` (kiểm thử trên PC).
+        profile: hồ sơ đo, một trong :data:`PROFILES`. Mặc định
+            :data:`DEFAULT_PROFILE` (``pose``) giữ nguyên hành vi cũ.
 
     Returns:
         Dict báo cáo theo schema mô tả ở docstring module. Mọi giá trị không
-        đo được là ``None`` kèm lý do.
+        đo được là ``None`` kèm lý do. Luôn có ``"profile"`` và ``"models"``.
 
     Raises:
-        BenchmarkError: không mở được nguồn, không nạp được model, hoặc không
-            xử lý được khung nào.
+        BenchmarkError: không mở được nguồn, không nạp được model, hồ sơ cần
+            module/cấu hình chưa có, hoặc không xử lý được khung nào.
         ValueError: ``seconds`` không dương hoặc không hữu hạn.
     """
     seconds = float(seconds)
@@ -679,6 +963,11 @@ def run_benchmark(
         raise ValueError(
             f"seconds phải là số hữu hạn dương, nhận được {seconds!r}."
         )
+
+    # Kiểm hồ sơ + dựng model phụ **trước** khi mở nguồn: hồ sơ không chạy
+    # được thì phải từ chối ngay, không chạy nửa vời rồi in số nhầm nhãn.
+    profile = normalise_profile(profile)
+    extras = _build_extras(config, profile)
 
     notices: list[str] = []
     warnings: list[str] = []
@@ -836,6 +1125,13 @@ def run_benchmark(
                     break
             t2 = time.perf_counter()
 
+            # Model phụ (điện thoại/khuôn mặt): chỉ chạy khi khung có pose và
+            # hồ sơ yêu cầu. Lỗi ở đây đếm riêng, không làm hỏng khung pose.
+            if extras and pose is not None and not frame_failed:
+                extra_now = time.monotonic() - start
+                for extra in extras:
+                    extra.step(frame, pose, extra_now)
+
             if pose is None:
                 features = extract(
                     None,
@@ -921,6 +1217,8 @@ def run_benchmark(
             seconds=seconds,
             source_meta=source_meta,
             estimator=estimator,
+            profile=profile,
+            extras=extras,
             baseline_meta=baseline_meta,
             measured=measured,
             with_person=with_person,
@@ -951,6 +1249,8 @@ def _build_report(
     seconds: float,
     source_meta: dict[str, Any],
     estimator,
+    profile: str = DEFAULT_PROFILE,
+    extras: Sequence[_ExtraModel] = (),
     baseline_meta: dict[str, Any],
     measured: int,
     with_person: int,
@@ -1168,10 +1468,35 @@ def _build_report(
     )
     timing = {key: _stats(values) for key, values, _ in stage_specs}
 
+    # ---- Danh sách model thực sự đã chạy trong bài đo -------------------
+    # Đây là hàng rào chống nhãn sai: người đọc báo cáo thấy đúng những model
+    # đã chạy, không phải những model mà hồ sơ *lẽ ra* phải chạy.
+    models: list[dict[str, Any]] = [
+        {
+            "name": config.model.name,
+            "role": "pose",
+            "cadence": "mỗi khung",
+            "format": config.model.format,
+            "imgsz": int(config.model.imgsz),
+            "backend": getattr(estimator, "backend", "không rõ"),
+            "errors": errors,
+            "timing_ms": timing.get("pose_detect"),
+        }
+    ]
+    models.extend(extra.describe() for extra in extras)
+    if profile != DEFAULT_PROFILE:
+        notices.append(
+            f"Hồ sơ đo '{profile}': {PROFILES.get(profile, profile)}. Chỉ "
+            "được dùng số FPS của bài đo này cho đúng hồ sơ đó; đừng suy sang "
+            "cấu hình khác (spec §8)."
+        )
+
     report: dict[str, Any] = {
         "report_version": REPORT_VERSION,
         "generated_at": _now_iso(),
         "duration_s": round(seconds, 3),
+        "profile": profile,
+        "models": models,
         "host": _host_info(),
         "source": dict(source_meta),
         "model": {
@@ -1264,6 +1589,16 @@ def format_report(report: dict[str, Any]) -> str:
         f"  Model        : {model['name']} ({model['backend']}, "
         f"imgsz={model['imgsz']})"
     )
+    lines.append(
+        f"  Hồ sơ đo     : {report.get('profile', DEFAULT_PROFILE)}"
+    )
+    for entry in report.get("models", []):
+        if entry.get("role") == "pose":
+            continue
+        lines.append(
+            f"    + model phụ : {entry.get('name')} — {entry.get('role')} "
+            f"({entry.get('cadence')}, lỗi={entry.get('errors', 0)})"
+        )
     lines.append(
         f"  Nguồn ảnh    : {source['kind']} — {source['note']} "
         f"({source['spec']}) [backend={source['backend']}]"
@@ -1432,6 +1767,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ghi báo cáo JSON ra file (ngoài bảng in trên màn hình).",
     )
     parser.add_argument(
+        "--profile",
+        default=DEFAULT_PROFILE,
+        metavar="HO_SO",
+        help=(
+            "Hồ sơ đo: "
+            + "; ".join(f"{key} = {value}" for key, value in PROFILES.items())
+            + f". Mặc định: {DEFAULT_PROFILE}. Tên sai hoặc hồ sơ cần module "
+            "chưa có sẽ bị từ chối với thông điệp tiếng Việt và mã thoát khác "
+            "0, KHÔNG lặng lẽ đo thiếu model."
+        ),
+    )
+    parser.add_argument(
         "--no-gpio",
         action="store_true",
         help="Tương thích CLI chung; benchmark không dùng GPIO.",
@@ -1469,7 +1816,10 @@ def main(argv: list[str] | None = None) -> int:
             return 2
 
         report = run_benchmark(
-            config, args.seconds, source_override=args.source
+            config,
+            args.seconds,
+            source_override=args.source,
+            profile=args.profile,
         )
     except BenchmarkError as exc:
         logger_root.error("Không đo được: %s", exc)
