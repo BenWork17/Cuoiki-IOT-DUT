@@ -46,10 +46,14 @@ vector). Khi đăng ký thiếu mẫu hoặc bị huỷ thì **không ghi gì**.
 
 from __future__ import annotations
 
+import json
 import math
+import os
+import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
@@ -105,6 +109,24 @@ AUTO_THRESHOLD_MIN = 0.30
 #: Trần: trên mức này chỉ khung gần như trùng khít mới qua, dễ bỏ sót người
 #: thật; dữ liệu đăng ký ít mẫu không đủ tư cách đòi hỏi cao hơn.
 AUTO_THRESHOLD_MAX = 0.95
+
+# -- Tệp phụ giữ ngưỡng tự suy qua lần khởi động lại -----------------------
+#
+# Ngưỡng tự suy sống trong RAM sẽ mất mỗi lần restart, và khi đó ``_classify``
+# trả ``UNKNOWN`` cho mọi khung → cảnh báo "người khác vào học hộ" im lặng vĩnh
+# viễn cho tới lần đăng ký kế tiếp. Ghi nó xuống một **tệp phụ** thay vì nhét
+# vào ``faces.json``: kho khuôn mặt là hợp đồng với :class:`FaceStore`
+# (``STORE_VERSION``, ``parse_store_payload``) đã có test, thêm khoá lạ vào đó
+# sẽ phải migration và có nguy cơ làm hỏng kho đang chạy trên Pi.
+#
+# Nội dung tệp chỉ có ngưỡng + phiên bản + thời điểm. **Không** vector, không
+# ảnh, không tên người (spec §5.13.1, §11.5).
+THRESHOLD_FILENAME = "face_threshold.json"
+#: Phiên bản định dạng tệp phụ; khác phiên bản thì bỏ qua (chạy không ngưỡng).
+THRESHOLD_VERSION = 1
+#: Tiền tố tệp tạm khi ghi nguyên tử; "." để không ai nhầm là dữ liệu.
+_THRESHOLD_TEMP_PREFIX = ".face-threshold-"
+_THRESHOLD_TEMP_SUFFIX = ".tmp"
 
 #: Trạng thái của một phiên đăng ký.
 STATE_RUNNING = "running"
@@ -202,6 +224,106 @@ def derive_threshold(
     derived = lowest - AUTO_THRESHOLD_MARGIN
     derived = max(AUTO_THRESHOLD_MIN, min(AUTO_THRESHOLD_MAX, derived))
     return round(float(derived), 2)
+
+
+def _parse_threshold_payload(payload: Any) -> float:
+    """Đọc nội dung tệp phụ; trả ngưỡng hoặc ném :class:`ValueError`.
+
+    Tách khỏi phần đọc tệp để test được định dạng mà không cần đĩa. Mọi lý do
+    từ chối đều là :class:`ValueError` với thông điệp tiếng Việt: người gọi
+    (constructor) bắt lỗi này, ghi **một** dòng cảnh báo rồi chạy không ngưỡng
+    — tệp phụ hỏng không bao giờ được làm sập dashboard (spec §11.3, §11.4).
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("nội dung phải là một đối tượng JSON")
+    version = payload.get("version")
+    if version != THRESHOLD_VERSION:
+        raise ValueError(
+            f"phiên bản {version!r} không được hỗ trợ "
+            f"(chỉ đọc được phiên bản {THRESHOLD_VERSION})"
+        )
+    raw = payload.get("threshold")
+    if isinstance(raw, bool):
+        # bool là lớp con của int; True/False không phải ngưỡng hợp lệ.
+        raise ValueError("ngưỡng phải là số thực, không phải bool")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"ngưỡng không phải số thực ({raw!r})") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"ngưỡng không hữu hạn ({value!r})")
+    if not (-1.0 <= value <= 1.0):
+        raise ValueError(
+            f"ngưỡng {value!r} nằm ngoài [-1.0, 1.0] (miền giá trị của cosine)"
+        )
+    return value
+
+
+def _build_threshold_payload(threshold: float, moment: float) -> dict[str, Any]:
+    """Nội dung tệp phụ: chỉ ngưỡng, phiên bản và thời điểm (spec §11.5)."""
+    return {
+        "version": THRESHOLD_VERSION,
+        "threshold": float(threshold),
+        "updated_at": float(moment),
+    }
+
+
+def _write_threshold_file(path: Path, threshold: float, moment: float) -> None:
+    """Ghi tệp phụ **nguyên tử**: tệp tạm cùng thư mục → fsync → ``os.replace``.
+
+    Cùng thư mục để ``os.replace`` là rename nội bộ một ổ đĩa (nguyên tử); ghi
+    tệp tạm ở thư mục khác có thể rơi vào trường hợp tệp đích nửa vời.
+
+    Raises:
+        OSError: không tạo/ghi/đổi tên được.
+    """
+    payload = json.dumps(
+        _build_threshold_payload(threshold, moment), ensure_ascii=False, indent=2
+    )
+    parent = path.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    tmp_name: str | None = None
+    try:
+        handle = tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(parent),
+            prefix=_THRESHOLD_TEMP_PREFIX,
+            suffix=_THRESHOLD_TEMP_SUFFIX,
+            delete=False,
+        )
+        tmp_name = handle.name
+        try:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        finally:
+            handle.close()
+        os.replace(tmp_name, path)
+        tmp_name = None
+    finally:
+        if tmp_name is not None:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+
+
+def _default_threshold_path(store: Any) -> Path | None:
+    """Suy vị trí tệp phụ từ thư mục kho; ``None`` khi kho không có thư mục.
+
+    Dùng ``store.data_dir`` nếu có (đúng như :class:`FaceStore`), nên tệp phụ
+    nằm **cạnh** ``faces.json``. Kho giả không có ``data_dir`` thì dịch vụ chỉ
+    giữ ngưỡng trong RAM như trước — persistence là tính năng thêm, không phải
+    điều kiện để dùng được lớp này.
+    """
+    data_dir = getattr(store, "data_dir", None)
+    if data_dir is None:
+        return None
+    try:
+        return Path(data_dir) / THRESHOLD_FILENAME
+    except (TypeError, ValueError):
+        return None
 
 
 def _schedule_payload(schedule: ScheduleConfig) -> dict[str, Any]:
@@ -336,6 +458,10 @@ class PeopleService:
             :meth:`put_schedule` sửa tại chỗ, để mọi bên đã chia sẻ nó —
             nhất là ``_monitor_loop`` — thấy thay đổi ngay.
         logger: logger dùng riêng (mặc định logger của module).
+        threshold_path: tệp phụ giữ ngưỡng tự suy qua lần khởi động lại.
+            ``None`` (mặc định) thì suy ra ``<data_dir của kho>/face_threshold.json``;
+            kho không có ``data_dir`` thì không bền hoá. Truyền đường dẫn cụ
+            thể để đặt chỗ khác hoặc để test.
 
     Raises:
         ValueError: tham số cấu hình không dùng được (bước rỗng, ``step_s``
@@ -353,6 +479,7 @@ class PeopleService:
         step_s: float = DEFAULT_STEP_S,
         samples_needed: int = DEFAULT_SAMPLES_NEEDED,
         schedule: ScheduleConfig | None = None,
+        threshold_path: str | os.PathLike[str] | None = None,
         logger: Any = None,
     ) -> None:
         self._store = store
@@ -367,9 +494,21 @@ class PeopleService:
             self._threshold = validate_threshold(threshold)
 
         # Ngưỡng tự suy từ dữ liệu đăng ký, chỉ có khi ``threshold`` là None
-        # và đã đăng ký đủ mẫu. Sống trong bộ nhớ: khởi động lại thì lần đăng
-        # ký kế tiếp suy lại. Giá trị trong config luôn thắng giá trị này.
+        # và đã đăng ký đủ mẫu. Giá trị trong config luôn thắng giá trị này.
+        #
+        # Ngưỡng **bền qua lần khởi động lại**: đọc từ tệp phụ cạnh kho. Không
+        # có tệp / tệp hỏng / sai phiên bản → chạy tiếp với ``None`` (giữ
+        # nguyên hành vi cũ: mọi quan sát ``UNKNOWN``), chỉ một dòng cảnh báo.
+        # Không bao giờ ném từ đây (spec §11.3): dashboard phải dậy được.
         self._auto_threshold: float | None = None
+        derived_path = _default_threshold_path(self._store)
+        if threshold_path is not None:
+            try:
+                derived_path = Path(threshold_path)
+            except (TypeError, ValueError):
+                derived_path = None
+        self._threshold_path: Path | None = derived_path
+        self._load_auto_threshold()
 
         self._steps = _as_steps(steps)
         step_value = float(step_s)
@@ -829,14 +968,86 @@ class PeopleService:
             len(record["sampled_steps"]),
         )
 
+    def _load_auto_threshold(self) -> None:
+        """Nạp ngưỡng tự suy đã lưu ở lần chạy trước; không bao giờ ném.
+
+        Thứ tự ưu tiên (spec yêu cầu): ``face.match_threshold`` trong config
+        **luôn thắng**. Vì vậy khi ``self._threshold`` có giá trị thì hàm này
+        không đọc tệp: ngưỡng lưu trên đĩa không thể thay đổi kết luận, nên
+        đọc chỉ tốn I/O và có thể sinh cảnh báo gây nhiễu. Ngược lại, đây là
+        đường **duy nhất** để ngưỡng tự suy sống qua restart — nếu bỏ nó,
+        ``_classify`` thấy ``effective is None`` và trả ``UNKNOWN`` cho mọi
+        khung, khiến cảnh báo "người khác vào học hộ" im lặng vĩnh viễn.
+
+        Mọi trục trặc của tệp (thiếu, JSON rác, sai phiên bản, ngưỡng ngoài
+        ``[-1, 1]``/không hữu hạn, không đọc được) đều kết thúc bằng **một**
+        dòng cảnh báo và chế độ "chưa có ngưỡng". Không ném: dashboard và
+        vòng lặp giám sát không được chết vì một tệp phụ (spec §11.3, §11.4).
+        """
+        if self._threshold is not None or self._threshold_path is None:
+            return
+        path = self._threshold_path
+        try:
+            if not path.exists():
+                return
+            text = path.read_text(encoding="utf-8")
+            payload = json.loads(text)
+            value = _parse_threshold_payload(payload)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            self._log.warning(
+                "Bỏ qua ngưỡng nhận diện đã lưu ở '%s': %s. Chạy tiếp không "
+                "có ngưỡng tự suy cho tới lần đăng ký kế tiếp.",
+                path,
+                exc,
+            )
+            return
+        self._auto_threshold = value
+        self._log.info(
+            "Đã nạp lại ngưỡng nhận diện khuôn mặt %.2f từ '%s'.", value, path
+        )
+
+    def _save_auto_threshold(self, threshold: float) -> None:
+        """Ghi ngưỡng tự suy xuống tệp phụ; lỗi ghi chỉ cảnh báo, không ném.
+
+        Lỗi ghi (thẻ nhớ đầy, quyền) không được làm hỏng buổi đăng ký vừa
+        thành công: ngưỡng vẫn dùng được trong RAM phiên này, chỉ mất tính
+        bền. Vì vậy :class:`OSError` bị nuốt sau khi log.
+        """
+        path = self._threshold_path
+        if path is None:
+            return
+        try:
+            _write_threshold_file(path, threshold, self._clock())
+        except OSError as exc:
+            self._log.warning(
+                "Không lưu được ngưỡng nhận diện vào '%s': %s. Ngưỡng vẫn "
+                "dùng được trong phiên này nhưng sẽ mất khi khởi động lại.",
+                path,
+                exc,
+            )
+            return
+        self._log.info("Đã lưu ngưỡng nhận diện khuôn mặt vào '%s'.", path)
+
     def _derive_auto_threshold(self, samples: Sequence[np.ndarray]) -> None:
-        """Suy ngưỡng từ các mẫu vừa đăng ký và giữ trong bộ nhớ.
+        """Suy ngưỡng từ các mẫu vừa đăng ký, ghi xuống tệp phụ và giữ trong RAM.
 
         Chỉ chạy khi ``self._threshold is None`` (config không đặt tay).
         Không đủ mẫu để suy thì **giữ nguyên** trạng thái chưa có ngưỡng và
-        ghi log lý do — tuyệt đối không điền một con số bịa. Ngưỡng này
-        **không** được ghi xuống kho (kho chỉ chứa vector, spec §5.13.1);
-        khởi động lại sẽ mất cho tới lần đăng ký kế tiếp.
+        ghi log lý do — tuyệt đối không điền một con số bịa.
+
+        Ngưỡng **không** được ghi vào ``faces.json``: kho chỉ chứa vector
+        (spec §5.13.1) và là hợp đồng đã có test. Nó sống ở **tệp phụ** cạnh
+        kho (:data:`THRESHOLD_FILENAME`) để cảnh báo "người khác vào học hộ"
+        vẫn hoạt động sau mỗi lần khởi động lại Pi.
+
+        Đăng ký lại (người khác hoặc chính người cũ) suy ra ngưỡng mới và
+        **ghi đè** tệp phụ: ngưỡng phản ánh dữ liệu mới nhất trên thiết bị.
+
+        ``delete_person`` xoá người cuối cùng **không** xoá tệp phụ: ngưỡng
+        chỉ là con số cosine, không định danh ai; kho rỗng thì ``_classify``
+        đã trả "Chưa có ai được đăng ký trên thiết bị này" trước khi chạm tới
+        ngưỡng, nên trạng thái đó vô hại. Giữ tệp phụ còn tránh một trạng
+        thái nửa vời khác: xoá nhầm người rồi đăng ký lại mà phải chờ suy lại.
         """
         derived = derive_threshold(samples)
         if derived is None:
@@ -847,9 +1058,11 @@ class PeopleService:
             )
             return
         self._auto_threshold = derived
+        self._save_auto_threshold(derived)
         self._log.info(
             "Đã tự suy ngưỡng nhận diện khuôn mặt %.2f từ dữ liệu đăng ký "
-            "(%d mẫu, khoảng cách an toàn %.2f); giữ tới khi khởi động lại.",
+            "(%d mẫu, khoảng cách an toàn %.2f); lưu lại cho lần khởi động kế "
+            "tiếp.",
             derived,
             len(samples),
             AUTO_THRESHOLD_MARGIN,
