@@ -136,6 +136,17 @@ sensors:
   ultrasonic_enabled: true
   min_distance_cm: 35
 
+# Ngưỡng trạng thái hiện diện ("người còn ngồi trước bàn không").
+# Module: src/posture_monitor/presence.py.
+# CHỈ có tác dụng khi 'schedule.enabled: true': vòng lặp chỉ dùng giá trị này
+# để điền 'held' cho cảnh báo "rời khung hình" trong giờ học. Khi giờ học
+# đang tắt (mặc định) nó không đổi hành vi gì.
+presence:
+  absent_grace_s: 3.0    # số giây vắng LIÊN TỤC trước khi coi là đã rời khung
+                         # (khớp presence.DEFAULT_ABSENT_HOLD_S). Đây là bộ
+                         # lọc nhiễu, khác 'schedule.kinds.leave_frame.hold_s'
+                         # (5 s) — điều kiện phải giữ đủ lâu mới thành cảnh báo.
+
 # Nhận diện khuôn mặt (YuNet phát hiện + SFace đặc trưng — spec V3 §5.13, §6).
 # Mặc định TẮT vì 'match_threshold' còn null: ngưỡng cosine phải được ĐO trên
 # dữ liệu thật của chính dự án rồi mới điền vào (spec §5.13, §14 bước H).

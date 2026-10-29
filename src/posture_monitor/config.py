@@ -272,6 +272,19 @@ class SensorsConfig:
 
 
 @dataclass
+class PresenceConfig:
+    """Mục ``presence``: ngưỡng cho bộ lọc trạng thái hiện diện.
+
+    ``absent_grace_s`` khớp ``presence.DEFAULT_ABSENT_HOLD_S``: số giây vắng
+    **liên tục** trước khi coi là đã rời khung. Giá trị này chỉ được
+    ``__main__.py`` đọc rồi truyền vào ``PresenceTracker(absent_hold_s=...)``;
+    ``presence.py`` không import module này (ngưỡng là tham số constructor).
+    """
+
+    absent_grace_s: float = 3.0
+
+
+@dataclass
 class StorageConfig:
     db_path: str = "data/posture.db"
     retention_days: int = 30
@@ -298,6 +311,9 @@ class Config:
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     hardware: HardwareConfig = field(default_factory=HardwareConfig)
     sensors: SensorsConfig = field(default_factory=SensorsConfig)
+    #: Ngưỡng trạng thái hiện diện (``presence``); chỉ tác dụng khi
+    #: ``schedule.enabled: true`` (xem ``config.yaml``).
+    presence: PresenceConfig = field(default_factory=PresenceConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     web: WebConfig = field(default_factory=WebConfig)
     #: Nhận diện khuôn mặt (``face``); mặc định TẮT vì chưa đo ngưỡng.
@@ -975,6 +991,27 @@ def _parse_sensors(raw: Any) -> SensorsConfig:
     return cfg
 
 
+def _parse_presence(raw: Any) -> PresenceConfig:
+    """Nạp mục ``presence`` (tuỳ chọn; thiếu mục = dùng mặc định).
+
+    Giữ tinh thần của :func:`_parse_sensors`: giá trị vô lý bị từ chối ngay
+    lúc nạp thay vì để ``PresenceTracker`` ném ``ValueError`` giữa vòng lặp
+    camera.
+    """
+    data = _as_dict(raw, "presence")
+    cfg = PresenceConfig(
+        absent_grace_s=_get_float(
+            data,
+            "absent_grace_s",
+            PresenceConfig.absent_grace_s,
+            "presence",
+        ),
+    )
+    if cfg.absent_grace_s < 0:
+        raise ConfigError("'presence.absent_grace_s' không được âm.")
+    return cfg
+
+
 def _parse_storage(raw: Any) -> StorageConfig:
     data = _as_dict(raw, "storage")
     cfg = StorageConfig(
@@ -1307,6 +1344,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         alerts=_parse_alerts(raw.get("alerts")),
         hardware=_parse_hardware(raw.get("hardware")),
         sensors=_parse_sensors(raw.get("sensors")),
+        presence=_parse_presence(raw.get("presence")),
         storage=_parse_storage(raw.get("storage")),
         web=_parse_web(raw.get("web")),
         face=_parse_face(raw.get("face")),

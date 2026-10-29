@@ -28,9 +28,11 @@ import sys
 import threading
 import time
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from . import __version__
 from .capture import capture_from_config
@@ -455,6 +457,8 @@ def _monitor_loop(
     dispatcher=None,
     stream_enabled=False,
     people=None,
+    clock=None,
+    wall_clock=None,
 ) -> int:
     """Vòng lặp giám sát: đọc khung → pose → đặc trưng → phân loại → trạng thái.
 
@@ -474,6 +478,17 @@ def _monitor_loop(
     - ``people`` (dịch vụ người học) nhận khung qua ``observe`` và tín hiệu
       presence/phone qua ``update_signals``; mỗi lời gọi được bọc ``try`` và
       chỉ **ghi log**, vì lỗi của tính năng mới không được làm chết camera.
+    - Cảnh báo trong giờ học: ``PresenceTracker`` + ``PhoneSignal`` →
+      ``held`` → ``schedule.should_alert`` → ``SpeakerAlerter``. Toàn bộ khối
+      nằm trong ``try`` vì cùng lý do trên.
+
+    Args:
+        clock: hàm trả giây đơn điệu (mặc định ``time.monotonic``). Dùng cho
+            các bộ lọc thời gian (presence/phone), **không** dùng cho cổng
+            giờ học.
+        wall_clock: hàm trả ``datetime`` cho ``schedule.should_alert`` (mặc
+            định ``datetime.now``). Hai đồng hồ khác nhau: ``held`` là khoảng
+            thời gian, ``last_alert_at`` là datetime.
     """
     from .calibration import (  # noqa: PLC0415 - chỉ nhánh này cần
         DEFAULT_PATH,
@@ -542,6 +557,96 @@ def _monitor_loop(
 
     #: Số lần dịch vụ người học ném lỗi; chỉ log lần đầu (xem vòng lặp).
     people_errors = 0
+
+    # -- cảnh báo trong giờ học ------------------------------------------
+    # Ba mảnh được nối ở đây, **một lần** ngoài vòng lặp: bộ lọc thời gian
+    # (PresenceTracker), bộ phát hiện điện thoại (PhoneSignal) và loa
+    # (SpeakerAlerter). Quyết định "lúc này có nên báo không" thuộc
+    # ``schedule.should_alert`` — alerter không tự đếm cooldown lần nữa.
+    #
+    # ``presence.py`` cố ý không import ``config.py`` (ngưỡng là tham số
+    # constructor), nên tầng này là nơi duy nhất đọc ``config.presence``.
+    from . import schedule as schedule_mod  # noqa: PLC0415
+    from .presence import (
+        DEFAULT_ABSENT_HOLD_S,
+        PresenceTracker,
+    )  # noqa: PLC0415
+    from .phone_detector import PhoneSignal  # noqa: PLC0415
+    from .speaker_alert import SpeakerAlerter  # noqa: PLC0415
+
+    alert_clock = clock if clock is not None else time.monotonic
+    alert_wall_clock = wall_clock if wall_clock is not None else datetime.now
+    schedule_cfg = getattr(config, "schedule", None)
+
+    presence_tracker = None
+    phone_signal = None
+    speaker_alerter = None
+    alert_errors = 0
+    try:
+        presence_cfg = getattr(config, "presence", None)
+        presence_tracker = PresenceTracker(
+            absent_hold_s=(
+                presence_cfg.absent_grace_s
+                if presence_cfg is not None
+                else DEFAULT_ABSENT_HOLD_S
+            ),
+            kp_conf_min=kp_conf_min,
+            clock=alert_clock,
+        )
+    except Exception as exc:  # noqa: BLE001 - spec §11.3
+        logger.warning(
+            "Không dựng được bộ theo dõi hiện diện (%s); cảnh báo 'rời "
+            "khung hình' sẽ không chạy. Các chức năng khác vẫn chạy.",
+            exc,
+        )
+    try:
+        # Thiếu trọng số không làm hỏng ở đây: PhoneDetector nạp lười, lỗi
+        # chỉ hiện ở lần detect đầu và PhoneSignal tự tắt tính năng.
+        phone_signal = PhoneSignal(config)
+    except Exception as exc:  # noqa: BLE001 - spec §11.3
+        logger.warning(
+            "Không dựng được bộ phát hiện điện thoại (%s); cảnh báo 'dùng "
+            "điện thoại' sẽ không chạy. Các chức năng khác vẫn chạy.",
+            exc,
+        )
+    try:
+        speaker_alerter = SpeakerAlerter.from_config(config)
+        if speaker_alerter.available:
+            # Chỉ sinh WAV khi thật sự có loa: không có loa thì không phát
+            # được, và việc gọi ``espeak-ng`` ở đây là I/O vô ích.
+            speaker_alerter.prepare()
+    except Exception as exc:  # noqa: BLE001 - spec §11.3
+        speaker_alerter = None
+        logger.warning(
+            "Không dựng được loa cảnh báo (%s); cảnh báo trong giờ học chỉ "
+            "được ghi log. Các chức năng khác vẫn chạy.",
+            exc,
+        )
+
+    #: Mốc cảnh báo gần nhất **của từng loại**, dạng datetime cùng dạng với
+    #: ``now``. ``schedule.should_alert`` chỉ áp cooldown khi khóa này có mặt;
+    #: thiếu nó thì mỗi khung đều đủ điều kiện và loa kêu liên tục.
+    last_alert_at: dict[str, datetime] = {}
+
+    def _keypoints_array(pose_result):
+        """Ghép ``(17, 3)`` [x, y, conf] từ ``pose.xy``/``pose.conf``.
+
+        ``PhoneSignal.observe`` cần cả ba cột; ``PoseResult`` giữ hai mảng
+        riêng. Không có pose thì trả ``None`` để dịch vụ biết khung này không
+        xét được (xem ``_usable_keypoints``).
+        """
+        if pose_result is None:
+            return None
+        try:
+            return np.concatenate(
+                (
+                    np.asarray(pose_result.xy, dtype=float),
+                    np.asarray(pose_result.conf, dtype=float).reshape(-1, 1),
+                ),
+                axis=1,
+            )
+        except (AttributeError, TypeError, ValueError):
+            return None
 
     #: Cửa sổ xem trước còn dùng được không. Không phải máy nào cũng có
     #: display/backend Qt lành: trên Pi qua xrdp, thiếu thư mục font làm Qt
@@ -682,6 +787,60 @@ def _monitor_loop(
                             "Dịch vụ người học lỗi khi nhận khung (%s); vẫn "
                             "giám sát, chỉ tính năng người học bị ảnh hưởng. "
                             "Các lỗi sau không ghi log để tránh ngập log.",
+                            exc,
+                        )
+
+            # Cảnh báo trong giờ học: presence + phone → ``held`` →
+            # ``schedule.should_alert`` → loa. Mọi lỗi ở đây bị nuốt và chỉ
+            # ghi log lần đầu, đúng lý do của khối ``people`` phía trên.
+            if schedule_cfg is not None and (
+                presence_tracker is not None
+                or phone_signal is not None
+                or speaker_alerter is not None
+            ):
+                try:
+                    alert_now = alert_clock()
+                    held: dict[str, float] = {}
+                    if presence_tracker is not None:
+                        presence_result = presence_tracker.update(pose)
+                        held["leave_frame"] = presence_result.absent_for_s
+                    if phone_signal is not None:
+                        phone_result = phone_signal.observe(
+                            frame, _keypoints_array(pose), alert_now
+                        )
+                        # ``observe`` trả ``None`` khi keypoint không dùng
+                        # được (vd. người quay lưng), và khi đó ``_held_s``
+                        # ĐỨNG YÊN ở giá trị cũ. Đọc thẳng ``held_s`` nghĩa
+                        # là coi người vừa quay lưng là "đã chạm 10 giây" mãi
+                        # mãi — một lỗi im lặng. Vì vậy chỉ tin ``held_s`` khi
+                        # lần quan sát này thực sự có kết quả.
+                        held["phone"] = (
+                            phone_signal.held_s
+                            if phone_result is not None
+                            else 0.0
+                        )
+
+                    decision = schedule_mod.should_alert(
+                        schedule_cfg,
+                        alert_wall_clock(),
+                        held=held,
+                        last_alert_at=last_alert_at,
+                    )
+                    if decision is not None:
+                        if speaker_alerter is not None:
+                            speaker_alerter.alert(decision.kind, now=alert_now)
+                        # Chỉ cập nhật sau khi đã phát: ``should_alert`` không
+                        # có cooldown nào nếu ``last_alert_at`` rỗng, nên quên
+                        # dòng này nghĩa là loa kêu ở MỌI khung.
+                        last_alert_at[decision.kind] = alert_wall_clock()
+                except Exception as exc:  # noqa: BLE001 - spec §11.3
+                    alert_errors += 1
+                    if alert_errors == 1:
+                        logger.warning(
+                            "Tính năng cảnh báo trong giờ học lỗi khi xử lý "
+                            "khung (%s); vẫn giám sát, chỉ cảnh báo bị ảnh "
+                            "hưởng. Các lỗi sau không ghi log để tránh ngập "
+                            "log.",
                             exc,
                         )
 
