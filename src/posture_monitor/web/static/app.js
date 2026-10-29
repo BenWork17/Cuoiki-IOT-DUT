@@ -60,11 +60,20 @@
 
   /* ---- Thẻ "Trạng thái học" ---------------------------------------- */
 
-  /* Biểu tượng + nhãn chữ đi cùng màu: màu không bao giờ là kênh duy nhất. */
-  var PRESENCE_TEXT = { present: "Có mặt", absent: "Vắng mặt" };
-  var PRESENCE_ICON = { present: "●", absent: "○" };
-  var PHONE_TEXT = { none: "Không dùng", use: "Đang dùng" };
-  var PHONE_ICON = { none: "✓", use: "!" };
+  /* Biểu tượng + nhãn chữ đi cùng màu: màu không bao giờ là kênh duy nhất.
+   *
+   * Khoá của các bảng phải là **đúng giá trị server gửi**, không phải khoá
+   * CSS: `presence.py` trả "co_mat"/"vang_mat", còn phone là "dung"/
+   * "khong_dung" (xem `people_service.note_phone`). Bản cũ tra "present"/
+   * "absent" nên dòng "Có mặt" không bao giờ hiện chữ của mình.
+   * Giá trị của bảng *_STATE mới là khoá CSS trong `style.css`; tách riêng
+   * để đổi tên phía server không kéo theo đổi giao diện. */
+  var PRESENCE_TEXT = { co_mat: "Có mặt", vang_mat: "Vắng mặt" };
+  var PRESENCE_ICON = { co_mat: "●", vang_mat: "○" };
+  var PRESENCE_STATE = { co_mat: "present", vang_mat: "absent" };
+  var PHONE_TEXT = { khong_dung: "Không dùng", dung: "Đang dùng" };
+  var PHONE_ICON = { khong_dung: "✓", dung: "!" };
+  var PHONE_STATE = { khong_dung: "none", dung: "use" };
   var IDENTITY_TEXT = {
     MATCH: "Đúng người",
     MISMATCH: "Khác người",
@@ -75,6 +84,16 @@
   /* Câu bắt buộc khi tín hiệu không còn mới (§5.16). Không được thay bằng
    * kết luận cũ: người dùng sẽ tưởng hệ thống vừa đo. */
   var NO_FRESH_TEXT = "Chưa có dữ liệu mới";
+
+  /* Giá trị server gửi mà giao diện không có nhãn cho nó. KHÔNG được im
+   * lặng thay bằng "Chưa rõ": như thế một giá trị mới của server (hoặc một
+   * lỗi đánh máy) trông y như "chưa đo được" và không ai biết để sửa. Hiện
+   * nguyên giá trị thô kèm nhãn đánh dấu; giá trị rỗng thì nói rõ là rỗng. */
+  function unknownText(rawState) {
+    var shown = rawState === null || rawState === undefined ? "" : String(rawState);
+    if (!shown) return "Chưa rõ (server không gửi giá trị)";
+    return "Chưa rõ (" + shown + ")";
+  }
 
   function formatAge(seconds) {
     if (seconds === null || seconds === undefined) return "—";
@@ -94,18 +113,18 @@
     if (kind === "presence") {
       var known = Object.prototype.hasOwnProperty.call(PRESENCE_TEXT, state);
       return {
-        text: known ? PRESENCE_TEXT[state] : "Chưa rõ",
+        text: known ? PRESENCE_TEXT[state] : unknownText(data.state),
         icon: known ? PRESENCE_ICON[state] : "•",
-        state: known ? state : "unknown",
+        state: known ? PRESENCE_STATE[state] : "unknown",
         age: formatAge(data.age_s)
       };
     }
     if (kind === "phone") {
       var phoneKnown = Object.prototype.hasOwnProperty.call(PHONE_TEXT, state);
       return {
-        text: phoneKnown ? PHONE_TEXT[state] : "Chưa rõ",
+        text: phoneKnown ? PHONE_TEXT[state] : unknownText(data.state),
         icon: phoneKnown ? PHONE_ICON[state] : "•",
-        state: phoneKnown ? state : "unknown",
+        state: phoneKnown ? PHONE_STATE[state] : "unknown",
         age: formatAge(data.age_s)
       };
     }
@@ -114,7 +133,7 @@
       IDENTITY_TEXT,
       upper
     );
-    var label = identityKnown ? IDENTITY_TEXT[upper] : "Chưa rõ";
+    var label = identityKnown ? IDENTITY_TEXT[upper] : unknownText(data.state);
     if (identityKnown && upper === "MATCH" && data.name) {
       label += " (" + data.name + ")";
     }

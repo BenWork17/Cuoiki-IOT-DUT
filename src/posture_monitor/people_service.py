@@ -120,6 +120,12 @@ IDENTITY_UNKNOWN = "UNKNOWN"
 #: Trạng thái "chưa từng có dữ liệu" cho presence/phone.
 STATE_NO_DATA = "chua_co_du_lieu"
 
+#: Hai kết quả của tín hiệu điện thoại. Tên có dấu gạch dưới cho khớp
+#: ``presence.STATE_PRESENT``/``STATE_ABSENT`` (cũng là chuỗi tiếng Việt không
+#: dấu), để hai nửa của cùng thẻ "Trạng thái học" dùng chung một quy ước.
+PHONE_STATE_NONE = "khong_dung"
+PHONE_STATE_USE = "dung"
+
 #: Tuổi tối đa mặc định của từng tín hiệu trước khi bị coi là cũ.
 #:
 #: Presence/phone do vòng lặp cập nhật mỗi khung nên 3 s là rộng rãi; danh
@@ -522,6 +528,28 @@ class PeopleService:
                 self._presence = {"state": str(presence), "updated_at": moment}
             if phone is not None:
                 self._phone = {"state": str(phone), "updated_at": moment}
+
+    def note_phone(self, state: str, now: float | None = None) -> None:
+        """Ghi **riêng** tín hiệu điện thoại; tương đương ``phone=`` của
+        :meth:`update_signals`.
+
+        Có mặt để vòng lặp gọi được tín hiệu điện thoại mà không phải chạm
+        vào ``update_signals``. Lý do là một lỗi thật đã xảy ra: vòng lặp chỉ
+        gọi ``update_signals(presence=..., now=...)``, thiếu ``phone=``, nên
+        dashboard vĩnh viễn hiện "chưa có dữ liệu" cho dòng điện thoại trong
+        khi loa vẫn đọc câu "cất điện thoại" — hai nguồn sự thật rời nhau.
+
+        Args:
+            state: một trong :data:`PHONE_STATE_NONE` / :data:`PHONE_STATE_USE`
+                (hoặc chuỗi khác do tầng gọi tự định nghĩa; lớp này không
+                kiểm tra để không khoá cứng từ vựng của UI).
+            now: mốc ``clock``; mặc định lấy từ ``clock`` của dịch vụ. Phải
+                cùng gốc với ``observe``/``signals`` (``time.monotonic``),
+                không phải ``now`` tương đối của vòng lặp.
+        """
+        moment = self._clock() if now is None else float(now)
+        with self._lock:
+            self._phone = {"state": str(state), "updated_at": moment}
 
     # ------------------------------------------------------------------
     # áp dụng kết quả nhận diện
