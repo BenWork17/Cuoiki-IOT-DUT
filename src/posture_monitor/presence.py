@@ -120,7 +120,7 @@ def count_upper_keypoints(pose: Any, kp_conf_min: float) -> int:
         return 0
     try:
         conf_array = np.asarray(conf, dtype=float).reshape(-1)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
     if conf_array.size < len(_UPPER_BODY_KEYPOINTS):
@@ -130,7 +130,7 @@ def count_upper_keypoints(pose: Any, kp_conf_min: float) -> int:
 
     try:
         threshold = float(kp_conf_min)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
     if not math.isfinite(threshold):
         return 0
