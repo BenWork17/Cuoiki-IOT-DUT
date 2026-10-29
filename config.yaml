@@ -112,6 +112,14 @@ timing:
 alerts:
   buzzer_enabled: true
   vibration_enabled: true
+  # Tắt theo mặc định vì chủ đề này không chấm điểm tư thế. Bật lên ('true')
+  # chỉ khi thực sự muốn cảnh báo bằng GPIO (kêu/rung); LED vẫn cập nhật
+  # trạng thái khi tắt.
+  gpio_alert_enabled: false
+
+# Nhãn tư thế vẫn được tính (để hiển thị/debug) nhưng không sinh cảnh báo;
+# ABSENT không bị ảnh hưởng — cảnh báo "đi ra khỏi khung hình" vẫn cần nó.
+posture_labels_enabled: false
 
 hardware:
   mock: auto             # auto | true | false
