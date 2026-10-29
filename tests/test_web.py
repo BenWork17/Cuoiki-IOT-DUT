@@ -472,3 +472,112 @@ def test_trang_chu_an_nut_stream_chua_bat(tmp_path, state):
     client = make_client(make_config(tmp_path / "p.db"), state)
     html = client.get("/").get_data(as_text=True)
     assert 'data-stream-enabled="0"' in html
+
+
+def test_trang_chu_hien_camera_khi_bat_stream(tmp_path, state):
+    """Bật stream thì trang chủ phải có thẻ <img> trỏ tới /stream.
+
+    Kiểm tra nội dung thật, không chỉ mã 200: một trang 200 mà không có thẻ
+    ảnh thì người dùng vẫn không thấy camera.
+    """
+    client = make_client(make_config(tmp_path / "p.db", stream_enabled=True), state)
+    response = client.get("/")
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'data-stream-enabled="1"' in html
+    assert 'id="camera-stream"' in html
+    assert 'src="/stream"' in html
+    # Có lời nhắn dự phòng tiếng Việt cho lúc chưa có hình/mất kết nối.
+    assert 'id="camera-note"' in html
+
+
+def test_trang_chu_khong_co_anh_khi_stream_tat(tmp_path, state):
+    client = make_client(make_config(tmp_path / "p.db", stream_enabled=False), state)
+    html = client.get("/").get_data(as_text=True)
+    assert 'id="camera-stream"' not in html
+    assert "Xem trực tiếp đang tắt" in html
+
+
+def test_stream_mat_camera_giua_chung_khong_sap(tmp_path, state, monkeypatch):
+    """Camera đứt giữa luồng: /stream trả placeholder thay vì lặp khung cũ.
+
+    Đọc có giới hạn thời gian: nếu bản sửa bị gỡ (lặp lại khung cuối mãi
+    mãi), khung thứ hai không bao giờ tới và test đỏ bằng assertion thay vì
+    treo cả lượt chạy.
+    """
+    import threading
+
+    from posture_monitor.web import app as web_app
+
+    monkeypatch.setattr(web_app, "STREAM_POLL_S", 0.01)
+
+    client = make_client(make_config(tmp_path / "p.db", stream_enabled=True), state)
+    state.set_frame(b"\xff\xd8khungcu")
+    response = client.get("/stream", buffered=False)
+    chunks = iter(response.response)
+    assert b"khungcu" in next(chunks)
+
+    # Vòng lặp chính đã chết: chỉ còn khung cũ, không có khung mới.
+    box = {}
+
+    def _read_next():
+        try:
+            box["chunk"] = next(chunks)
+        except Exception as exc:  # noqa: BLE001 - chuyển nguyên nhân cho assert
+            box["error"] = exc
+
+    reader = threading.Thread(target=_read_next, daemon=True)
+    reader.start()
+    # Chờ tối đa 6 giây — STREAM_WAIT_S mặc định là 2 giây, dư thoải mái.
+    reader.join(timeout=6.0)
+    response.close()
+
+    assert not reader.is_alive(), (
+        "/stream treo khi không có khung mới — camera đứt phải có placeholder"
+    )
+    assert "error" not in box, f"luồng stream ném lỗi: {box.get('error')!r}"
+    assert "Chưa có khung hình".encode("utf-8") in box["chunk"]
+
+
+def test_stream_khong_ghi_anh_ra_dia(tmp_path, state, monkeypatch):
+    """Luồng stream chỉ đẩy byte qua bộ nhớ: không có đường ghi ảnh.
+
+    Chứng minh bằng ba lớp, không phải bằng chú thích:
+
+    1. Gài bẫy lên ``cv2.imwrite`` — mọi lời gọi bị ghi lại.
+    2. Chạy cả ``/stream`` trong thư mục làm việc tạm và soát **mọi** file
+       mới sinh (kể cả ``data/``), không chỉ ``tmp_path``.
+    3. Đặt khung thật và khẳng định byte đi ra nguyên vẹn, để test không
+       xanh nhờ không có gì chạy cả.
+    """
+    import cv2
+
+    calls = []
+    monkeypatch.setattr(cv2, "imwrite", lambda *a, **k: calls.append(a))
+    monkeypatch.chdir(tmp_path)
+    before = {p for p in tmp_path.rglob("*") if p.is_file()}
+
+    client = make_client(make_config(tmp_path / "p.db", stream_enabled=True), state)
+    state.set_frame(b"\xff\xd8khongluu")
+    response = client.get("/stream", buffered=False)
+    chunk = next(iter(response.response))
+    response.close()
+
+    assert b"khongluu" in chunk, "phải nhận được đúng khung đã đặt"
+    assert calls == [], "đường stream không được gọi cv2.imwrite"
+    after = {p for p in tmp_path.rglob("*") if p.is_file()}
+    new_files = sorted(after - before)
+    assert new_files == [], f"stream không được ghi file: {new_files}"
+
+
+def test_config_repo_bat_stream_mac_dinh():
+    """``config.yaml`` trong repo phải bật stream: web hiển thị camera là
+    chức năng chính, không phải tuỳ chọn.
+
+    Đọc thẳng file được commit (không phải ``WebConfig`` mặc định trong mã):
+    chính cái người dùng nạp lúc chạy mới là thứ quyết định.
+    """
+    from posture_monitor.config import load_config
+
+    config = load_config(_REPO_ROOT / "config.yaml")
+    assert config.web.stream_enabled is True

@@ -113,7 +113,11 @@ storage:
 web:
   host: 0.0.0.0
   port: 8000
-  stream_enabled: false
+  # Bật sẵn: web server phải hiển thị được luồng camera (chức năng chính).
+  # Khung hình chỉ đi qua bộ nhớ (DashboardState) rồi tới trình duyệt trong
+  # LAN — KHÔNG ghi xuống đĩa, KHÔNG lưu lịch sử ảnh. Spec v2 §11.5 cấm
+  # lưu/truyền ảnh; hiển thị trực tiếp, không lưu, là việc khác.
+  stream_enabled: true
 
 # Giờ học quy định: chỉ phát cảnh báo trong các khung giờ dưới đây.
 # Module quyết định: src/posture_monitor/schedule.py. Mặc định TẮT (enabled:

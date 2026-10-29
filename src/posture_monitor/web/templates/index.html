@@ -24,6 +24,34 @@
       <p class="sub" id="updated">Đang tải trạng thái…</p>
     </header>
 
+    <!-- Xem trực tiếp: khung hình chỉ đi qua bộ nhớ (DashboardState) rồi tới
+         trình duyệt — không ghi ra đĩa, không lưu lịch sử ảnh (spec v2
+         §11.5). Khi stream tắt hoặc camera hỏng, app.js thay ảnh bằng thông
+         báo tiếng Việt và tự thử lại. -->
+    {% if stream_enabled %}
+    <section id="camera-card" class="card camera-card">
+      <h2>Xem trực tiếp</h2>
+      <div class="camera-frame">
+        <img id="camera-stream" class="camera-img"
+             src="{{ url_for('stream') }}"
+             alt="Luồng camera trực tiếp" hidden>
+        <p id="camera-note" class="camera-note" role="status">
+          Đang kết nối tới camera…
+        </p>
+      </div>
+    </section>
+    {% else %}
+    <section id="camera-card" class="card camera-card">
+      <h2>Xem trực tiếp</h2>
+      <div class="camera-frame">
+        <p id="camera-note" class="camera-note">
+          Xem trực tiếp đang tắt. Bật <code>web.stream_enabled: true</code>
+          trong <code>config.yaml</code> rồi khởi động lại để xem camera.
+        </p>
+      </div>
+    </section>
+    {% endif %}
+
     <!-- Thẻ trạng thái: màu + biểu tượng + nhãn chữ, không dựa vào màu đơn
          thuần để truyền đạt. -->
     <section id="status-card" class="card status status--unknown" aria-live="polite">
@@ -125,8 +153,8 @@
       <h2>Ghi chú</h2>
       <ul>
         <li>Hệ thống chỉ lưu <strong>số liệu</strong>; không lưu ảnh, không lưu video.</li>
-        <li>Xem trực tiếp (stream) mặc định <strong>tắt</strong> vì tốn CPU và ảnh
-          hưởng quyền riêng tư.</li>
+        <li>Xem trực tiếp chỉ hiển thị trong LAN và <strong>không lưu</strong>
+          ảnh/video: khung hình đi qua bộ nhớ rồi hết, không ghi ra đĩa.</li>
         <li>Dashboard chỉ dùng trong mạng LAN, <strong>không mở ra Internet</strong>.</li>
       </ul>
     </section>

@@ -530,7 +530,13 @@ def create_app(
 
     @app.get("/stream")
     def stream() -> Response:
-        """MJPEG camera; **tắt mặc định** vì tốn CPU và ảnh hưởng riêng tư."""
+        """MJPEG camera, phục vụ từ khung mới nhất **trong bộ nhớ**.
+
+        Khung hình đi thẳng ``DashboardState`` → trình duyệt: không ghi ra
+        đĩa, không lưu lịch sử ảnh (spec v2 §11.5 cấm *lưu/truyền* ảnh;
+        hiển thị trực tiếp trong LAN, không lưu, là việc khác). Bật/tắt bằng
+        ``web.stream_enabled``; tắt thì trả 403 kèm thông điệp tiếng Việt.
+        """
         if not stream_enabled:
             return _json_error(
                 "Tính năng xem trực tiếp đang tắt. Bật 'web.stream_enabled: "
@@ -555,19 +561,28 @@ def create_app(
 def _mjpeg(dashboard: DashboardState):
     """Sinh luồng MJPEG từ khung mới nhất của vòng lặp chính.
 
-    Nếu chưa có khung nào trong ``STREAM_WAIT_S`` giây, trả placeholder một
-    lần rồi tiếp tục chờ — không treo im lặng và không tự mở camera.
+    Nếu chưa có khung nào — hoặc không có khung **mới** trong
+    ``STREAM_WAIT_S`` giây — trả placeholder rồi tiếp tục chờ. Không treo im
+    lặng và không tự mở camera.
+
+    Placeholder khi khung cũ là cố ý: lặp lại khung cuối mãi mãi sẽ hiện một
+    ảnh đứng mà người xem tưởng vẫn là hình sống. Camera đứt giữa chừng phải
+    nhìn ra được.
     """
     boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+    placeholder = (
+        b"--frame\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
+        + "Chưa có khung hình từ camera.\r\n".encode("utf-8")
+    )
     seq = 0
     while True:
-        seq, frame = dashboard.wait_frame(seq)
-        if frame is None:
-            yield (
-                b"--frame\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
-                + "Chưa có khung hình từ camera.\r\n".encode("utf-8")
-            )
+        new_seq, frame = dashboard.wait_frame(seq)
+        if frame is None or new_seq == seq:
+            # Không có khung nào, hoặc hết giờ chờ mà chưa có khung mới.
+            yield placeholder
+            seq = new_seq
             continue
+        seq = new_seq
         yield boundary + frame + b"\r\n"
 
 

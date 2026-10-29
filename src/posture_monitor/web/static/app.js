@@ -32,6 +32,8 @@
     chartEmpty: document.getElementById("chart-empty"),
     caption: document.getElementById("chart-caption"),
     table: document.getElementById("chart-table"),
+    camera: document.getElementById("camera-stream"),
+    cameraNote: document.getElementById("camera-note"),
     tabs: Array.prototype.slice.call(document.querySelectorAll(".tab"))
   };
 
@@ -393,6 +395,51 @@
       });
   }
 
+  /* ---- Camera trực tiếp ------------------------------------------- */
+
+  /* Ảnh MJPEG sống trong một request dài: khi camera hỏng hoặc mất mạng,
+   * trình duyệt bắn 'error' một lần rồi thôi. Không tự thử lại thì ảnh
+   * vỡ đứng nguyên mãi. Thử lại bằng cách gắn lại src (kèm mốc thời gian
+   * để trình duyệt không dùng bản cache).
+   *
+   * Khung hình chỉ đi qua bộ nhớ phía server và tới trình duyệt — không
+   * ghi ra đĩa, không lưu lịch sử (spec v2 §11.5). */
+  var CAMERA_RETRY_MS = 5000;
+  var cameraRetryTimer = null;
+
+  function setCameraNote(text) {
+    if (els.cameraNote) els.cameraNote.textContent = text;
+  }
+
+  function cameraFailed() {
+    if (!els.camera) return;
+    els.camera.hidden = true;
+    setCameraNote(
+      "Không nhận được hình từ camera. Có thể camera mất kết nối hoặc " +
+        "chương trình giám sát đã dừng. Đang tự thử lại…"
+    );
+    window.clearTimeout(cameraRetryTimer);
+    cameraRetryTimer = window.setTimeout(function () {
+      if (els.cameraNote) {
+        els.cameraNote.textContent = "Đang thử kết nối lại tới camera…";
+      }
+      els.camera.src = "/stream?t=" + Date.now();
+    }, CAMERA_RETRY_MS);
+  }
+
+  function setupCamera() {
+    if (!els.camera) return; // stream đang tắt: template đã hiện lời nhắn
+    els.camera.addEventListener("load", function () {
+      window.clearTimeout(cameraRetryTimer);
+      els.camera.hidden = false;
+      setCameraNote("");
+    });
+    els.camera.addEventListener("error", cameraFailed);
+    /* Ảnh đã có src trong template; nếu server trả 403/không có response
+     * thì 'error' vẫn bắn và ta hiện đúng thông báo ở trên. */
+    if (!els.camera.complete) setCameraNote("Đang kết nối tới camera…");
+  }
+
   /* ---- Lệnh ------------------------------------------------------- */
 
   function setBusy(button, busy, busyText) {
@@ -600,6 +647,7 @@
   }
 
   fetchStatus();
+  setupCamera();
   fetchHistory();
   window.setInterval(fetchStatus, STATUS_INTERVAL_MS);
   window.setInterval(fetchHistory, HISTORY_REFRESH_MS);
