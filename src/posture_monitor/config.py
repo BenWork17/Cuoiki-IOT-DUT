@@ -142,6 +142,38 @@ class TrackingConfig:
 
 
 @dataclass
+class PhoneConfig:
+    """Phát hiện "đang dùng điện thoại" bằng model detect COCO thứ hai (spec §5).
+
+    Model pose ``yolo11n-pose`` chỉ có lớp ``person`` nên không bao giờ trả hộp
+    ``cell phone``; muốn có hộp đó phải chạy thêm ``yolo11n`` (80 lớp COCO) và
+    lấy lớp 67. Trên Pi 4 đo được 98,6 ms/khung cho một lần detect, vì vậy
+    ``detect_every_n_frames`` mặc định là **2**: chạy detect mỗi 2 khung đạt
+    6,18 FPS (≥ 5), chạy mỗi khung chỉ còn 4,74–4,90 FPS (không đạt).
+
+    ``enabled: false`` tắt sạch sẽ: không nạp model, không gọi detect, không
+    tạo cảnh báo điện thoại.
+    """
+
+    enabled: bool = True
+    #: Tên model COCO 80 lớp (có lớp ``cell phone``), không phải model pose.
+    detect_model: str = "yolo11n"
+    #: Trọng số model detect; trống nghĩa là ``<detect_model>.pt``.
+    detect_weights: str = ""
+    #: Chạy detect mỗi N khung. Giá trị 1 = mọi khung (không đạt FPS trên Pi).
+    detect_every_n_frames: int = 2
+    imgsz: int = 320
+    conf_threshold: float = 0.25
+    #: Hộp detect còn dùng được bao lâu sau lần detect (giây).
+    box_ttl_s: float = 0.5
+    #: Phải chạm liên tục bao lâu mới thành "sự kiện" dùng điện thoại (giây).
+    hold_s: float = 2.0
+    #: Khoảng cách cho phép giữa cổ tay và mép hộp điện thoại (pixel). Mặc
+    #: định 0 = chạm chính xác theo yêu cầu "khoảng cách = 0" của đề tài.
+    touching_slack_px: float = 0.0
+
+
+@dataclass
 class ThresholdsConfig:
     head_down_ratio: float = 0.70
     too_close_ratio: float = 1.25
@@ -213,6 +245,8 @@ class Config:
     camera: CameraConfig = field(default_factory=CameraConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
+    #: Phát hiện dùng điện thoại (model detect COCO thứ hai).
+    phone: PhoneConfig = field(default_factory=PhoneConfig)
     thresholds: ThresholdsConfig = field(default_factory=ThresholdsConfig)
     timing: TimingConfig = field(default_factory=TimingConfig)
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
@@ -638,6 +672,55 @@ def _parse_tracking(raw: Any) -> TrackingConfig:
     )
 
 
+def _parse_phone(raw: Any) -> PhoneConfig:
+    """Nạp mục ``phone`` (tuỳ chọn; thiếu mục = dùng mặc định ở trên).
+
+    Lỗi kiểu/giá trị được báo ngay lúc nạp để ``enabled: true`` không bao giờ
+    chạy với nhịp detect hay ngưỡng vô lý — sai ở đây làm hỏng cả vòng lặp.
+    """
+    data = _as_dict(raw, "phone")
+    base = PhoneConfig()
+    cfg = PhoneConfig(
+        enabled=_get_bool(data, "enabled", base.enabled, "phone"),
+        detect_model=_get_str(
+            data, "detect_model", base.detect_model, "phone"
+        ),
+        detect_weights=_get_str(
+            data, "detect_weights", base.detect_weights, "phone"
+        ),
+        detect_every_n_frames=_get_int(
+            data,
+            "detect_every_n_frames",
+            base.detect_every_n_frames,
+            "phone",
+        ),
+        imgsz=_get_int(data, "imgsz", base.imgsz, "phone"),
+        conf_threshold=_get_float(
+            data, "conf_threshold", base.conf_threshold, "phone"
+        ),
+        box_ttl_s=_get_float(data, "box_ttl_s", base.box_ttl_s, "phone"),
+        hold_s=_get_float(data, "hold_s", base.hold_s, "phone"),
+        touching_slack_px=_get_float(
+            data, "touching_slack_px", base.touching_slack_px, "phone"
+        ),
+    )
+    if not cfg.detect_model.strip():
+        raise ConfigError("'phone.detect_model' phải là chuỗi không rỗng.")
+    if cfg.detect_every_n_frames < 1:
+        raise ConfigError("'phone.detect_every_n_frames' phải >= 1.")
+    if cfg.imgsz <= 0:
+        raise ConfigError("'phone.imgsz' phải là số dương.")
+    if not 0.0 <= cfg.conf_threshold <= 1.0:
+        raise ConfigError("'phone.conf_threshold' phải nằm trong [0, 1].")
+    if cfg.box_ttl_s < 0:
+        raise ConfigError("'phone.box_ttl_s' không được âm.")
+    if cfg.hold_s < 0:
+        raise ConfigError("'phone.hold_s' không được âm.")
+    if cfg.touching_slack_px < 0:
+        raise ConfigError("'phone.touching_slack_px' không được âm.")
+    return cfg
+
+
 def _parse_thresholds(raw: Any) -> ThresholdsConfig:
     data = _as_dict(raw, "thresholds")
     base = ThresholdsConfig()
@@ -1044,6 +1127,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         camera=_parse_camera(raw.get("camera")),
         model=_parse_model(raw.get("model")),
         tracking=_parse_tracking(raw.get("tracking")),
+        phone=_parse_phone(raw.get("phone")),
         thresholds=_parse_thresholds(raw.get("thresholds")),
         timing=_parse_timing(raw.get("timing")),
         alerts=_parse_alerts(raw.get("alerts")),
