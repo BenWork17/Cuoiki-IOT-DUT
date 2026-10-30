@@ -42,7 +42,16 @@ STATE_GOOD = "GOOD"
 STATE_WARN = "WARN"
 STATE_BAD = "BAD"
 STATE_ABSENT = "ABSENT"
+#: Ngoài phiên học: hệ thống **không đo** tư thế, không phải "tư thế tốt",
+#: cũng không phải "vắng mặt". Đây là trạng thái do vòng lặp chính đặt, không
+#: phải do :class:`StateMachine` sinh ra — nó không nằm trong :data:`STATES`
+#: vì máy trạng thái và phần cứng không bao giờ được nhận giá trị này.
+STATE_PAUSED = "PAUSED"
 STATES = (STATE_GOOD, STATE_WARN, STATE_BAD, STATE_ABSENT)
+
+#: Câu giải thích cho dashboard khi ngoài phiên học. Không dùng chữ "vắng
+#: mặt": người dùng đang ngồi đó, chỉ là chưa bấm Bắt đầu.
+PAUSED_MESSAGE = "Chưa bắt đầu phiên học nên chưa đo tư thế."
 
 # Kiểu sự kiện.
 EVENT_ALERT_START = "alert_start"
@@ -139,9 +148,7 @@ class Smoother:
         """Thêm khung mới và trả về đặc trưng đã làm mượt."""
         self._frames.append((float(now), features))
         cutoff = float(now) - self.window_s
-        self._frames = [
-            (ts, frame) for ts, frame in self._frames if ts >= cutoff
-        ]
+        self._frames = [(ts, frame) for ts, frame in self._frames if ts >= cutoff]
 
         person = any(frame.person for _, frame in self._frames)
         values: dict[str, float | None] = {}
@@ -189,8 +196,7 @@ class StateMachine:
             value = float(getattr(timing, name))
             if not math.isfinite(value) or value < 0:
                 raise ValueError(
-                    f"timing.{name} phải là số hữu hạn không âm, nhận được "
-                    f"{value!r}."
+                    f"timing.{name} phải là số hữu hạn không âm, nhận được {value!r}."
                 )
 
         self.reset()
@@ -227,9 +233,7 @@ class StateMachine:
     # ------------------------------------------------------------------
     # Cập nhật
     # ------------------------------------------------------------------
-    def update(
-        self, now: float, labels: Iterable[str], score: float
-    ) -> StateUpdate:
+    def update(self, now: float, labels: Iterable[str], score: float) -> StateUpdate:
         """Nạp kết quả một khung và trả về trạng thái mới.
 
         Args:
@@ -267,11 +271,8 @@ class StateMachine:
             if self._absent_since is None:
                 self._absent_since = now
                 self._absent_reset_done = False
-            if (
-                not self._absent_reset_done
-                and now - self._absent_since >= float(
-                    self.timing.absent_reset_s
-                )
+            if not self._absent_reset_done and now - self._absent_since >= float(
+                self.timing.absent_reset_s
             ):
                 events.extend(self._reset_after_absence(now))
             return self._build(now, STATE_ABSENT, current, score, events)
@@ -305,9 +306,7 @@ class StateMachine:
     # ------------------------------------------------------------------
     # Nội bộ
     # ------------------------------------------------------------------
-    def _update_episodes(
-        self, now: float, bad_now: frozenset[str]
-    ) -> list[Event]:
+    def _update_episodes(self, now: float, bad_now: frozenset[str]) -> list[Event]:
         events: list[Event] = []
 
         # Nhãn xấu xuất hiện: bắt đầu/tiếp tục đếm hold.
@@ -408,9 +407,7 @@ class StateMachine:
             return True
         return at - last >= float(self.timing.alert_cooldown_s)
 
-    def _check_drowsy(
-        self, now: float, current: frozenset[str]
-    ) -> list[Event]:
+    def _check_drowsy(self, now: float, current: frozenset[str]) -> list[Event]:
         if HEAD_DOWN not in current:
             self._drowsy_sent = False
             return []

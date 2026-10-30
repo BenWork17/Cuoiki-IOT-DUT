@@ -349,6 +349,74 @@ body {
 
 .people__empty[hidden] { display: none; }
 
+/* ---- Giọng đọc cảnh báo -------------------------------------------- */
+
+.voice { display: grid; gap: 12px; }
+
+.voice__title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.voice__options {
+  display: grid;
+  gap: 10px;
+}
+
+/* Mỗi lựa chọn là một nút lớn: chọn được bằng một ngón tay trên điện thoại.
+ * Trạng thái đang chọn dùng aria-checked nên trình đọc màn hình cũng biết,
+ * và viền đậm để người nhìn thấy — màu không phải kênh duy nhất. */
+.voice__choice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: start;
+  gap: 10px;
+  min-height: var(--tap);
+  padding: 12px;
+  border: 1px solid var(--ring);
+  border-radius: var(--radius);
+  background: var(--surface-1);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 1rem;
+  text-align: left;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.voice__choice[aria-checked="true"] {
+  border-color: var(--series-1);
+  box-shadow: inset 0 0 0 1px var(--series-1);
+}
+
+.voice__choice:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.voice__mark {
+  font-size: 1.1rem;
+  line-height: 1.4;
+}
+
+.voice__label {
+  font-weight: 650;
+}
+
+.voice__note {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-2);
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.voice__status, .voice__disabled {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 0.9rem;
+}
+
 /* ---- Nút bấm ------------------------------------------------------- */
 
 .actions {
@@ -384,6 +452,89 @@ body {
 .btn:active { transform: scale(0.985); }
 
 .btn:disabled { opacity: 0.55; cursor: progress; }
+
+/* ---- Phiên học (bắt đầu / dừng) ------------------------------------ */
+
+.session {
+  display: grid;
+  gap: 12px;
+}
+
+.session__title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.session__state {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--ink-2);
+}
+
+/* Trạng thái đang chạy phải đọc ra ngay: chữ đậm hơn, không chỉ đổi màu. */
+.session__state[data-running="1"] {
+  color: var(--ink);
+  font-weight: 650;
+}
+
+.session__clock {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* Số đếm ngược là thứ người dùng liếc nhìn nhiều nhất: chữ số đều nhau để
+   không nhảy ngang khi 1 → 9, và to hơn mọi con số khác trên trang. */
+.session__countdown {
+  font-size: 2.4rem;
+  font-weight: 700;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+
+.session__countdown-label {
+  font-size: 0.85rem;
+  color: var(--ink-2);
+}
+
+.session__controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: end;
+}
+
+.session__label {
+  grid-column: 1 / -1;
+  font-size: 0.82rem;
+  color: var(--ink-2);
+}
+
+.session__input {
+  grid-column: 1 / -1;
+  min-height: var(--tap);
+  border-radius: var(--radius);
+  border: 1px solid var(--ring);
+  background: var(--surface-1);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 1rem;
+  padding: 10px 12px;
+}
+
+.session__hint {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--ink-muted);
+}
+
+.session__disabled {
+  margin: 0;
+  color: var(--ink-2);
+}
 
 /* ---- Xoay camera (PTZ) --------------------------------------------- */
 

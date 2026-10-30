@@ -384,6 +384,7 @@ def _build_face_extra(config: Config) -> _ExtraModel:
     recognizer = FaceRecognizer(
         yunet,
         sface,
+        score_threshold=float(getattr(face_cfg, "score_threshold", 0.9)),
         input_size=(detect_width, detect_width),
     )
     interval_s = float(getattr(face_cfg, "interval_s", 2.0) or 2.0)
@@ -1576,7 +1577,7 @@ def format_report(report: dict[str, Any]) -> str:
     throttle = report["throttle"]
 
     lines.append("=" * 78)
-    lines.append("  BÁO CÁO BENCHMARK — HỆ THỐNG GIÁM SÁT TƯ THẾ (M5)")
+    lines.append("  BÁO CÁO BENCHMARK — HỆ THỐNG GIÁM SÁT HỌC TẬP")
     lines.append("=" * 78)
     lines.append(f"  Thời điểm    : {report['generated_at']}")
     lines.append(f"  Máy          : {host['cpu']} | {host['machine']}")

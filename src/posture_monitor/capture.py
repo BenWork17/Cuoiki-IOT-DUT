@@ -22,6 +22,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -77,6 +78,21 @@ RTSP_DRAIN_STEP_LIMIT_S = 0.03
 #: bộ, không huỷ được từ ngoài) và ``grab()`` đầu tiên nằm ngoài hạn — đã đo
 #: một lần ``read()`` mất 2201 ms dù hạn là 2,0 s. Xem spec §5.1.
 RTSP_DRAIN_TIME_LIMIT_S = 2.0
+
+#: Thời gian ``read()`` chờ khung **đầu tiên** khi bộ đọc nền vừa khởi động
+#: (giây). Sau khi có khung, ``read()`` không bao giờ chờ quá
+#: :data:`RTSP_PREFETCH_NEW_FRAME_S`.
+RTSP_PREFETCH_FIRST_FRAME_S = 3.0
+
+#: Thời gian ``read()`` chờ một khung **mới** khi bộ đọc nền đã có khung cũ
+#: (giây). Chờ khung mới thay vì trả lại khung cũ để vòng lặp không xử lý
+#: trùng một khung hai lần. Hết hạn thì vẫn trả khung cũ — camera khựng không
+#: được làm vòng lặp dừng.
+RTSP_PREFETCH_NEW_FRAME_S = 1.0
+
+#: Khoảng nghỉ giữa hai vòng của bộ đọc nền khi camera liên tục trả lỗi
+#: (giây). Tránh vòng quay nóng CPU khi mất kết nối.
+RTSP_PREFETCH_ERROR_BACKOFF_S = 0.2
 
 #: Tên driver các node codec/ISP của SoC Raspberry Pi — tuyệt đối không phải
 #: camera, phải loại khỏi danh sách thiết bị.
@@ -375,6 +391,8 @@ class RTSPSource(FrameSource):
         drain_step_limit_s: float = RTSP_DRAIN_STEP_LIMIT_S,
         max_drain_frames: int = RTSP_MAX_DRAIN_FRAMES,
         drain_time_limit_s: float = RTSP_DRAIN_TIME_LIMIT_S,
+        prefetch: bool = False,
+        prefetch_wait_s: float = RTSP_PREFETCH_FIRST_FRAME_S,
     ) -> None:
         self._url = str(url)
         self._max_attempts = max(1, int(max_attempts))
@@ -393,11 +411,24 @@ class RTSPSource(FrameSource):
         #: Số khung đệm đã bỏ ở lần đọc gần nhất; chỉ để chẩn đoán.
         self._last_dropped = 0
 
+        #: Bộ đọc nền. ``None`` = đọc đồng bộ như cũ.
+        self._prefetch_wait_s = max(0.0, float(prefetch_wait_s))
+        self._cond = threading.Condition()
+        self._latest: np.ndarray | None = None
+        self._latest_seq = 0
+        self._consumer_seq = 0
+        self._prefetch_stop = threading.Event()
+        self._prefetch_thread: threading.Thread | None = None
+        self._prefetch_error: str | None = None
+
         if not self._open():
             raise CameraError(
                 f"Không mở được luồng RTSP {redact_camera_source(self._url)} "
                 f"sau {self._max_attempts} lần thử."
             )
+
+        if prefetch:
+            self._start_prefetch()
 
     # -- nội bộ ---------------------------------------------------------
 
@@ -526,11 +557,118 @@ class RTSPSource(FrameSource):
             return True, frame
         return False, None
 
+    # -- bộ đọc nền ------------------------------------------------------
+
+    def _start_prefetch(self) -> None:
+        """Chạy vòng đọc camera ở luồng nền, giữ **một** khung mới nhất.
+
+        Vì sao: đo trên laptop với camera thật, ``read()`` đồng bộ tốn
+        **49 ms trung bình** và chiếm 52% thời gian vòng lặp, phần lớn là
+        ``grab()`` phải chờ khung kế tiếp từ camera (~40 ms ở 25 fps). Chờ
+        ngay trong vòng lặp chính nghĩa là model và camera **nối tiếp** nhau:
+        mỗi khung tốn ``read + pose`` thay vì ``max(read, pose)``.
+
+        Luồng nền đọc liên tục nên khi vòng lặp chính hỏi khung, khung đã có
+        sẵn trong ``_latest`` và ``read()`` trả về gần như tức thì. Khung cũ
+        bị ghi đè — đó chính là hành vi mong muốn ("luôn mới nhất"), tương
+        đương việc xả đệm mà vẫn giữ được tính mới.
+        """
+        thread = threading.Thread(
+            target=self._prefetch_loop,
+            name="rtsp-prefetch",
+            daemon=True,
+        )
+        self._prefetch_thread = thread
+        thread.start()
+
+        # Chờ khung đầu tiên có hạn: nếu camera chết ngay sau khi mở, ``read``
+        # phải trả ``None`` chứ không treo. Hết hạn vẫn chạy tiếp — luồng nền
+        # có thể chỉ chậm, và ``read`` sau đó vẫn lấy được khung.
+        #
+        # Dùng ``time.monotonic`` **thật**, không dùng ``_monotonic``: đây là
+        # hạn chờ của một luồng nền thật, không phải thời gian mô phỏng của
+        # ``_drain``. Đồng hồ giả trong test không nhích theo ``cond.wait``,
+        # nên dùng nhầm sẽ thành vòng lặp vô hạn.
+        deadline = time.monotonic() + self._prefetch_wait_s
+        with self._cond:
+            while self._latest is None and not self._prefetch_stop.is_set():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning(
+                        "Bộ đọc nền chưa có khung RTSP sau %.1f giây; vẫn "
+                        "chạy tiếp và chờ khung đầu tiên.",
+                        self._prefetch_wait_s,
+                    )
+                    break
+                self._cond.wait(remaining)
+
+    def _prefetch_loop(self) -> None:
+        """Vòng đọc của luồng nền: đọc → ghi đè khung mới nhất → lặp.
+
+        **Không** gọi :meth:`_drain` ở đây: luồng này đọc liên tục nên không
+        bao giờ có đệm tích lại, và ghi đè ``_latest`` đã tự bỏ mọi khung cũ.
+        Dùng ``_drain`` chỉ làm mỗi vòng tốn thêm một lần ``grab()`` chờ khung
+        mới — đo được 9,1 FPS thay vì ~20 FPS mà camera thật phát.
+        """
+        while not self._prefetch_stop.is_set():
+            try:
+                if self._cap is None and not self._reconnect():
+                    self._prefetch_error = "không mở lại được luồng RTSP"
+                    self._prefetch_stop.wait(RTSP_PREFETCH_ERROR_BACKOFF_S)
+                    continue
+
+                assert self._cap is not None
+                ok, frame = self._cap.read()
+                if not ok or frame is None or frame.size == 0:
+                    if self._reconnect() and self._cap is not None:
+                        continue
+                    self._prefetch_error = "luồng RTSP trả khung rỗng"
+                    self._prefetch_stop.wait(RTSP_PREFETCH_ERROR_BACKOFF_S)
+                    continue
+
+                self._reconnect_budget = self._max_attempts
+                self._prefetch_error = None
+                with self._cond:
+                    self._latest = frame
+                    self._latest_seq += 1
+                    self._cond.notify_all()
+            except Exception as exc:  # noqa: BLE001 - luồng nền không được chết
+                self._prefetch_error = f"{type(exc).__name__}: {exc}"
+                logger.warning("Bộ đọc nền RTSP lỗi: %s", self._prefetch_error)
+                self._prefetch_stop.wait(RTSP_PREFETCH_ERROR_BACKOFF_S)
+
+    def _read_prefetched(self) -> np.ndarray | None:
+        """Trả khung **mới nhất chưa xử lý** từ bộ đọc nền.
+
+        Chờ tối đa :data:`RTSP_PREFETCH_NEW_FRAME_S` để có khung mới hơn lần
+        trả trước. Nhờ vậy vòng lặp không xử lý trùng một khung hai lần, mà
+        cũng không bị chặn lâu như đọc đồng bộ (49 ms): chờ này chỉ xảy ra khi
+        pipeline chạy **nhanh hơn** camera.
+
+        Hết hạn vẫn trả khung cũ nếu có — camera khựng không được làm dừng
+        vòng lặp. Chưa có khung nào thì trả ``None`` ngay.
+        """
+        with self._cond:
+            if self._latest is None:
+                return None
+            target = self._consumer_seq + 1
+            if self._latest_seq < target:
+                self._cond.wait_for(
+                    lambda: self._latest_seq >= target
+                    or self._prefetch_stop.is_set(),
+                    timeout=RTSP_PREFETCH_NEW_FRAME_S,
+                )
+            frame = self._latest
+            self._consumer_seq = self._latest_seq
+            return frame
+
     # -- giao diện FrameSource -----------------------------------------
 
     def read(self) -> np.ndarray | None:
         if self._closed:
             return None
+        if self._prefetch_thread is not None:
+            return self._read_prefetched()
         if self._cap is None and not self._reconnect():
             return None
 
@@ -556,8 +694,27 @@ class RTSPSource(FrameSource):
         """Đóng luồng; trạng thái cuối, gọi nhiều lần không sao.
 
         ``read()`` sau khi đóng trả ``None`` và **không** mở lại kết nối mạng.
+        Có bộ đọc nền thì dừng luồng đó trước, rồi mới giải phóng handle.
         """
         self._closed = True
+        self._prefetch_stop.set()
+        with self._cond:
+            self._cond.notify_all()
+        thread = self._prefetch_thread
+        if thread is not None and thread.is_alive():
+            # Chờ ngắn: ``_drain`` có thể đang chờ một ``grab()`` đồng bộ,
+            # không huỷ được từ ngoài. Luồng là daemon nên không chặn thoát.
+            thread.join(timeout=1.0)
+            if thread.is_alive():
+                # Còn kẹt trong ``grab()``: KHÔNG release handle bên dưới —
+                # giải phóng trong lúc thread đang đọc là crash trong OpenCV.
+                # Luồng là daemon nên tài nguyên được thu hồi khi tiến trình
+                # thoát; gọi ``close()`` lần nữa sau đó vẫn release được.
+                logger.warning(
+                    "Bộ đọc nền RTSP chưa dừng sau 1,0 giây; hoãn giải phóng "
+                    "handle để không crash khi đang đọc."
+                )
+                return
         self._release_capture()
 
     @property
@@ -1123,7 +1280,9 @@ def capture_from_config(config) -> FrameSource | None:
     if kind == "rtsp":
         url = str(value)
         try:
-            return RTSPSource(url)
+            # ``prefetch=True``: đọc camera ở luồng nền để ``read()`` không
+            # chặn vòng lặp chính (xem ``RTSPSource._start_prefetch``).
+            return RTSPSource(url, prefetch=True)
         except CameraError as exc:
             logger.warning(
                 "Không mở được camera IP %s (%s). Kiểm tra camera đã bật "

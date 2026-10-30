@@ -187,6 +187,17 @@ class PresenceTracker:
     def absent_hold_s(self) -> float:
         return self._absent_hold_s
 
+    def reset(self) -> None:
+        """Quên chuỗi vắng hiện tại, coi như vừa thấy người.
+
+        Dùng khi bắt đầu một phiên học mới: ``absent_for_s`` đo khoảng
+        **liên tục** không thấy người, nên giữ mốc cũ qua một khoảng nghỉ dài
+        sẽ khiến khung đầu tiên của phiên mới đã "vắng đủ lâu" và báo oan
+        ngay cả khi người đang ngồi đó.
+        """
+        self._absent_since = None
+        self._present = True
+
     def update(self, pose: Any) -> PresenceResult:
         """Cập nhật bằng pose của khung hiện tại.
 
@@ -230,8 +241,7 @@ class PresenceTracker:
             )
         else:
             logger.info(
-                "Không thấy người trong khung liên tục %.1f giây; "
-                "báo vắng mặt.",
+                "Không thấy người trong khung liên tục %.1f giây; báo vắng mặt.",
                 absent_for_s,
             )
 
@@ -239,7 +249,5 @@ class PresenceTracker:
 def _finite_non_negative(value: float, name: str) -> float:
     number = float(value)
     if not math.isfinite(number) or number < 0:
-        raise ValueError(
-            f"{name} phải là số hữu hạn không âm, nhận được {value!r}."
-        )
+        raise ValueError(f"{name} phải là số hữu hạn không âm, nhận được {value!r}.")
     return number

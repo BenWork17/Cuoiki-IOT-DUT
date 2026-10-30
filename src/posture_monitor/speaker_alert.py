@@ -52,6 +52,7 @@ Quy tắc riêng của dự án
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -61,6 +62,29 @@ from typing import Any, Callable, Iterable, Mapping
 from .camera_audio import CameraAudioUnavailable, SpeakController
 from .logging_setup import get_logger
 from .schedule import KIND_LABELS, KIND_LEAVE_FRAME, KIND_PHONE, KIND_STRANGER
+from .voice_library import (
+    DEFAULT_SPEECH_SPEED,
+    DEFAULT_VOICE,
+    DEFAULT_VOLUME,
+    MAX_SPEECH_SPEED,
+    MAX_VOLUME,
+    MIN_SPEECH_SPEED,
+    MIN_VOLUME,
+    VOICE_DIRS,
+    VOICE_LABELS,
+    VOICE_SYNTH,
+    VOICES,
+    VoiceClipError,
+    available_voices,
+    describe_clip,
+    find_clip,
+    load_voice,
+    normalise_speed,
+    normalise_voice,
+    normalise_volume,
+    prepare_clip,
+    save_voice,
+)
 
 logger = get_logger(__name__)
 
@@ -105,17 +129,73 @@ MODE_SKIPPED = "skipped"  #: không phát gì (bận / thiếu đường / lỗi
 ALERT_TONE_HZ = 880.0
 ALERT_TONE_DURATION_S = 0.6
 
-#: Âm lượng khi phát file WAV. 1.0 là mức camera nhận nguyên bản; muốn nhỏ hơn
-#: thì chỉnh ở loa của camera, không chỉnh ở đây.
-ALERT_VOLUME = 1.0
+#: Âm lượng khi phát file WAV (0..1). Đây là mức gửi đi trong luồng PCMA, không
+#: phải núm vặn của camera: hạ nó xuống thì loa nhận tín hiệu nhỏ hơn nên ít bị
+#: đẩy vào vùng méo. 1.0 là mức nguyên bản; 0,6–0,7 hay dễ nghe hơn trên loa nhỏ.
+#: Chỉnh bằng ``speaker_alert.volume`` hoặc ``speak-test --volume``.
+ALERT_VOLUME = DEFAULT_VOLUME
+
+#: Khoảng âm lượng hợp lệ (khai báo lại cho người đọc module này).
+MIN_ALERT_VOLUME = MIN_VOLUME
+MAX_ALERT_VOLUME = MAX_VOLUME
 
 #: Chương trình sinh giọng đọc và giọng tiếng Việt (spec §5.15).
 ESPEAK_BINARY = "espeak-ng"
 DEFAULT_LANGUAGE = "vi"
 
+#: Vị trí cài mặc định trên Windows, dùng khi ``espeak-ng`` không có trên PATH.
+#: Trình cài đặt chính thức **không** thêm thư mục này vào PATH, nên trên máy
+#: phát triển Windows gọi trần ``espeak-ng`` luôn thất bại dù đã cài — khi đó
+#: chọn "Giọng máy" lại rơi về tiếng bíp một cách khó hiểu. Trên Pi gói apt có
+#: đưa vào PATH nên danh sách này không ảnh hưởng.
+ESPEAK_FALLBACK_PATHS = (
+    r"C:\Program Files\eSpeak NG\espeak-ng.exe",
+    r"C:\Program Files (x86)\eSpeak NG\espeak-ng.exe",
+    "/usr/bin/espeak-ng",
+    "/usr/local/bin/espeak-ng",
+)
+
+
+def find_espeak_binary() -> str | None:
+    """Đường dẫn tới ``espeak-ng`` dùng được, hoặc ``None``.
+
+    Tìm trên ``PATH`` trước (đúng cho Pi), rồi mới tới
+    :data:`ESPEAK_FALLBACK_PATHS` (đúng cho Windows). Trả ``None`` thay vì ném
+    lỗi để người gọi tự quyết định rơi về tiếng bíp.
+    """
+    found = shutil.which(ESPEAK_BINARY)
+    if found:
+        return found
+    for candidate in ESPEAK_FALLBACK_PATHS:
+        if Path(candidate).is_file():
+            return candidate
+    return None
+
+
 #: Chặn trên thời gian chạy ``espeak-ng`` để một lần treo không giữ mãi bước
 #: khởi động.
 ESPEAK_TIMEOUT_S = 30.0
+
+
+def _wav_is_usable(path: Path) -> bool:
+    """``True`` khi ``path`` là file WAV đọc được và có dữ liệu tiếng.
+
+    Chỉ kiểm phần đầu file (44 byte header) — đủ để loại file rỗng, file bị
+    cắt dở và file không phải WAV. Không giải mã toàn bộ: hàm này chạy lúc
+    khởi động, không cần chính xác tuyệt đối.
+    """
+    try:
+        if not path.is_file():
+            return False
+        with path.open("rb") as handle:
+            head = handle.read(44)
+    except OSError:
+        return False
+    if len(head) < 44 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+        return False
+    # ``data`` chunk phải có kích thước > 0, nếu không là file im lặng.
+    data_size = int.from_bytes(head[40:44], "little")
+    return data_size > 0 and path.stat().st_size > 44
 
 
 def run_espeak(text: str, out_path: str, *, language: str = DEFAULT_LANGUAGE) -> None:
@@ -129,8 +209,11 @@ def run_espeak(text: str, out_path: str, *, language: str = DEFAULT_LANGUAGE) ->
             ``espeak-ng``, mã trả về khác 0, hoặc chạy quá lâu.
     """
     try:
+        binary = find_espeak_binary()
+        if binary is None:
+            raise FileNotFoundError(ESPEAK_BINARY)
         subprocess.run(
-            [ESPEAK_BINARY, "-v", language, "-w", out_path, text],
+            [binary, "-v", language, "-w", out_path, text],
             check=True,
             capture_output=True,
             timeout=ESPEAK_TIMEOUT_S,
@@ -170,6 +253,11 @@ class AlertOutcome:
         error: ``None`` hoặc mô tả lỗi loa (``"<Kiểu lỗi>: <thông điệp>"``).
             Có ``error`` là tầng gọi ghi sự kiện ``SPEAK_FAILED``.
         at: mốc thời gian (giây, từ ``clock``) của lần quyết định này.
+        retryable: ``True`` khi lần này bị bỏ vì một lý do **tạm thời** (loa
+            đang phát tiếng khác) nên khung sau còn đáng thử lại. Tầng gọi
+            dùng cờ này để **không** tiêu mất cooldown: nếu vẫn đẩy
+            ``last_alert_at`` thì lần dùng điện thoại đó không bao giờ được
+            nhắc nữa, dù loa chưa hề nói gì.
     """
 
     kind: str | None
@@ -179,6 +267,7 @@ class AlertOutcome:
     reason: str
     error: str | None = None
     at: float = 0.0
+    retryable: bool = False
 
     @property
     def speech_expected(self) -> bool:
@@ -202,6 +291,11 @@ class SpeakerAlerter:
             file/không có ffmpeg. ``False`` thì **bỏ** lần phát kèm lý do —
             vẫn không im lặng không giải thích.
         language: mã giọng của ``espeak-ng`` (mặc định ``vi``).
+        voice: mã giọng đọc (``nam``/``nu``/``espeak``).
+        volume: âm lượng phát file WAV, 0..1 (mặc định :data:`ALERT_VOLUME`).
+        speed: tốc độ đọc so với bản thu gốc, 0,5..1,0 (mặc định
+            :data:`voice_library.DEFAULT_SPEECH_SPEED`). Đổi tốc độ làm WAV
+            phải dựng lại, nên tên file WAV mang theo tốc độ.
         espeak_runner: hàm ``(text, out_path) -> None`` sinh WAV. Tiêm được để
             test không cần ``espeak-ng``; ``None`` = :func:`run_espeak`.
         clock: hàm trả thời gian (giây), như ``presence.py``/``state.py``.
@@ -220,6 +314,9 @@ class SpeakerAlerter:
         say: bool = True,
         tone_fallback: bool = True,
         language: str = DEFAULT_LANGUAGE,
+        voice: str = DEFAULT_VOICE,
+        volume: float = ALERT_VOLUME,
+        speed: float = DEFAULT_SPEECH_SPEED,
         espeak_runner: Callable[[str, str], None] | None = None,
         clock: Callable[[], float] | None = None,
         logger: Any = None,
@@ -232,12 +329,28 @@ class SpeakerAlerter:
         self._espeak_runner = espeak_runner
         self._clock = clock if clock is not None else time.monotonic
         self._logger = logger if logger is not None else get_logger(__name__)
+        #: Âm lượng gửi đi khi phát câu nói. Kẹp vào khoảng hợp lệ thay vì ném
+        #: lỗi: giá trị lạ chỉ làm tiếng nhỏ/to hơn, không nên chặn khởi động.
+        self._volume = normalise_volume(volume, ALERT_VOLUME)
+        #: Tốc độ đọc. Bản WAV phải dựng lại khi đổi, nên giá trị này nằm trong
+        #: tên file (xem :meth:`_voice_wav_path`).
+        self._speed = normalise_speed(speed)
+        #: Giọng đang chọn. Đổi được lúc chạy qua :meth:`set_voice` (dashboard);
+        #: giá trị này được đọc lại từ ``voice.json`` mỗi lần :meth:`prepare`
+        #: hoặc đổi, nên khởi động lại vẫn nhớ lựa chọn.
+        self._voice = normalise_voice(voice)
         #: Đường dẫn WAV đã sinh **thành công**; khóa là tên loại cảnh báo.
         self._wav_paths: dict[str, Path] = {}
+        #: File nguồn tương ứng với từng WAV ở ``_wav_paths`` — dùng để biết
+        #: bản thu đã đổi hay chưa khi người dùng đổi giọng giữa chừng.
+        self._wav_sources: dict[str, Path] = {}
         #: ``True`` khi ``prepare`` đã xong trọn vẹn (không sinh lại nữa).
         self._prepared = False
         #: Lý do gần nhất khiến ``prepare`` không sinh được giọng đọc.
         self._prepare_error: str | None = None
+        #: Giọng **thực tế** đang dùng cho mỗi câu, khi nó khác ``self._voice``
+        #: (ví dụ chọn giọng nam nhưng thư mục trống nên rơi về giọng máy).
+        self._fallback_notes: dict[str, str] = {}
 
     # -- thuộc tính -----------------------------------------------------
     @property
@@ -256,6 +369,157 @@ class SpeakerAlerter:
     @property
     def tone_fallback(self) -> bool:
         return self._tone_fallback
+
+    @property
+    def voice(self) -> str:
+        """Mã giọng đang chọn (``nam``/``nu``/``espeak``)."""
+        return self._voice
+
+    @property
+    def volume(self) -> float:
+        """Âm lượng gửi đi khi phát câu nói (0..1)."""
+        return self._volume
+
+    @property
+    def speed(self) -> float:
+        """Tốc độ đọc so với bản thu gốc (0,5..1,0)."""
+        return self._speed
+
+    @property
+    def prepare_error(self) -> str | None:
+        """Lý do gần nhất ``prepare`` không dùng được giọng nói; ``None`` = ổn."""
+        return self._prepare_error
+
+    def wav_path(self, kind: str) -> Path | None:
+        """File WAV sẽ phát cho câu ``kind``; ``None`` nếu chưa có.
+
+        Chỉ trả file **đã chuẩn bị xong** (``prepare`` chạy thành công), nên
+        gọi sau ``prepare`` là thấy đúng thứ ``alert`` sẽ dùng. Dùng cho
+        ``speak-test`` in bảng nguồn phát và cho chẩn đoán trên dashboard.
+        """
+        path = self._wav_paths.get(kind)
+        if path is None:
+            return None
+        return path
+
+    def speak_tone_now(self, kind: str | None = None) -> AlertOutcome:
+        """Phát **tiếng bíp** ngay, bỏ qua mọi bước chuẩn bị giọng đọc.
+
+        Dùng cho ``speak-test --tone``: đường này không cần ffmpeg và không
+        cần bản thu, nên nó tách được "loa không nhận backchannel" khỏi "file
+        giọng đọc hỏng" — hai nguyên nhân có cách sửa khác hẳn nhau.
+
+        Không coi ``tone_fallback`` là điều kiện: người gọi đã chủ động xin
+        tiếng bíp. Không bao giờ ném lỗi.
+        """
+        moment = float(self._clock())
+        if self._controller is None:
+            return self._skipped(
+                kind,
+                None,
+                "Chưa cấu hình loa camera (camera.speaker) nên không phát "
+                "được tiếng bíp.",
+                moment,
+            )
+        try:
+            busy = bool(getattr(self._controller, "busy", False))
+        except Exception:  # noqa: BLE001 - thuộc tính hỏng không được giết lệnh
+            busy = False
+        if busy:
+            return self._skipped(
+                kind,
+                None,
+                "Loa camera đang phát tiếng khác nên bỏ lần thử này.",
+                moment,
+            )
+        try:
+            self._controller.speak_tone(ALERT_TONE_HZ, ALERT_TONE_DURATION_S)
+        except Exception as exc:  # noqa: BLE001 - lỗi loa không được ném ra ngoài
+            return self._failure(kind or "", None, moment, exc)
+        return AlertOutcome(
+            kind=kind,
+            text=None,
+            spoken=True,
+            mode=MODE_TONE,
+            reason="Đã phát tiếng bíp thử ra loa camera.",
+            error=None,
+            at=moment,
+        )
+
+    def voice_report(self) -> dict[str, Any]:
+        """Tình trạng giọng đang dùng + mọi giọng có sẵn, cho dashboard.
+
+        Trả về đủ để giao diện hiện được lựa chọn **và** cảnh báo mà không
+        phải thử phát: giọng nào có đủ bản thu, câu nào còn thiếu, và câu nào
+        đang thật sự phải rơi về giọng khác.
+        """
+        return {
+            "voice": self._voice,
+            "volume": self._volume,
+            "speed": self._speed,
+            "voices": available_voices(self._audio_dir, ALERT_KINDS),
+            "fallbacks": dict(self._fallback_notes),
+            "error": self._prepare_error,
+        }
+
+    def set_voice(self, voice: str) -> dict[str, Any]:
+        """Đổi giọng đang dùng và dựng lại file phát; trả :meth:`voice_report`.
+
+        Lựa chọn được ghi xuống ``voice.json`` để lần chạy sau vẫn nhớ. Nếu
+        ghi hỏng, giọng mới **vẫn có hiệu lực trong phiên này** — mất một tệp
+        cấu hình không đáng để người dùng bấm mà không thấy gì đổi.
+
+        Không bao giờ ném lỗi: dashboard bấm đổi giọng không được làm sập
+        vòng lặp giám sát.
+        """
+        new_voice = normalise_voice(voice)
+        if new_voice == self._voice and self._prepared:
+            return self.voice_report()
+        self._voice = new_voice
+        try:
+            save_voice(self._audio_dir, new_voice)
+        except VoiceClipError as exc:
+            self._logger.warning(
+                "Đã đổi sang %s nhưng chưa lưu được lựa chọn: %s",
+                new_voice,
+                exc,
+            )
+        # Dựng lại từ đầu: file WAV của giọng cũ không dùng được cho giọng mới.
+        self._wav_paths.clear()
+        self._wav_sources.clear()
+        self._fallback_notes.clear()
+        self._prepared = False
+        self._prepare_error = None
+        self.prepare()
+        return self.voice_report()
+
+    def set_speed(self, speed: float) -> dict[str, Any]:
+        """Đổi tốc độ đọc và dựng lại WAV; trả :meth:`voice_report`.
+
+        Không lưu xuống đĩa: tốc độ là tham số của người triển khai (đặt trong
+        ``config.yaml``), không phải lựa chọn trên dashboard như giọng đọc.
+        Không bao giờ ném lỗi vì ``speak-test --speed`` gọi thẳng hàm này.
+        """
+        new_speed = normalise_speed(speed, self._speed)
+        if new_speed == self._speed and self._prepared:
+            return self.voice_report()
+        self._speed = new_speed
+        # Tốc độ nằm trong nội dung WAV nên mọi bản cũ đều phải dựng lại.
+        self._wav_paths.clear()
+        self._wav_sources.clear()
+        self._fallback_notes.clear()
+        self._prepared = False
+        self._prepare_error = None
+        self.prepare()
+        return self.voice_report()
+
+    def set_volume(self, volume: float) -> dict[str, Any]:
+        """Đổi âm lượng phát; trả :meth:`voice_report`.
+
+        Âm lượng chỉ dùng lúc gửi đi nên **không** phải dựng lại WAV.
+        """
+        self._volume = normalise_volume(volume, self._volume)
+        return self.voice_report()
 
     def audio_path(self, kind: str) -> Path:
         """Đường dẫn file WAV của loại cảnh báo ``kind`` (chưa chắc đã tồn tại)."""
@@ -296,35 +560,137 @@ class SpeakerAlerter:
         for kind in ALERT_KINDS:
             if kind in self._wav_paths:
                 continue
-            target = self.audio_path(kind)
-            try:
-                self._run_espeak(ALERT_TEXT[kind], str(target))
-            except Exception as exc:  # noqa: BLE001 - thiếu TTS không được crash
-                missing.append(kind)
-                self._logger.warning(
-                    "Không sinh được giọng đọc cho cảnh báo '%s': %s: %s",
-                    KIND_LABELS[kind],
-                    type(exc).__name__,
-                    exc,
-                )
+            # Ưu tiên 1: bản thu giọng người của giọng đang chọn. Đây là
+            # đường chính — đo bằng STOI qua chuỗi camera cho 0,958–0,972 so
+            # với 0,929–0,945 của espeak-ng, tức dễ nghe hơn hẳn.
+            if self._prepare_voice_clip(kind):
                 continue
-            self._wav_paths[kind] = target
-            self._logger.info(
-                "Đã sinh giọng đọc cho cảnh báo '%s' tại '%s'.",
-                KIND_LABELS[kind],
-                target,
-            )
+            # Ưu tiên 2: giọng máy, để chọn giọng nam/nữ mà thư mục trống
+            # thì vẫn có tiếng nói thay vì chỉ bíp.
+            if self._prepare_espeak_clip(kind):
+                continue
+            missing.append(kind)
 
         if missing:
-            self._prepare_error = (
-                "chưa sinh được giọng đọc cho "
-                + ", ".join(KIND_LABELS[kind] for kind in missing)
+            self._prepare_error = "chưa có giọng đọc cho " + ", ".join(
+                KIND_LABELS[kind] for kind in missing
             )
             self._log_prepare_failure()
             return
 
         self._prepare_error = None
         self._prepared = True
+
+    def _prepare_voice_clip(self, kind: str) -> bool:
+        """Dùng bản thu của giọng đang chọn cho câu ``kind``; ``True`` nếu xong.
+
+        Đổi bản thu sang WAV một lần rồi tái sử dụng. File đích nằm ngay trong
+        ``audio_dir`` và **mang tên giọng** (``phone.nam.wav``) để đổi giọng
+        không ghi đè lên bản của giọng kia.
+        """
+        if self._voice not in VOICE_DIRS:
+            return False
+        source = find_clip(self._audio_dir, self._voice, kind)
+        if source is None:
+            return False
+        target = self._voice_wav_path(kind, self._voice)
+        # Bản WAV đã đổi từ đúng file nguồn này rồi thì dùng lại. So cả mốc
+        # sửa để người dùng thay file MP3 thì lần khởi động sau nhận bản mới.
+        if self._wav_is_current(target, source):
+            self._wav_paths[kind] = target
+            self._wav_sources[kind] = source
+            self._logger.info(
+                "Dùng lại bản thu %s cho cảnh báo '%s' tại '%s'.",
+                describe_clip(source),
+                KIND_LABELS[kind],
+                target,
+            )
+            return True
+        try:
+            prepare_clip(source, target, speed=self._speed)
+        except VoiceClipError as exc:
+            self._logger.warning(
+                "Không dùng được bản thu '%s' cho cảnh báo '%s': %s",
+                describe_clip(source),
+                KIND_LABELS[kind],
+                exc,
+            )
+            return False
+        self._wav_paths[kind] = target
+        self._wav_sources[kind] = source
+        self._logger.info(
+            "Đã đổi bản thu %s sang WAV cho cảnh báo '%s' tại '%s'.",
+            describe_clip(source),
+            KIND_LABELS[kind],
+            target,
+        )
+        return True
+
+    def _prepare_espeak_clip(self, kind: str) -> bool:
+        """Sinh câu ``kind`` bằng ``espeak-ng`` (đường dự phòng); ``True`` nếu xong."""
+        target = self.audio_path(kind)
+        # Dùng lại file WAV đã sinh ở lần chạy trước: đó chính là ý của
+        # spec §5.15 ("sinh một lần"), và nó cứu trường hợp máy đã có
+        # file nhưng thiếu espeak-ng (ví dụ file được copy sang Pi) — nếu
+        # sinh lại vô điều kiện thì loa mất giọng nói dù file vẫn còn.
+        if _wav_is_usable(target):
+            self._wav_paths[kind] = target
+            self._wav_sources.pop(kind, None)
+            self._logger.info(
+                "Dùng lại giọng máy có sẵn cho cảnh báo '%s' tại '%s'.",
+                KIND_LABELS[kind],
+                target,
+            )
+            if self._voice in VOICE_DIRS:
+                # Người dùng chọn giọng nam/nữ mà câu này không có bản thu:
+                # nói rõ để dashboard hiện được lý do, thay vì im lặng đổi giọng.
+                self._fallback_notes[kind] = (
+                    f"Chưa có bản thu {VOICE_LABELS[self._voice].lower()} cho "
+                    f"câu này nên tạm dùng giọng máy."
+                )
+            return True
+        try:
+            self._run_espeak(ALERT_TEXT[kind], str(target))
+        except Exception as exc:  # noqa: BLE001 - thiếu TTS không được crash
+            self._logger.warning(
+                "Không sinh được giọng đọc cho cảnh báo '%s': %s: %s",
+                KIND_LABELS[kind],
+                type(exc).__name__,
+                exc,
+            )
+            return False
+        self._wav_paths[kind] = target
+        self._wav_sources.pop(kind, None)
+        if self._voice in VOICE_DIRS:
+            self._fallback_notes[kind] = (
+                f"Chưa có bản thu {VOICE_LABELS[self._voice].lower()} cho câu "
+                f"này nên tạm dùng giọng máy."
+            )
+        self._logger.info(
+            "Đã sinh giọng máy cho cảnh báo '%s' tại '%s'.",
+            KIND_LABELS[kind],
+            target,
+        )
+        return True
+
+    def _voice_wav_path(self, kind: str, voice: str) -> Path:
+        """File WAV phát được của bản thu ``voice`` cho câu ``kind``.
+
+        Tên file mang theo tốc độ (``phone.nam.s90.wav``) vì tốc độ nằm trong
+        nội dung WAV: đổi tốc độ mà dùng lại bản cũ thì đổi cấu hình không có
+        tác dụng. Nhờ vậy cũng so được "bản này đã dựng ở tốc độ nào".
+        """
+        tag = f"{round(self._speed * 100):02d}"
+        return self._audio_dir / f"{kind}.{voice}.s{tag}.wav"
+
+    def _wav_is_current(self, target: Path, source: Path) -> bool:
+        """Bản WAV ``target`` đã đổi từ ``source`` và còn mới hơn nó chưa."""
+        if not _wav_is_usable(target):
+            return False
+        try:
+            return target.stat().st_mtime >= source.stat().st_mtime
+        except OSError:
+            return False
 
     def _run_espeak(self, text: str, out_path: str) -> None:
         if self._espeak_runner is not None:
@@ -427,6 +793,7 @@ class SpeakerAlerter:
                 "Loa camera đang phát tiếng khác nên bỏ lần cảnh báo này "
                 "(không xếp hàng, không chờ).",
                 moment,
+                retryable=True,
             )
 
         wav = self._wav_paths.get(chosen)
@@ -442,7 +809,7 @@ class SpeakerAlerter:
         self, kind: str, text: str, wav: Path, moment: float
     ) -> AlertOutcome:
         try:
-            self._controller.speak_file(str(wav), ALERT_VOLUME)
+            self._controller.speak_file(str(wav), self._volume)
         except CameraAudioUnavailable as exc:
             # Đúng ca spec §5.15 mô tả: máy thiếu ffmpeg nên chưa phát được
             # file. Không được im lặng — rơi về tiếng bíp. Lỗi vẫn được ghi
@@ -531,11 +898,10 @@ class SpeakerAlerter:
         moment: float,
         *,
         error: str | None = None,
+        retryable: bool = False,
     ) -> AlertOutcome:
         if kind is not None:
-            self._logger.info(
-                "Bỏ cảnh báo '%s': %s", KIND_LABELS[kind], reason
-            )
+            self._logger.info("Bỏ cảnh báo '%s': %s", KIND_LABELS[kind], reason)
         else:
             self._logger.info("Bỏ cảnh báo: %s", reason)
         return AlertOutcome(
@@ -546,17 +912,20 @@ class SpeakerAlerter:
             reason=reason,
             error=error,
             at=moment,
+            retryable=retryable,
         )
 
     def _failure(
-        self, kind: str, text: str, moment: float, exc: BaseException
+        self, kind: str | None, text: str | None, moment: float, exc: BaseException
     ) -> AlertOutcome:
         """Lỗi loa: ghi log, trả ``error`` để tầng gọi ghi ``SPEAK_FAILED``."""
         error = f"{type(exc).__name__}: {exc}"
+        # ``.get`` chứ không ``[]``: lỗi loa phải báo được **kể cả** khi lời
+        # gọi không gắn với một câu cảnh báo cụ thể (``speak-test --tone``).
         self._logger.warning(
             "Phát cảnh báo '%s' ra loa camera thất bại (%s); ghi SPEAK_FAILED "
             "và tiếp tục chạy.",
-            KIND_LABELS[kind],
+            KIND_LABELS.get(kind, kind or "(thử loa)"),
             error,
         )
         return AlertOutcome(
@@ -578,22 +947,45 @@ class SpeakerAlerter:
         """Dựng alerter từ :class:`posture_monitor.config.Config`.
 
         Đọc mục ``speaker_alert`` (``say``, ``tone_fallback``, ``audio_dir``,
-        ``language``) nếu có, và dựng controller bằng
+        ``language``, ``voice``) nếu có, và dựng controller bằng
         :meth:`SpeakController.from_config`. Loa **tắt hoặc thiếu cấu hình**
         không phải lỗi khởi động: alerter vẫn dựng được với ``controller=None``
         (``available`` là ``False``) để vòng lặp chạy tiếp và ghi log.
+
+        Giọng đang dùng lấy theo thứ tự **ưu tiên giảm dần**:
+
+        1. ``voice`` truyền thẳng vào hàm (dùng cho ``speak-test --voice``):
+           người gõ cờ muốn thử đúng giọng đó, không muốn bị tệp lưu chen vào.
+        2. ``audio_dir/voice.json`` — lựa chọn người dùng vừa bấm trên
+           dashboard, nên nó thắng ``config.yaml``.
+        3. ``speaker_alert.voice`` trong cấu hình (giá trị khởi tạo).
+        4. :data:`DEFAULT_VOICE`.
         """
+        #: Khóa nào được người gọi truyền tường minh thì giữ nguyên; chỉ những
+        #: khóa còn thiếu mới lấy từ cấu hình. ``explicit_voice`` quyết định
+        #: bước đọc ``voice.json`` bên dưới có được chạy hay không.
+        explicit_voice = "voice" in kwargs and kwargs["voice"] is not None
+
         section = getattr(config, "speaker_alert", None)
         for key, default in (
             ("say", True),
             ("tone_fallback", True),
             ("audio_dir", "data/audio"),
             ("language", DEFAULT_LANGUAGE),
+            ("voice", DEFAULT_VOICE),
+            ("volume", ALERT_VOLUME),
+            ("speed", DEFAULT_SPEECH_SPEED),
         ):
-            if key in kwargs:
+            if key in kwargs and kwargs[key] is not None:
                 continue
             value = _section_value(section, key, default)
             kwargs[key] = default if value is None else value
+
+        audio_dir = Path(kwargs.get("audio_dir") or "data/audio")
+        if explicit_voice:
+            kwargs["voice"] = normalise_voice(kwargs["voice"])
+        else:
+            kwargs["voice"] = load_voice(audio_dir, normalise_voice(kwargs["voice"]))
 
         controller: Any = None
         if "controller" not in kwargs:
@@ -602,9 +994,7 @@ class SpeakerAlerter:
             try:
                 controller = SpeakController.from_config(config)
             except CameraAudioError as exc:
-                logger.info(
-                    "Chưa bật loa camera nên cảnh báo chỉ ghi sự kiện: %s", exc
-                )
+                logger.info("Chưa bật loa camera nên cảnh báo chỉ ghi sự kiện: %s", exc)
         return cls(kwargs.pop("controller", controller), **kwargs)
 
 
@@ -627,6 +1017,8 @@ __all__ = [
     "ALERT_TONE_HZ",
     "ALERT_VOLUME",
     "AlertOutcome",
+    "MAX_ALERT_VOLUME",
+    "MIN_ALERT_VOLUME",
     "MODE_SKIPPED",
     "MODE_SPEECH",
     "MODE_TONE",

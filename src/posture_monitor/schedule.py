@@ -99,14 +99,25 @@ class KindSettings:
                 f"'cooldown_s' không được âm, nhận được {self.cooldown_s!r}."
             )
         if self.hold_s < 0:
-            raise ScheduleError(
-                f"'hold_s' không được âm, nhận được {self.hold_s!r}."
-            )
+            raise ScheduleError(f"'hold_s' không được âm, nhận được {self.hold_s!r}.")
+
+
+#: Số giây chạm điện thoại liên tục để thành sự kiện "đang dùng điện thoại".
+#: **Một nguồn sự thật duy nhất** cho cả hai tầng: dashboard hiện trạng thái
+#: theo ``phone.hold_s`` (``config.py``), loa quyết định theo
+#: ``schedule.kinds.phone.hold_s`` (``DEFAULT_KINDS`` bên dưới). Hai giá trị
+#: lệch nhau từng gây lỗi "web hiện đang dùng điện thoại mà loa không báo":
+#: web đã báo ở giây thứ 2 trong khi loa chờ tới giây thứ 10.
+DEFAULT_PHONE_HOLD_S = 2.0
 
 
 DEFAULT_KINDS: dict[str, KindSettings] = {
     KIND_LEAVE_FRAME: KindSettings(cooldown_s=60.0, hold_s=5.0),
-    KIND_PHONE: KindSettings(cooldown_s=120.0, hold_s=10.0),
+    #: ``hold_s`` lấy từ :data:`DEFAULT_PHONE_HOLD_S` — cùng nguồn với
+    #: ``PhoneConfig.hold_s``, nên mặc định hai tầng không bao giờ lệch.
+    #: ``_warn_phone_threshold_mismatch`` vẫn cảnh báo khi file cấu hình tự
+    #: đặt hai giá trị khác nhau.
+    KIND_PHONE: KindSettings(cooldown_s=120.0, hold_s=DEFAULT_PHONE_HOLD_S),
     KIND_STRANGER: KindSettings(cooldown_s=300.0, hold_s=5.0),
 }
 
@@ -136,8 +147,7 @@ class TimeWindow:
         for day in self.days:
             if day not in _DAY_INDEX:
                 raise ScheduleError(
-                    f"'{day}' không phải tên thứ hợp lệ; dùng một trong "
-                    f"{DAY_NAMES}."
+                    f"'{day}' không phải tên thứ hợp lệ; dùng một trong {DAY_NAMES}."
                 )
         if self.start == self.end:
             raise ScheduleError(
@@ -214,30 +224,24 @@ def parse_clock(value: Any, where: str) -> time:
         hint = ""
         if isinstance(value, int):
             hint = (
-                " (YAML đọc giờ không có ngoặc kép thành số; hãy viết "
-                'start: "19:00")'
+                ' (YAML đọc giờ không có ngoặc kép thành số; hãy viết start: "19:00")'
             )
         raise ScheduleError(
-            f"'{where}' phải là chuỗi giờ dạng \"HH:MM\", nhận được "
-            f"{value!r}{hint}."
+            f"'{where}' phải là chuỗi giờ dạng \"HH:MM\", nhận được {value!r}{hint}."
         )
     text = value.strip()
     match = _CLOCK_RE.match(text)
     if match is None:
         raise ScheduleError(
             f"'{where}' = {value!r} sai định dạng giờ; dùng dạng \"HH:MM\" "
-            "ví dụ \"19:00\"."
+            'ví dụ "19:00".'
         )
     hour = int(match.group("hour"))
     minute = int(match.group("minute"))
     if not (0 <= hour <= 23):
-        raise ScheduleError(
-            f"'{where}' = {value!r} có giờ ngoài khoảng 0..23."
-        )
+        raise ScheduleError(f"'{where}' = {value!r} có giờ ngoài khoảng 0..23.")
     if not (0 <= minute <= 59):
-        raise ScheduleError(
-            f"'{where}' = {value!r} có phút ngoài khoảng 0..59."
-        )
+        raise ScheduleError(f"'{where}' = {value!r} có phút ngoài khoảng 0..59.")
     return time(hour, minute)
 
 
@@ -264,8 +268,7 @@ def parse_days(value: Any, where: str) -> tuple[str, ...]:
         day = item.strip().lower()
         if day not in _DAY_INDEX:
             raise ScheduleError(
-                f"'{where}' có thứ {item!r} không hợp lệ; dùng một trong "
-                f"{DAY_NAMES}."
+                f"'{where}' có thứ {item!r} không hợp lệ; dùng một trong {DAY_NAMES}."
             )
         if day not in days:
             days.append(day)
@@ -330,9 +333,7 @@ def _read_number(
         return default
     value = data[key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ScheduleError(
-            f"'{where}.{key}' phải là số, nhận được {value!r}."
-        )
+        raise ScheduleError(f"'{where}.{key}' phải là số, nhận được {value!r}.")
     if value < 0:
         raise ScheduleError(f"'{where}.{key}' không được âm, nhận được {value!r}.")
     return float(value)

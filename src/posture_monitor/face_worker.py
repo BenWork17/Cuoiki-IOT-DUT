@@ -480,7 +480,11 @@ class FaceWorker:
             from .faces import FaceRecognizer  # noqa: PLC0415
 
             self._recognizer = FaceRecognizer(
-                self.config.detector, self.config.recognizer
+                self.config.detector,
+                self.config.recognizer,
+                score_threshold=float(
+                    getattr(self.config, "score_threshold", 0.9)
+                ),
             )
         except FaceModelError as exc:
             self._fail_model(exc)

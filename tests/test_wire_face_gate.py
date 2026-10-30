@@ -285,3 +285,184 @@ def test_create_people_service_noi_dung_skip_gate(monkeypatch, tmp_path):
         assert captured["skip_gate"]() is True
     finally:
         service.close()
+
+
+# --------------------------------------------------------------------------
+# face.score_threshold phải tới được FaceRecognizer thật
+# --------------------------------------------------------------------------
+#
+# Lỗi đã đo: ngưỡng điểm của YuNet là hằng số 0,9 trong ``faces.py``. Trên 14
+# khung RTSP thật của chính chủ đang ngồi học, 0,9 chỉ thấy mặt ở **2/14
+# khung (14,3%)** — nghĩa là mỗi bước đăng ký 1,5 s (~7 khung ở 5 FPS) chỉ có
+# ~66% cơ hội có mẫu, cả phiên 3 bước ~29%. Đó là "Thêm người mới hỏng ngẫu
+# nhiên". Khóa cấu hình chỉ có tác dụng nếu nó tới được đối tượng thật; test
+# dưới đây khẳng định đúng dây nối đó, không chỉ khẳng định "config đọc được".
+
+def test_create_people_service_truyen_score_threshold_vao_recognizer(
+    monkeypatch, tmp_path
+):
+    """``_create_people_service`` phải truyền ``face.score_threshold``.
+
+    Đọc cấu hình mà quên chuyển tiếp thì ``FaceRecognizer`` vẫn dùng 0,9 và
+    mọi test cấu hình vẫn xanh — đúng kiểu hồi quy im lặng cần chặn.
+    """
+    import posture_monitor.faces as faces_mod
+
+    captured: dict[str, object] = {}
+    real_cls = faces_mod.FaceRecognizer
+
+    class _Spy(real_cls):
+        def __init__(self, *args, **kwargs):
+            captured["score_threshold"] = kwargs.get("score_threshold")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(faces_mod, "FaceRecognizer", _Spy)
+
+    config = cli.load_config(_REPO_ROOT / "config.yaml")
+    config.face.enabled = True
+    config.face.score_threshold = 0.7
+    config.face.store_path = str(tmp_path / "data" / "faces.json")
+
+    service = cli._create_people_service(config, _QuietLogger())
+    assert service is not None
+    try:
+        assert captured.get("score_threshold") == pytest.approx(0.7), (
+            "config.face.score_threshold không tới được FaceRecognizer; "
+            "YuNet vẫn dùng hằng số 0,9"
+        )
+    finally:
+        service.close()
+
+
+def test_benchmark_truyen_score_threshold(monkeypatch, tmp_path):
+    """``benchmark`` dựng ``FaceRecognizer`` riêng — cũng phải dùng cùng ngưỡng.
+
+    Bỏ sót chỗ này thì phép đo benchmark chạy với 0,9 trong khi chương trình
+    thật chạy 0,7, và con số đo được không nói gì về hành vi thật.
+    """
+    import posture_monitor.faces as faces_mod
+
+    captured: dict[str, object] = {}
+    real_cls = faces_mod.FaceRecognizer
+
+    class _Spy(real_cls):
+        def __init__(self, *args, **kwargs):
+            captured["score_threshold"] = kwargs.get("score_threshold")
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(faces_mod, "FaceRecognizer", _Spy)
+
+    config = cli.load_config(_REPO_ROOT / "config.yaml")
+    config.face.enabled = True
+    config.face.detector = str(_REPO_ROOT / "yunet.onnx")
+    config.face.recognizer = str(_REPO_ROOT / "sface.onnx")
+    config.face.score_threshold = 0.7
+    if not Path(config.face.detector).is_file():
+        pytest.skip("thiếu yunet.onnx để dựng recognizer")
+    from posture_monitor.benchmark import _build_face_extra  # noqa: PLC0415
+
+    _build_face_extra(config)
+    assert captured.get("score_threshold") == pytest.approx(0.7)
+
+
+# --------------------------------------------------------------------------
+# Hộp khuôn mặt phải được báo ra lớp hiển thị
+# --------------------------------------------------------------------------
+#
+# ``processor`` chỉ được trả **một** giá trị — embedding — nên hộp mặt phải đi
+# kênh phụ (``note_box``). Thiếu bước này thì không lớp nào biết mặt nằm ở đâu
+# và cửa sổ xem trước/dashboard không bao giờ hiện khung mặt, dù lượt detect
+# vừa tìm ra nó. Test khoá đúng lời gọi đó, và khoá cả chỗ nối trong
+# ``_create_people_service`` — sửa ``_build_face_processor`` mà quên truyền
+# ``note_box`` thì mọi test tự truyền tham số vẫn xanh.
+
+def test_processor_bao_hop_mat_qua_note_box(monkeypatch):
+    """``processor`` gọi ``note_box`` với ``(x, y, w, h)`` của mặt lớn nhất."""
+    clock = _Clock()
+    monkeypatch.setattr("posture_monitor.__main__.time", _TimeShim(clock))
+    recognizer = _CountingRecognizer()
+    boxes: list[object] = []
+    processor = cli._build_face_processor(
+        recognizer,
+        SimpleNamespace(interval_s=2.0),
+        _QuietLogger(),
+        skip_gate=lambda: False,
+        note_box=boxes.append,
+    )
+
+    processor(_FRAME)
+
+    assert boxes == [(10.0, 10.0, 40.0, 40.0)]
+
+
+def test_processor_bao_none_khi_khong_thay_mat():
+    """Khung không có mặt → ``note_box(None)`` để hộp cũ biến mất."""
+    class _NoFace(_CountingRecognizer):
+        def detect(self, _image):
+            self.detect_calls += 1
+            return []
+
+    boxes: list[object] = []
+    processor = cli._build_face_processor(
+        _NoFace(),
+        SimpleNamespace(interval_s=2.0),
+        _QuietLogger(),
+        skip_gate=lambda: False,
+        note_box=boxes.append,
+    )
+
+    processor(_FRAME)
+
+    assert boxes == [None]
+
+
+def test_note_box_loi_khong_lam_hong_luot_nhan_dien(monkeypatch):
+    """``note_box`` ném lỗi → vẫn trả embedding, không thành sentinel.
+
+    Hộp chỉ để vẽ; một kênh hiển thị hỏng không được biến lượt nhận diện đang
+    tốt thành "bỏ qua", vì như vậy là mất danh tính để đổi lấy hình vẽ.
+    """
+    clock = _Clock()
+    monkeypatch.setattr("posture_monitor.__main__.time", _TimeShim(clock))
+
+    def boom(_box):
+        raise RuntimeError("kênh hiển thị hỏng")
+
+    processor = cli._build_face_processor(
+        _CountingRecognizer(),
+        SimpleNamespace(interval_s=2.0),
+        _QuietLogger(),
+        skip_gate=lambda: False,
+        note_box=boom,
+    )
+
+    result = processor(_FRAME)
+
+    assert result is not OBSERVATION_SKIPPED
+    assert result is not None
+
+
+def test_create_people_service_noi_note_box(monkeypatch, tmp_path):
+    """``_create_people_service`` phải truyền ``note_box=service.note_face_box``."""
+    captured: dict[str, object] = {}
+    real_build = cli._build_face_processor
+
+    def spy(recognizer, face, logger, **kwargs):
+        captured["note_box"] = kwargs.get("note_box")
+        return real_build(recognizer, face, logger, **kwargs)
+
+    monkeypatch.setattr(cli, "_build_face_processor", spy)
+
+    config = cli.load_config(_REPO_ROOT / "config.yaml")
+    config.face.enabled = True
+    config.face.store_path = str(tmp_path / "data" / "faces.json")
+
+    service = cli._create_people_service(config, _QuietLogger())
+    assert service is not None
+    try:
+        assert captured.get("note_box") is not None, (
+            "chỗ gọi không truyền note_box: không lớp nào biết hộp mặt ở đâu"
+        )
+        assert captured["note_box"] == service.note_face_box
+    finally:
+        service.close()

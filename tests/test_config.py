@@ -807,3 +807,42 @@ def test_env_password_thang_tai_khoan_nhung_trong_source(tmp_path, monkeypatch):
     assert user == config.camera.onvif.user
     assert user != "nguoi-dung-url"
     assert source_secret not in repr(config)
+
+# --------------------------------------------------------------------------
+# face.score_threshold — ngưỡng phát hiện của YuNet nay nằm trong config
+# --------------------------------------------------------------------------
+
+def test_face_score_threshold_mac_dinh_la_09(tmp_path: Path) -> None:
+    """Không khai báo thì giữ đúng hành vi cũ (0,9) — đổi mặc định phải là
+    một thay đổi có chủ ý, không phải hệ quả phụ của việc thêm khóa."""
+    config = load_config(_write(tmp_path, ""))
+    assert config.face.score_threshold == pytest.approx(0.9)
+
+def test_face_score_threshold_doc_tu_cau_hinh(tmp_path: Path) -> None:
+    config = load_config(_write(tmp_path, "face:\n  score_threshold: 0.7\n"))
+    assert config.face.score_threshold == pytest.approx(0.7)
+
+def test_face_score_threshold_ngoai_khoang_raises(tmp_path: Path) -> None:
+    """Ngưỡng điểm là xác suất: ngoài (0, 1] là lỗi cấu hình, không phải
+    "dùng mặc định im lặng" (xem config-gap-silently-ignores-unknown-keys)."""
+    for value in ("0", "0.0", "-0.1", "1.5", "2"):
+        text = f"face:\n  score_threshold: {value}\n"
+        with pytest.raises(ConfigError) as excinfo:
+            load_config(_write(tmp_path, text))
+        assert "face.score_threshold" in str(excinfo.value)
+
+def test_face_score_threshold_khong_hop_le_raises(tmp_path: Path) -> None:
+    for value in ("nan", "inf", "chuoi", "[0.7]"):
+        text = f"face:\n  score_threshold: {value}\n"
+        with pytest.raises(ConfigError) as excinfo:
+            load_config(_write(tmp_path, text))
+        assert "face.score_threshold" in str(excinfo.value)
+
+def test_repo_config_face_score_threshold_hop_le() -> None:
+    """``config.yaml`` của repo phải nạp được và ngưỡng nằm trong (0, 1].
+
+    Test này là thứ giữ cho con số trong tệp không trôi khỏi miền hợp lệ khi
+    có người sửa tay.
+    """
+    config = load_config(_REPO_ROOT / "config.yaml")
+    assert 0.0 < config.face.score_threshold <= 1.0

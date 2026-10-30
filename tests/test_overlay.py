@@ -19,7 +19,9 @@ if str(_SRC) not in sys.path:
 
 from posture_monitor.overlay import (  # noqa: E402
     EDGE_COLOR,
+    FACE_BOX_COLOR,
     KEYPOINT_NAMES,
+    PHONE_BOX_COLOR,
     POINT_COLOR,
     SKELETON_EDGES,
     draw_pose,
@@ -166,6 +168,18 @@ def test_edge_hidden_when_one_endpoint_below_threshold():
 def test_colors_used_are_distinct():
     """Màu xương và màu điểm khác nhau để nhìn rõ trên hình."""
     assert EDGE_COLOR != POINT_COLOR
+
+
+def test_hop_detection_khong_trung_mau_keypoint():
+    """Hộp điện thoại/mặt phải khác màu chấm keypoint.
+
+    Đã từng trùng: ``PHONE_BOX_COLOR`` là ``(0, 0, 255)`` y như ``POINT_COLOR``.
+    Hộp đỏ vẽ đè lên khung xương đỏ thì mắt không tách được, và ảnh chụp màn
+    hình gửi đi báo lỗi không còn chứng minh được hộp đã hiện.
+    """
+    assert PHONE_BOX_COLOR != POINT_COLOR
+    assert PHONE_BOX_COLOR != EDGE_COLOR
+    assert FACE_BOX_COLOR not in (POINT_COLOR, EDGE_COLOR, PHONE_BOX_COLOR)
 
 
 def test_nan_points_are_skipped():

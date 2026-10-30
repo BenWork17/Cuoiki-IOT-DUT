@@ -62,7 +62,9 @@ def make_config(db_path: Path, stream_enabled: bool = False) -> Config:
     return config
 
 
-def make_update(now: float, state: str = STATE_GOOD, score: float = 90.0) -> StateUpdate:
+def make_update(
+    now: float, state: str = STATE_GOOD, score: float = 90.0
+) -> StateUpdate:
     labels = frozenset({GOOD}) if state == STATE_GOOD else frozenset({HEAD_DOWN})
     if state == STATE_ABSENT:
         labels = frozenset({ABSENT})
@@ -86,9 +88,7 @@ def state() -> DashboardState:
 def storage(tmp_path):
     """DB tạm kèm đồng hồ riêng để test tự nhích thời gian."""
     clock = FakeClock()
-    store = Storage(
-        StorageConfig(db_path=str(tmp_path / "posture.db")), clock=clock
-    )
+    store = Storage(StorageConfig(db_path=str(tmp_path / "posture.db")), clock=clock)
     store.open()
     yield store
     store.close()
@@ -202,8 +202,10 @@ def test_trang_chu_la_html_tieng_viet_co_the_trang_thai_hoc(tmp_path, state):
     html = response.get_data(as_text=True)
 
     # 1) Có nội dung tiếng Việt thật, không phải trang trắng.
+    #    Tiêu đề nay là "Giám sát học tập": đề tài đã bỏ nhận diện tư thế nên
+    #    trang không còn quảng cáo tính năng đó (xem khẳng định 2 bên dưới).
     for text in (
-        "Giám sát tư thế học tập",
+        "Giám sát học tập",
         "Trạng thái học",
         "Có mặt",
         "Điện thoại",
@@ -445,12 +447,34 @@ def test_stream_bat_tra_mjpeg(tmp_path, state):
     response.close()
 
 
-def test_stream_bat_nhung_chua_co_khung_bao_ro(tmp_path, state):
+def test_stream_bat_nhung_chua_co_khung_gui_anh_gia(tmp_path, state):
+    """Chưa có khung thật vẫn phải gửi **JPEG** giữ chỗ, không gửi chữ.
+
+    Đây là chốt chống tái phạm lỗi "cứ một tí lại mất hình": bản cũ chèn một
+    phần tử ``Content-Type: text/plain`` vào giữa luồng để báo "Chưa có khung
+    hình". Trình duyệt gặp phần tử không phải ảnh thì bỏ cả khung và để trắng
+    cho tới lần nối lại — chữ báo lỗi lại chính là thứ làm hỏng hình.
+
+    Luồng ``multipart/x-mixed-replace`` chỉ được chứa **một** kiểu MIME. Bài
+    này đọc nhiều phần tử liên tiếp và khẳng định không phần nào là văn bản.
+    """
     client = make_client(make_config(tmp_path / "p.db", stream_enabled=True), state)
     response = client.get("/stream", buffered=False)
-    chunk = next(iter(response.response))
-    assert "Chưa có khung hình".encode("utf-8") in chunk
-    response.close()
+    assert response.status_code == 200
+
+    stream = iter(response.response)
+    try:
+        # Phần tử đầu: ảnh giữ chỗ (không phải khung thật) nhưng **phải** là JPEG.
+        chunk = next(stream)
+        assert b"Content-Type: image/jpeg" in chunk, chunk[:120]
+        assert b"text/plain" not in chunk, (
+            f"không được chèn phần tử văn bản vào luồng MJPEG: {chunk[:200]!r}"
+        )
+        body = chunk.split(b"\r\n\r\n", 1)[1].rstrip(b"\r\n")
+        assert body.startswith(b"\xff\xd8"), f"không phải JPEG: {body[:16]!r}"
+        assert body.endswith(b"\xff\xd9"), "JPEG thiếu EOI"
+    finally:
+        response.close()
 
 
 # ---------------------------------------------------------------------------
@@ -498,11 +522,15 @@ def test_trang_chu_khong_co_anh_khi_stream_tat(tmp_path, state):
 
 
 def test_stream_mat_camera_giua_chung_khong_sap(tmp_path, state, monkeypatch):
-    """Camera đứt giữa luồng: /stream trả placeholder thay vì lặp khung cũ.
+    """Camera đứt giữa luồng: lặp lại JPEG cuối, **không** chèn phần tử văn bản.
 
-    Đọc có giới hạn thời gian: nếu bản sửa bị gỡ (lặp lại khung cuối mãi
-    mãi), khung thứ hai không bao giờ tới và test đỏ bằng assertion thay vì
-    treo cả lượt chạy.
+    Đọc có giới hạn thời gian: nếu luồng treo (không gửi gì nữa), khung thứ
+    hai không bao giờ tới và test đỏ bằng assertion thay vì treo cả lượt chạy.
+
+    Hành vi đúng là **giữ nguyên kiểu MIME**: lặp lại JPEG cuối cho tới khi
+    camera trở lại. Bản cũ chèn một phần tử ``text/plain`` (câu "Chưa có khung
+    hình") — chính phần tử đó làm trình duyệt trắng ảnh, đúng lỗi "cứ một tí
+    lại mất hình". Bài này khoá tính chất "mọi phần tử đều là JPEG".
     """
     import threading
 
@@ -511,7 +539,7 @@ def test_stream_mat_camera_giua_chung_khong_sap(tmp_path, state, monkeypatch):
     monkeypatch.setattr(web_app, "STREAM_POLL_S", 0.01)
 
     client = make_client(make_config(tmp_path / "p.db", stream_enabled=True), state)
-    state.set_frame(b"\xff\xd8khungcu")
+    state.set_frame(b"\xff\xd8khungcu\xff\xd9")
     response = client.get("/stream", buffered=False)
     chunks = iter(response.response)
     assert b"khungcu" in next(chunks)
@@ -532,10 +560,17 @@ def test_stream_mat_camera_giua_chung_khong_sap(tmp_path, state, monkeypatch):
     response.close()
 
     assert not reader.is_alive(), (
-        "/stream treo khi không có khung mới — camera đứt phải có placeholder"
+        "/stream treo khi không có khung mới — camera đứt vẫn phải gửi khung "
+        "cuối để trình duyệt không mất kết nối"
     )
     assert "error" not in box, f"luồng stream ném lỗi: {box.get('error')!r}"
-    assert "Chưa có khung hình".encode("utf-8") in box["chunk"]
+    chunk = box["chunk"]
+    assert b"Content-Type: image/jpeg" in chunk, chunk[:120]
+    assert b"text/plain" not in chunk, (
+        f"camera đứt không được chèn phần tử văn bản vào luồng: {chunk[:200]!r}"
+    )
+    # Nội dung lặp lại đúng khung cuối, không phải ảnh giữ chỗ.
+    assert b"khungcu" in chunk, f"phải lặp lại khung cuối: {chunk[:200]!r}"
 
 
 def test_stream_khong_ghi_anh_ra_dia(tmp_path, state, monkeypatch):
@@ -580,3 +615,160 @@ def test_config_repo_bat_stream_mac_dinh():
 
     config = load_config(_REPO_ROOT / "config.yaml")
     assert config.web.stream_enabled is True
+
+
+# ---------------------------------------------------------------------------
+# Phiên học (nút Bắt đầu / Dừng)
+# ---------------------------------------------------------------------------
+
+
+def make_session_client(tmp_path, state, **session_kwargs):
+    """Client có ``StudySession`` tiêm vào, đồng hồ giả."""
+    from posture_monitor.study_session import StudySession
+
+    clock = FakeClock()
+    session = StudySession(clock=clock, **session_kwargs)
+    app = create_app(make_config(tmp_path / "p.db"), state=state, study_session=session)
+    app.config.update(TESTING=True)
+    return app.test_client(), session, clock
+
+
+def test_api_session_mac_dinh_la_idle(tmp_path, state):
+    client, _session, _clock = make_session_client(tmp_path, state)
+    response = client.get("/api/session")
+    assert response.status_code == 200
+
+    payload = response.get_json()
+    assert payload["state"] == "idle"
+    assert payload["minutes"] == 0
+    assert payload["remaining_s"] == 0.0
+    assert payload["ends_in_text"] is None
+    assert payload["default_minutes"] == 60
+    assert payload["min_minutes"] == 1
+    assert payload["max_minutes"] == 720
+
+
+def test_api_session_start_bang_thoi_luong_tuy_chon(tmp_path, state):
+    client, session, clock = make_session_client(tmp_path, state)
+    response = client.post("/api/session/start", json={"minutes": 25})
+    assert response.status_code == 200
+
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["state"] == "running"
+    assert payload["minutes"] == 25
+    assert payload["ends_in_text"] == "25:00"
+    assert "25 phút" in payload["message"]
+    assert session.is_running is True
+
+    clock.advance(120)
+    assert client.get("/api/session").get_json()["ends_in_text"] == "23:00"
+
+
+def test_api_session_start_khong_co_than_dung_mac_dinh(tmp_path, state):
+    client, _session, _clock = make_session_client(tmp_path, state)
+    payload = client.post("/api/session/start").get_json()
+    assert payload["state"] == "running"
+    assert payload["minutes"] == 60
+
+
+def test_api_session_start_thoi_luong_sai_tra_400(tmp_path, state):
+    client, session, _clock = make_session_client(tmp_path, state)
+    response = client.post("/api/session/start", json={"minutes": 0})
+    assert response.status_code == 400
+
+    payload = response.get_json()
+    assert payload["ok"] is False
+    assert "phút" in payload["message"]
+    assert session.is_running is False, "start hỏng không được bật model"
+
+
+def test_api_session_start_kieu_sai_tra_400(tmp_path, state):
+    client, _session, _clock = make_session_client(tmp_path, state)
+    for bad in ("60", True, [60], {"minutes": 60}):
+        response = client.post("/api/session/start", json={"minutes": bad})
+        assert response.status_code == 400, bad
+
+
+def test_api_session_stop_ve_idle(tmp_path, state):
+    client, session, _clock = make_session_client(tmp_path, state)
+    client.post("/api/session/start", json={"minutes": 5})
+
+    response = client.post("/api/session/stop")
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["state"] == "idle"
+    assert payload["minutes"] == 0
+    assert session.is_running is False
+
+
+def test_api_session_stop_khi_dang_nghi_khong_loi(tmp_path, state):
+    client, _session, _clock = make_session_client(tmp_path, state)
+    response = client.post("/api/session/stop")
+    assert response.status_code == 200
+    assert response.get_json()["state"] == "idle"
+
+
+def test_api_session_het_gio_tra_finished_va_finish_text(tmp_path, state):
+    from posture_monitor.study_session import FINISHED_MESSAGE
+
+    client, _session, clock = make_session_client(tmp_path, state)
+    client.post("/api/session/start", json={"minutes": 1})
+    clock.advance(61)
+
+    payload = client.get("/api/session").get_json()
+    assert payload["state"] == "finished"
+    assert payload["minutes"] == 1
+    assert payload["finish_text"] == FINISHED_MESSAGE
+    # GET không được "nói" câu đó ra loa — chỉ vòng lặp làm việc ấy.
+    assert payload["finished_message"] is None
+
+
+def test_api_session_503_khi_khong_tiem_phien(tmp_path, state):
+    """Bản cũ của ``create_app`` không có tham số phiên học: 503, không 500."""
+    client = make_client(make_config(tmp_path / "p.db"), state)
+
+    assert client.get("/api/session").status_code == 503
+    assert client.post("/api/session/start", json={}).status_code == 503
+    assert client.post("/api/session/stop").status_code == 503
+
+    payload = client.get("/api/session").get_json()
+    assert payload["ok"] is False
+    assert "Phiên học" in payload["message"]
+
+
+def test_trang_chu_co_khoi_phien_hoc(tmp_path, state):
+    client, _session, _clock = make_session_client(tmp_path, state)
+    html = client.get("/").get_data(as_text=True)
+
+    assert 'id="session-card"' in html
+    assert 'data-session-enabled="1"' in html
+    assert 'id="session-start-btn"' in html
+    assert 'id="session-stop-btn"' in html
+    assert 'id="session-minutes"' in html
+    assert 'id="session-countdown"' in html
+    assert "Bắt đầu học" in html
+    assert "Dừng học" in html
+    # Ô nhập phải mang đúng biên của máy chủ, không phải biên trang tự bịa.
+    assert 'min="1"' in html
+    assert 'max="720"' in html
+    assert 'value="60"' in html
+
+
+def test_trang_chu_an_khoi_phien_hoc_khi_khong_tiem(tmp_path, state):
+    client = make_client(make_config(tmp_path / "p.db"), state)
+    html = client.get("/").get_data(as_text=True)
+
+    assert 'data-session-enabled="0"' in html
+    assert 'id="session-start-btn"' not in html
+    assert "Phiên học chưa được bật" in html
+
+
+def test_trang_chu_hien_paused_khi_ngoai_phien(tmp_path, state):
+    """Ngoài phiên, nhãn trạng thái phải là "chưa bắt đầu", không phải
+    "không thấy người" — người dùng đang ngồi trước camera."""
+    client = make_client(make_config(tmp_path / "p.db"), state)
+    state.update(state="PAUSED", labels=[], score=0.0, sitting_s=0.0)
+    payload = client.get("/api/status").get_json()
+    assert payload["state_text"] == "Chưa bắt đầu phiên học"

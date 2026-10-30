@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -513,11 +514,11 @@ def make_source(monkeypatch, fake_clock):
     trong test ``close()`` — cũng không chạm mạng thật.
     """
 
-    def factory(queue, opened: bool = True, live_value: int = 99, **kwargs):
+    def factory(queue, opened: bool = True, live_value: int = 99, dead: bool = False, **kwargs):
         fakes: list[_FakeCapture] = []
 
         def fake_video_capture(*_args, **_kwargs):
-            fake = _FakeCapture(queue, opened=opened, live_value=live_value)
+            fake = _FakeCapture(queue, opened=opened, dead=dead, live_value=live_value)
             fake.clock = fake_clock
             fakes.append(fake)
             return fake
@@ -882,6 +883,79 @@ def test_close_releases_capture(make_source) -> None:
     source = make_source([_frame(1), _frame(2)])
     source.close()
     assert source._fakes[0].released >= 1
+
+
+# --------------------------------------------------------------------------
+# Bộ đọc nền (prefetch) — tách capture khỏi xử lý
+# --------------------------------------------------------------------------
+
+
+def test_prefetch_read_does_not_drain_camera(make_source) -> None:
+    """``read()`` không tự gọi ``_drain``: việc đọc camera đã ở luồng nền.
+
+    Đây là hành vi sửa độ trễ: đo trên laptop với camera thật, ``read()``
+    đồng bộ tốn 49 ms (phần lớn là ``grab()`` chờ khung mới). Có bộ đọc nền,
+    ``read()`` chỉ chép tham chiếu khung mới nhất.
+    """
+    source = make_source([_frame(1), _frame(2)], live_value=7, prefetch=True)
+    try:
+        deadline = time.monotonic() + 5.0
+        while source._latest is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert source._latest is not None
+
+        # Dừng luồng nền để phép đếm không bị chạy song song.
+        source._prefetch_stop.set()
+        source._prefetch_thread.join(timeout=2.0)
+        assert not source._prefetch_thread.is_alive()
+
+        calls = {"n": 0}
+        original = source._drain
+
+        def counting_drain():
+            calls["n"] += 1
+            return original()
+
+        source._drain = counting_drain
+
+        first = source.read()
+        second = source.read()
+
+        assert first is not None and second is not None
+        assert int(first[0, 0, 0]) == 7
+        assert calls["n"] == 0, "read() có prefetch không được đọc camera"
+    finally:
+        source.close()
+
+
+def test_prefetch_returns_none_before_first_frame(make_source) -> None:
+    """Chưa có khung nào (camera chết ngay) → ``read()`` trả ``None``, không treo."""
+    source = make_source([], opened=True, dead=True, prefetch=True,
+                         prefetch_wait_s=0.05)
+    try:
+        assert source.read() is None
+    finally:
+        source.close()
+
+
+def test_close_stops_prefetch_thread(make_source) -> None:
+    source = make_source([_frame(1)], live_value=2, prefetch=True)
+    try:
+        thread = source._prefetch_thread
+        assert thread is not None and thread.is_alive()
+    finally:
+        source.close()
+    assert not thread.is_alive(), "close() phải dừng luồng đọc nền"
+
+
+def test_read_without_prefetch_still_works(make_source) -> None:
+    """Mặc định (``prefetch=False``) giữ nguyên hành vi đọc đồng bộ cũ."""
+    source = make_source([_frame(1), _frame(2)], live_value=9)
+    try:
+        assert source._prefetch_thread is None
+        assert int(source.read()[0, 0, 0]) == 9
+    finally:
+        source.close()
 
 
 # --------------------------------------------------------------------------

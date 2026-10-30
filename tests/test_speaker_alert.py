@@ -110,6 +110,19 @@ def _alerter(tmp_path, *, controller=None, **kwargs):
     return alerter, runner
 
 
+def _write_wav(path: Path, *, frames: int = 800) -> Path:
+    """Ghi một WAV 8 kHz mono hợp lệ (im lặng) để ``prepare`` dùng lại."""
+    import wave
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(b"\x00\x00" * frames)
+    return path
+
+
 # --------------------------------------------------------------------------
 # Hằng số — khớp hợp đồng spec §5.15 và tên khóa của schedule
 # --------------------------------------------------------------------------
@@ -272,6 +285,38 @@ def test_espeak_failure_does_not_crash_and_alert_still_beeps(tmp_path):
     assert outcome.mode == MODE_TONE
     assert outcome.spoken is True
     assert controller.calls and controller.calls[0][0] == "tone"
+
+
+def test_wav_co_san_duoc_dung_lai_khi_thieu_espeak(tmp_path):
+    """File WAV đã có phải được dùng lại, không phụ thuộc ``espeak-ng``.
+
+    Đây là ca đã xảy ra thật: ``data/audio/`` có WAV từ lần chạy trước nhưng
+    máy không còn ``espeak-ng``; ``prepare()`` cũ sinh lại vô điều kiện nên
+    thất bại và loa rơi về tiếng bíp dù file vẫn còn. Nay phải phát giọng nói.
+    """
+    for kind in ALERT_KINDS:
+        _write_wav(tmp_path / f"{kind}.wav")
+    runner = FakeEspeak(error=RuntimeError("Không tìm thấy 'espeak-ng'"))
+    controller = FakeController()
+    alerter, _ = _alerter(tmp_path, controller=controller, espeak_runner=runner)
+
+    alerter.prepare()
+
+    assert runner.calls == [], "không được gọi espeak-ng khi WAV đã có"
+    outcome = alerter.alert(ALERT_ABSENT)
+    assert outcome.mode == MODE_SPEECH
+    assert controller.calls and controller.calls[0][0] == "file"
+
+
+def test_wav_hong_thi_sinh_lai(tmp_path):
+    """WAV rỗng/không hợp lệ không được coi là "đã có" — phải sinh lại."""
+    (tmp_path / f"{ALERT_ABSENT}.wav").write_bytes(b"")
+    runner = FakeEspeak()
+    alerter, _ = _alerter(tmp_path, espeak_runner=runner)
+
+    alerter.prepare()
+
+    assert any(path.endswith(f"{ALERT_ABSENT}.wav") for _, path in runner.calls)
 
 
 def test_no_espeak_and_no_fallback_skips_with_reason(tmp_path):
@@ -528,8 +573,15 @@ def test_from_config_reads_section_values(tmp_path):
     from types import SimpleNamespace
 
     for section in (
-        SimpleNamespace(say=False, tone_fallback=False, audio_dir=str(tmp_path), language="vi"),
-        {"say": False, "tone_fallback": False, "audio_dir": str(tmp_path), "language": "vi"},
+        SimpleNamespace(
+            say=False, tone_fallback=False, audio_dir=str(tmp_path), language="vi"
+        ),
+        {
+            "say": False,
+            "tone_fallback": False,
+            "audio_dir": str(tmp_path),
+            "language": "vi",
+        },
     ):
         alerter = SpeakerAlerter.from_config(
             SimpleNamespace(speaker_alert=section, camera=None),

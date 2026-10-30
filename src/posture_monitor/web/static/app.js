@@ -48,7 +48,17 @@
     enrollStep: el("enroll-step"),
     enrollSamples: el("enroll-samples"),
     enrollCancel: el("enroll-cancel-btn"),
-    schedule: el("schedule-summary")
+    schedule: el("schedule-summary"),
+    sessionCard: el("session-card"),
+    sessionState: el("session-state"),
+    sessionCountdown: el("session-countdown"),
+    sessionCountdownLabel: el("session-countdown-label"),
+    sessionMinutes: el("session-minutes"),
+    sessionStart: el("session-start-btn"),
+    sessionStop: el("session-stop-btn"),
+    voiceCard: el("voice-card"),
+    voiceOptions: el("voice-options"),
+    voiceStatus: el("voice-status")
   };
 
   var peopleEnabled =
@@ -336,6 +346,164 @@
           els.calibrateBtn.textContent = "Hiệu chỉnh lại";
         });
     });
+  }
+
+  /* ---- Phiên học (bắt đầu / dừng) ---------------------------------- */
+
+  /* Đây là công tắc DUY NHẤT bật model AI. Toàn bộ quyết định "đang chạy hay
+   * không" nằm ở máy chủ (StudySession): web chỉ hiển thị và gửi lệnh. Không
+   * đoán trạng thái ở client — hai nguồn sự thật cho một câu hỏi "model có
+   * đang chạy không" là cách chắc chắn nhất để nút và thực tế lệch nhau.
+   *
+   * Đếm ngược hiển thị theo `remaining_s` máy chủ trả, trừ dần bằng đồng hồ
+   * trình duyệt giữa hai lần hỏi, để số không đứng im 1 giây một nhịp. */
+  var sessionEnabled =
+    (els.sessionCard && els.sessionCard.dataset.sessionEnabled === "1") ||
+    false;
+  var SESSION_POLL_MS = 1000;
+  var sessionTimer = null;
+  /* Mốc {status, at}: số giây còn lại của lần đồng bộ gần nhất và thời điểm
+   * (Date.now) nhận được nó. Nhờ vậy giữa hai lần poll vẫn vẽ được số giảm. */
+  var sessionBase = null;
+
+  function renderSession(data) {
+    if (!data) return;
+    var state = String(data.state || "idle");
+    var running = state === "running";
+
+    if (els.sessionState) {
+      els.sessionState.dataset.running = running ? "1" : "0";
+      if (running) {
+        els.sessionState.textContent =
+          "Đang trong phiên " + Number(data.minutes || 0) + " phút. " +
+          "Hệ thống đang theo dõi tư thế và điện thoại.";
+      } else if (state === "finished") {
+        els.sessionState.textContent =
+          data.finish_text ||
+          data.finished_message ||
+          "Đã hết giờ học. Bấm “Bắt đầu học” để vào phiên mới.";
+      } else {
+        els.sessionState.textContent =
+          "Chưa bắt đầu. Bấm “Bắt đầu học” để hệ thống theo dõi.";
+      }
+    }
+
+    if (els.sessionCountdown) {
+      els.sessionCountdown.textContent = running
+        ? data.ends_in_text || "—"
+        : state === "finished"
+        ? "00:00"
+        : "—";
+    }
+    if (els.sessionCountdownLabel) {
+      els.sessionCountdownLabel.textContent = running
+        ? "còn lại"
+        : state === "finished"
+        ? "đã hết giờ"
+        : "";
+    }
+
+    if (els.sessionStart) {
+      els.sessionStart.disabled = false;
+      els.sessionStart.textContent = running
+        ? "Bắt đầu lại"
+        : "Bắt đầu học";
+    }
+    if (els.sessionStop) els.sessionStop.disabled = !running;
+    if (els.sessionMinutes && running) {
+      /* Đang chạy thì khoá ô nhập: đổi số giữa phiên không có tác dụng (máy
+       * chủ đã chốt ends_at), để nó sửa được sẽ khiến người dùng tưởng đã
+       * đổi thời lượng. Muốn đổi thì bấm "Bắt đầu lại". */
+      els.sessionMinutes.disabled = true;
+    } else if (els.sessionMinutes) {
+      els.sessionMinutes.disabled = false;
+    }
+
+    if (running && Number.isFinite(Number(data.remaining_s))) {
+      sessionBase = {
+        remaining: Number(data.remaining_s),
+        at: Date.now()
+      };
+    } else {
+      sessionBase = null;
+    }
+  }
+
+  /* Vẽ lại số đếm mỗi 250 ms mà không hỏi máy chủ: chỉ trừ đồng hồ trình
+   * duyệt. Hỏi máy chủ mỗi 250 ms sẽ đập vào Pi 4 lần/giây cho một con số. */
+  function tickSessionCountdown() {
+    if (!sessionBase || !els.sessionCountdown) return;
+    var passed = (Date.now() - sessionBase.at) / 1000;
+    var left = Math.max(0, sessionBase.remaining - passed);
+    var total = Math.ceil(left - 1e-9);
+    var mm = Math.floor(total / 60);
+    var ss = total % 60;
+    els.sessionCountdown.textContent =
+      (mm < 10 ? "0" + mm : String(mm)) + ":" + (ss < 10 ? "0" + ss : String(ss));
+  }
+
+  function fetchSession() {
+    if (!sessionEnabled) return;
+    fetch("/api/session", { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.json();
+      })
+      .then(renderSession)
+      .catch(function () {
+        if (els.sessionState) {
+          els.sessionState.textContent =
+            "Không đọc được trạng thái phiên học.";
+        }
+      });
+  }
+
+  function sendSession(path, body) {
+    fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {})
+    })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok || !data || data.ok !== true) {
+            showMessage(failText(res, data));
+            return;
+          }
+          showMessage(data.message || "Đã cập nhật phiên học.");
+          renderSession(data);
+        });
+      })
+      .catch(function () {
+        showMessage("Không gửi được lệnh phiên học. Kiểm tra kết nối mạng.");
+      });
+  }
+
+  if (sessionEnabled && els.sessionStart) {
+    els.sessionStart.addEventListener("click", function () {
+      var raw = els.sessionMinutes ? els.sessionMinutes.value : "";
+      var body = {};
+      /* Để trống = dùng mặc định của máy chủ. Gửi số 0 hay NaN sẽ bị từ chối
+       * 400 và người dùng không hiểu vì sao — bỏ hẳn khóa thì máy chủ dùng
+       * `default_minutes`. */
+      if (raw !== "" && raw !== null) {
+        var minutes = Number(raw);
+        if (isFinite(minutes)) body.minutes = minutes;
+      }
+      sendSession("/api/session/start", body);
+    });
+  }
+
+  if (sessionEnabled && els.sessionStop) {
+    els.sessionStop.addEventListener("click", function () {
+      sendSession("/api/session/stop", {});
+    });
+  }
+
+  if (sessionEnabled) {
+    fetchSession();
+    window.setInterval(fetchSession, SESSION_POLL_MS);
+    sessionTimer = window.setInterval(tickSessionCountdown, 250);
   }
 
   /* ---- Xoay camera (PTZ) ------------------------------------------ */
@@ -782,6 +950,155 @@
     if (els.enrollCancel) {
       els.enrollCancel.addEventListener("click", cancelEnroll);
     }
+  }
+
+  /* ---- Giọng đọc cảnh báo ------------------------------------------ */
+
+  /* Ba câu cảnh báo là cố định, nên lựa chọn cũng cố định; danh sách nút
+   * dựng từ /api/voice để nhãn và tình trạng khớp dữ liệu thật. Mỗi lựa chọn
+   * ghi rõ câu nào còn thiếu bản thu — người dùng chép file vào là thấy ngay,
+   * không phải đoán xem đã nhận chưa.
+   *
+   * Không lưu gì vào localStorage: đây là cấu hình thiết bị, server đã ghi
+   * xuống data/audio/voice.json rồi. */
+  var voiceEnabled = !!(els.voiceCard &&
+    els.voiceCard.dataset.speakerEnabled === "1");
+
+  function voiceChoiceText(voiceKey, info) {
+    var note = "";
+    if (info && info.missing && info.missing.length) {
+      var labels = { leave_frame: "rời khung hình", phone: "dùng điện thoại",
+                     stranger: "người lạ" };
+      var names = info.missing.map(function (kind) {
+        return labels[kind] || kind;
+      });
+      note = "Thiếu bản thu cho câu " + names.join(", ") + " — câu đó dùng giọng máy.";
+    } else if (voiceKey === "espeak") {
+      note = "Giọng tổng hợp của máy; khó nghe hơn trên loa camera.";
+    } else {
+      note = "Đủ ba câu, phát bằng bản thu.";
+    }
+    return note;
+  }
+
+  function renderVoice(data) {
+    if (!els.voiceOptions) return;
+    var voices = (data && data.voices) || {};
+    var current = data && data.voice;
+    var order = ["nam", "nu", "espeak"];
+    els.voiceOptions.textContent = "";
+
+    order.forEach(function (key) {
+      var info = voices[key];
+      if (!info) return;
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "voice__choice";
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", key === current ? "true" : "false");
+      button.dataset.voice = key;
+
+      var mark = document.createElement("span");
+      mark.className = "voice__mark";
+      mark.setAttribute("aria-hidden", "true");
+      mark.textContent = key === current ? "●" : "○";
+
+      var body = document.createElement("span");
+      var label = document.createElement("span");
+      label.className = "voice__label";
+      label.textContent = info.label || key;
+      var note = document.createElement("span");
+      note.className = "voice__note";
+      note.textContent = voiceChoiceText(key, info);
+      body.appendChild(label);
+      body.appendChild(note);
+
+      button.appendChild(mark);
+      button.appendChild(body);
+      button.addEventListener("click", function () {
+        setVoice(key, button);
+      });
+      els.voiceOptions.appendChild(button);
+    });
+
+    if (!els.voiceStatus) return;
+    if (!current) {
+      els.voiceStatus.textContent =
+        "Chưa đọc được giọng đang dùng.";
+      return;
+    }
+    var currentInfo = voices[current];
+    var label = (currentInfo && currentInfo.label) || current;
+    var fallbacks = (data && data.fallbacks) || {};
+    var fallbackNotes = Object.keys(fallbacks).map(function (kind) {
+      return fallbacks[kind];
+    });
+    var base = "Đang dùng: " + label + ".";
+    if (data && typeof data.speed === "number" && typeof data.volume === "number") {
+      base +=
+        " Tốc độ " +
+        data.speed.toFixed(2) +
+        "×, âm lượng " +
+        data.volume.toFixed(2) +
+        ".";
+    }
+    if (fallbackNotes.length) {
+      base += " " + fallbackNotes.join(" ");
+    }
+    if (data && data.error) {
+      base += " Lưu ý: " + data.error + ".";
+    }
+    els.voiceStatus.textContent = base;
+  }
+
+  function fetchVoice() {
+    if (!voiceEnabled) return;
+    fetch("/api/voice", { cache: "no-store" })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok) {
+            if (els.voiceStatus) {
+              els.voiceStatus.textContent = failText(res, data);
+            }
+            return;
+          }
+          renderVoice(data);
+        });
+      })
+      .catch(function () {
+        if (els.voiceStatus) {
+          els.voiceStatus.textContent = "Không tải được trạng thái giọng đọc.";
+        }
+      });
+  }
+
+  function setVoice(key, button) {
+    if (button) button.disabled = true;
+    fetch("/api/voice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ voice: key })
+    })
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          if (!res.ok) {
+            showMessage(failText(res, data));
+            return;
+          }
+          showMessage(data.message || "Đã đổi giọng đọc.");
+          renderVoice(data);
+        });
+      })
+      .catch(function () {
+        showMessage("Không gửi được yêu cầu đổi giọng đọc.");
+      })
+      .finally(function () {
+        if (button) button.disabled = false;
+      });
+  }
+
+  if (voiceEnabled) {
+    fetchVoice();
   }
 
   /* Cập nhật mỗi giây một lần. Dữ liệu người không bao giờ vào localStorage:

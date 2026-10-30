@@ -158,6 +158,14 @@ PRESENCE_AGE_LIMIT_S = 3.0
 PHONE_AGE_LIMIT_S = 3.0
 IDENTITY_AGE_LIMIT_S = 10.0
 
+#: Tuổi tối đa của hộp khuôn mặt dùng để **vẽ** (không phải để kết luận).
+#:
+#: Nhận diện chạy mỗi ``face.interval_s`` (mặc định 2,0 s) trên luồng riêng.
+#: Ba nhịp (6 s) là đủ để hộp không nhấp nháy khi một lượt chậm, mà vẫn biến
+#: mất khi luồng nhận diện đã chết — hộp đứng yên mãi trên hình ở một chỗ
+#: không còn ai là lỗi hiển thị tệ hơn là không vẽ gì.
+FACE_BOX_MAX_AGE_S = 6.0
+
 #: Sentinel "lượt này **không nhìn**", khác hẳn "nhìn mà không thấy mặt".
 #:
 #: ``processor`` trả ``None`` khi nó đã chạy và kết luận khung không có khuôn
@@ -557,6 +565,13 @@ class PeopleService:
             "updated_at": None,
         }
 
+        # Hộp khuôn mặt gần nhất, **chỉ để vẽ** trên khung xem trước. Tách
+        # khỏi ``_identity`` vì hai thứ có vòng đời khác nhau: danh tính phải
+        # sống lâu (``IDENTITY_AGE_LIMIT_S``) để không nhấp nháy, còn hộp là
+        # hình học của một lượt đo cụ thể và phải biến mất nhanh khi lượt đó
+        # đã cũ. Lưu ``(x, y, w, h)`` trong hệ pixel khung gốc.
+        self._face_box: dict[str, Any] = {"box": None, "updated_at": None}
+
         # Khe khung mới nhất cho worker: một tham chiếu, không copy.
         self._cond = threading.Condition(threading.Lock())
         self._pending: tuple[Any, float] | None = None
@@ -752,6 +767,41 @@ class PeopleService:
             if phone is not None:
                 self._phone = {"state": str(phone), "updated_at": moment}
 
+    def note_face_box(
+        self, box: Any, now: float | None = None
+    ) -> None:
+        """Ghi hộp khuôn mặt của lượt đo vừa rồi để **vẽ** lên khung xem trước.
+
+        Đây là kênh phụ, cùng kiểu với :meth:`note_phone`: ``processor`` trả
+        về **embedding** (vì ``_classify`` chỉ cần vector), nên hình học của
+        khuôn mặt — thứ người dùng cần thấy để biết mô hình đang nhắm vào đâu
+        — phải đi đường riêng. Không có hàm này thì dashboard và cửa sổ xem
+        trước không cách nào biết hộp mặt nằm ở đâu dù lượt detect vừa tìm ra.
+
+        Chỉ nhận hộp 4 số hữu hạn ``(x, y, w, h)``; mọi thứ khác **bỏ qua
+        im lặng** thay vì ném — hàm được gọi trong luồng worker nhận diện, và
+        một hộp hỏng không được phép giết luồng đó.
+
+        Args:
+            box: ``(x, y, w, h)`` pixel trong hệ khung gốc.
+            now: mốc thời gian (giây, cùng gốc ``clock``); ``None`` thì đọc
+                ``clock``.
+        """
+        try:
+            values = tuple(float(value) for value in box)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if len(values) != 4 or not all(math.isfinite(v) for v in values):
+            return
+        try:
+            moment = float(self._clock() if now is None else now)
+        except (TypeError, ValueError, OverflowError):
+            return
+        if not math.isfinite(moment):
+            return
+        with self._lock:
+            self._face_box = {"box": values, "updated_at": moment}
+
     def note_phone(self, state: str, now: float | None = None) -> None:
         """Ghi **riêng** tín hiệu điện thoại; tương đương ``phone=`` của
         :meth:`update_signals`.
@@ -787,6 +837,13 @@ class PeopleService:
                 "reason": reason,
                 "updated_at": self._clock(),
             }
+            if vector is None:
+                # Lượt này đã chạy và kết luận "không có mặt": hộp của lượt
+                # trước chỉ vào chỗ không còn ai. Xoá ngay thay vì để nó
+                # sống hết ``FACE_BOX_MAX_AGE_S``. Lượt bị bỏ
+                # (``OBSERVATION_SKIPPED``) không đi qua đây, nên hộp cũ vẫn
+                # được giữ khi chỉ là cổng nhịp chặn.
+                self._face_box = {"box": None, "updated_at": None}
             self._collect_sample(vector, moment)
 
     def _classify(self, vector: np.ndarray | None) -> tuple[str, str | None, str]:
@@ -1119,6 +1176,27 @@ class PeopleService:
             return
         self._auto_threshold = derived
         self._save_auto_threshold(derived)
+        if derived <= AUTO_THRESHOLD_MIN:
+            # Chạm sàn nghĩa là các mẫu đăng ký KHÔNG đồng ý với nhau: độ
+            # giống thấp nhất giữa hai mẫu cùng người đã <= sàn + khoảng an
+            # toàn, nên phép trừ bị kẹp lên. Một ngưỡng như vậy không mô tả
+            # "mức còn nhận ra chính mình" mà là mức thấp nhất code còn cho
+            # phép, và `_classify` dùng nó y như ngưỡng thật.
+            #
+            # Đo được: đăng ký trên chuỗi 14 khung bị tay che mặt cho cosine
+            # thấp nhất 0,40 -> ngưỡng 0,30 (sàn), trong khi CÙNG người trên
+            # khung sạch cho 0,92 -> ngưỡng 0,77. Không chặn phiên (người dùng
+            # đã ngồi đủ 7,5 s) nhưng phải nói ra: im lặng ở đây chính là lỗi
+            # "cảnh báo người lạ không bao giờ kêu" mà spec §5.13 lo.
+            self._log.warning(
+                "Ngưỡng nhận diện tự suy chỉ %.2f (chạm sàn %.2f): các mẫu "
+                "đăng ký không đồng ý với nhau (mức giống thấp nhất giữa hai "
+                "mẫu cùng người rất thấp). Ngưỡng này lỏng — người khác có "
+                "thể được nhận thành chủ. Hãy đăng ký lại ở nơi đủ sáng, "
+                "nhìn thẳng vào camera, không che mặt.",
+                derived,
+                AUTO_THRESHOLD_MIN,
+            )
         self._log.info(
             "Đã tự suy ngưỡng nhận diện khuôn mặt %.2f từ dữ liệu đăng ký "
             "(%d mẫu, khoảng cách an toàn %.2f); lưu lại cho lần khởi động kế "
@@ -1317,3 +1395,40 @@ class PeopleService:
             "age_limit_s": float(limit),
             "fresh": age is not None and age <= limit,
         }
+
+    def latest_face_box(
+        self, now: float | None = None
+    ) -> tuple[float, float, float, float] | None:
+        """Hộp khuôn mặt gần nhất còn hạn, để **vẽ lên khung xem trước**.
+
+        Trả ``(x, y, w, h)`` trong hệ pixel của khung gốc, hoặc ``None``. Đây
+        là dữ liệu hiển thị, không phải kết luận danh tính: đọc
+        :meth:`signals` cho quyết định ``MATCH``/``MISMATCH``/``UNKNOWN``.
+
+        Hộp cũ hơn :data:`FACE_BOX_MAX_AGE_S` bị coi như không có. Lý do: nhận
+        diện chạy trên luồng riêng mỗi ``face.interval_s`` giây; nếu luồng
+        chết thì trả hộp cũ mãi nghĩa là vẽ một khung chữ nhật đứng yên ở chỗ
+        không còn ai — người xem sẽ tin là mô hình vẫn đang thấy mặt.
+
+        Args:
+            now: mốc thời gian (giây, cùng gốc ``clock``); ``None`` thì đọc
+                ``clock``.
+
+        Returns:
+            Hộp ``(x, y, w, h)`` hoặc ``None``.
+        """
+        try:
+            moment = float(self._clock() if now is None else now)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(moment):
+            return None
+        with self._lock:
+            box = self._face_box.get("box")
+            updated = self._face_box.get("updated_at")
+        if box is None or updated is None:
+            return None
+        age = moment - float(updated)
+        if not math.isfinite(age) or age < 0 or age > FACE_BOX_MAX_AGE_S:
+            return None
+        return (float(box[0]), float(box[1]), float(box[2]), float(box[3]))

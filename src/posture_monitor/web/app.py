@@ -24,6 +24,7 @@ thoại trong cùng mạng LAN; không NAT/forward cổng này ra ngoài (spec �
 
 from __future__ import annotations
 
+import functools
 import threading
 import time
 from typing import Any, Callable, Mapping
@@ -33,6 +34,13 @@ from flask import Flask, Response, jsonify, render_template, request
 from .. import camera_control
 from ..classifier import LABEL_ORDER
 from ..logging_setup import get_logger
+from ..study_session import (
+    DEFAULT_MINUTES as SESSION_DEFAULT_MINUTES,
+    MAX_MINUTES as SESSION_MAX_MINUTES,
+    MIN_MINUTES as SESSION_MIN_MINUTES,
+    StudySessionError,
+    payload as session_payload,
+)
 from .people_service import PeopleService, PeopleServiceError
 from ..camera_audio import (
     CameraAudioBusy,
@@ -70,6 +78,9 @@ STATE_TEXT = {
     "WARN": "Cần chú ý",
     "BAD": "Tư thế sai",
     "ABSENT": "Không thấy người",
+    #: Ngoài phiên học: hệ thống cố ý không đo. Phải khác "Không thấy người",
+    #: nếu không người dùng ngồi trước camera vẫn đọc thấy "không thấy ai".
+    "PAUSED": "Chưa bắt đầu phiên học",
 }
 
 #: Nhãn tiếng Việt của từng nhãn phân loại (spec v2 §5.5).
@@ -93,11 +104,23 @@ STREAM_WAIT_S = 2.0
 #: Khoảng nghỉ giữa hai lần kiểm tra khung mới trong ``/stream``.
 STREAM_POLL_S = 0.05
 
+#: Sau bao nhiêu giây không có khung mới thì ghi log **một lần** rằng luồng
+#: xem đang lặp lại khung cuối. Không đổi hành vi gửi ảnh: luồng
+#: ``multipart/x-mixed-replace`` chỉ được chứa ``image/jpeg``, nên không thể
+#: chèn một phần tử văn bản báo lỗi vào giữa (trình duyệt sẽ trắng ảnh).
+STREAM_STALE_WARN_S = 5.0
+
 #: Câu trả về khi phiên chạy không được tiêm dịch vụ người học.
 #: Trang chủ vẫn render bình thường; chỉ các khối liên quan hiện câu này
 #: thay cho lỗi, và mọi route người học trả 503 (không phải 500).
-PEOPLE_DISABLED_MESSAGE = (
-    "Tính năng người học chưa được bật trong phiên chạy này."
+PEOPLE_DISABLED_MESSAGE = "Tính năng người học chưa được bật trong phiên chạy này."
+
+#: Câu trả về khi phiên chạy không có loa cảnh báo (``speaker_alert`` tắt hoặc
+#: dựng lỗi). Thẻ "Giọng đọc" vẫn hiện để người dùng biết chỗ chỉnh, kèm câu
+#: này thay vì lỗi — giống cách xử lý khối "Người học".
+SPEAKER_DISABLED_MESSAGE = (
+    "Loa cảnh báo chưa được bật trong phiên chạy này nên chưa đổi được giọng "
+    "đọc. Kiểm tra mục 'speaker_alert' và 'camera.speaker' trong config.yaml."
 )
 
 #: Ba khóa công khai của một người học. **Danh sách trắng** là lớp chặn
@@ -265,6 +288,8 @@ def create_app(
     ptz=None,
     *,
     people: PeopleService | None = None,
+    speaker=None,
+    study_session=None,
 ) -> Flask:
     """Tạo ứng dụng Flask.
 
@@ -291,6 +316,17 @@ def create_app(
             ``/api/people*``, ``/api/enroll*``, ``/api/select``,
             ``/api/schedule``, ``/api/signals`` trả 503 kèm thông điệp tiếng
             Việt, và trang chủ vẫn render bình thường.
+        speaker: :class:`posture_monitor.speaker_alert.SpeakerAlerter` dùng
+            chung với vòng lặp chính. Keyword-only, mặc định ``None``: khi đó
+            thẻ "Giọng đọc" vẫn hiện nhưng bấm đổi giọng báo 503, và
+            ``/api/voice`` trả ``available: false``. Truyền vào **cùng một**
+            đối tượng với vòng lặp thì đổi giọng trên web có hiệu lực ngay cho
+            lần cảnh báo kế tiếp.
+        study_session: :class:`posture_monitor.study_session.StudySession` dùng
+            chung với vòng lặp chính. Keyword-only, mặc định ``None``: khi đó
+            khối "Phiên học" không hiện và ``/api/session*`` trả 503. Truyền
+            **cùng một** đối tượng với vòng lặp thì nút Bắt đầu/Dừng trên web
+            điều khiển đúng việc model có chạy hay không.
 
     Returns:
         :class:`flask.Flask` đã gắn đủ route.
@@ -315,7 +351,14 @@ def create_app(
     app.config["MIN_DISTANCE_CM"] = min_distance
     app.config["SPEAK_CONTROLLER"] = speak_controller
     app.config["PEOPLE"] = people
+    app.config["SPEAKER"] = speaker
     people_enabled = people is not None
+    #: Phiên học bật/tắt bằng tay. ``None`` = phiên bản cũ không có tính năng
+    #: này (test cũ dựng ``create_app`` không truyền) — khi đó mọi route
+    #: ``/api/session`` trả 503 và trang chủ hiện câu giải thích thay vì nút
+    #: bấm không có tác dụng.
+    app.config["STUDY_SESSION"] = study_session
+    session_enabled = study_session is not None
 
     _speak_lock = threading.Lock()
     _speak_state: dict[str, SpeakController | None] = {"controller": speak_controller}
@@ -360,6 +403,15 @@ def create_app(
             min_distance_cm=min_distance,
             people_enabled=people_enabled,
             people_disabled_message=PEOPLE_DISABLED_MESSAGE,
+            speaker_enabled=speaker is not None,
+            session_enabled=session_enabled,
+            session_default_minutes=(
+                int(study_session.default_minutes)
+                if study_session is not None
+                else SESSION_DEFAULT_MINUTES
+            ),
+            session_min_minutes=SESSION_MIN_MINUTES,
+            session_max_minutes=SESSION_MAX_MINUTES,
         )
 
     @app.get("/api/status")
@@ -375,9 +427,7 @@ def create_app(
         """JSON số liệu biểu đồ; ``range=today`` (mặc định) hoặc ``7d``."""
         range_key = request.args.get("range", "today")
         if range_key not in ("today", "7d"):
-            return _json_error(
-                "Tham số 'range' phải là 'today' hoặc '7d'.", 400
-            )
+            return _json_error("Tham số 'range' phải là 'today' hoặc '7d'.", 400)
         if storage is None:
             return jsonify(
                 {
@@ -410,6 +460,71 @@ def create_app(
                 "calibration_pending": True,
             }
         )
+
+    # ------------------------------------------------------------------
+    # Phiên học (nút Bắt đầu / Dừng). Đây là công tắc duy nhất bật model AI:
+    # vòng lặp đọc ``study_session.is_running`` mỗi khung và bỏ qua pose/dò
+    # điện thoại khi phiên không chạy. Không có route nào khác bật được nó.
+    # ------------------------------------------------------------------
+    def _session_unavailable() -> Response:
+        """503 khi phiên chạy không được tiêm ``StudySession``."""
+        return _json_error(
+            "Phiên học chưa được bật trong lần chạy này nên chưa bấm được "
+            "Bắt đầu/Dừng.",
+            503,
+        )
+
+    @app.get("/api/session")
+    def api_session_get() -> Response:
+        """Trạng thái phiên học + thời lượng mặc định cho ô nhập trên web.
+
+        Chỉ **đọc**; không làm hết giờ cũng không phát câu thông báo. Việc phát
+        câu "đã hết giờ" thuộc vòng lặp (``StudySession.tick``), để nó ra loa
+        đúng một lần kể cả khi không ai mở dashboard.
+        """
+        if study_session is None:
+            return _session_unavailable()
+        data = session_payload(study_session.snapshot())
+        data["default_minutes"] = int(study_session.default_minutes)
+        data["min_minutes"] = SESSION_MIN_MINUTES
+        data["max_minutes"] = SESSION_MAX_MINUTES
+        return jsonify(data)
+
+    @app.post("/api/session/start")
+    def api_session_start() -> Response:
+        """Bắt đầu phiên học; thân tuỳ chọn ``{"minutes": 60}``.
+
+        Thiếu thân hoặc thiếu ``minutes`` thì dùng thời lượng mặc định của cấu
+        hình. Bắt đầu khi đang chạy là **bắt đầu lại** (ghi đè), đúng ý người
+        dùng đổi thời lượng giữa phiên.
+        """
+        if study_session is None:
+            return _session_unavailable()
+        body = request.get_json(silent=True)
+        minutes = None
+        if isinstance(body, Mapping) and body.get("minutes") is not None:
+            minutes = body["minutes"]
+        try:
+            snapshot = study_session.start(minutes)
+        except StudySessionError as exc:
+            return _json_error(str(exc), 400)
+        data = session_payload(snapshot)
+        data["ok"] = True
+        data["message"] = (
+            f"Đã bắt đầu phiên học {snapshot.minutes} phút. Hệ thống đang theo dõi."
+        )
+        return jsonify(data)
+
+    @app.post("/api/session/stop")
+    def api_session_stop() -> Response:
+        """Dừng phiên và tắt model AI; an toàn khi gọi lúc đang nghỉ."""
+        if study_session is None:
+            return _session_unavailable()
+        snapshot = study_session.stop()
+        data = session_payload(snapshot)
+        data["ok"] = True
+        data["message"] = "Đã dừng phiên học. Hệ thống tạm ngừng phân tích."
+        return jsonify(data)
 
     @app.post("/api/mute")
     def api_mute() -> Response:
@@ -492,6 +607,76 @@ def create_app(
 
         payload = {"ok": True, "message": "Đã phát tiếng ra loa camera."}
         payload.update(result.as_dict())
+        return jsonify(payload)
+
+    @app.get("/api/voice")
+    def api_voice() -> Response:
+        """JSON giọng đọc đang dùng + tình trạng từng giọng có sẵn.
+
+        Trả ``voice`` (mã đang chọn), ``voices`` (mỗi giọng: nhãn, thư mục,
+        câu nào đã có bản thu, thiếu câu nào) và ``fallbacks`` (câu nào đang
+        phải tạm dùng giọng khác vì thiếu bản thu). ``available: false`` khi
+        phiên chạy không có loa cảnh báo — trang vẫn mở bình thường.
+        """
+        if speaker is None:
+            return jsonify(
+                {
+                    "ok": True,
+                    "available": False,
+                    "voice": None,
+                    "voices": {},
+                    "fallbacks": {},
+                    "message": SPEAKER_DISABLED_MESSAGE,
+                }
+            )
+        try:
+            report = speaker.voice_report()
+        except Exception as exc:  # noqa: BLE001 - web không được sập vì loa
+            _logger.error("Không đọc được trạng thái giọng đọc: %s", exc)
+            return _json_error("Không đọc được trạng thái giọng đọc.", 503)
+        payload = {"ok": True, "available": True}
+        payload.update(report)
+        return jsonify(payload)
+
+    @app.post("/api/voice")
+    def api_voice_set() -> Response:
+        """Đổi giọng đọc: ``{"voice": "nam"|"nu"|"espeak"}``.
+
+        Đổi xong thì lần cảnh báo **kế tiếp** đã dùng giọng mới và lựa chọn
+        được ghi xuống ``audio_dir/voice.json`` để lần chạy sau vẫn nhớ. Trả
+        200 kèm báo cáo mới; giọng lạ 400; chưa nối dây loa 503.
+        """
+        if speaker is None:
+            return _json_error(SPEAKER_DISABLED_MESSAGE, 503)
+        body = request.get_json(silent=True)
+        if not isinstance(body, Mapping):
+            return _json_error(
+                "Thân request phải là một đối tượng JSON dạng "
+                '{"voice": "nam"|"nu"|"espeak"}.',
+                400,
+            )
+        requested = body.get("voice")
+        if not isinstance(requested, str) or not requested.strip():
+            return _json_error("Thiếu khóa 'voice' (chuỗi) trong request.", 400)
+        from ..voice_library import VOICE_LABELS, VOICES  # noqa: PLC0415
+
+        if requested.strip().lower() not in VOICES:
+            return _json_error(
+                f"Giọng '{requested}' không hợp lệ; chọn một trong "
+                f"{', '.join(VOICE_LABELS[v] for v in VOICES)}.",
+                400,
+            )
+        try:
+            report = speaker.set_voice(requested)
+        except Exception as exc:  # noqa: BLE001 - web không được sập vì loa
+            _logger.error("Không đổi được giọng đọc: %s", exc)
+            return _json_error("Không đổi được giọng đọc.", 503)
+        payload = {
+            "ok": True,
+            "available": True,
+            "message": f"Đã đổi sang {VOICE_LABELS[report['voice']].lower()}.",
+        }
+        payload.update(report)
         return jsonify(payload)
 
     @app.post("/api/ptz")
@@ -624,9 +809,7 @@ def create_app(
             return _people_unavailable()
         body = request.get_json(silent=True)
         if not isinstance(body, Mapping):
-            return _json_error(
-                'Thân request phải là JSON dạng {"name": "..."}.', 400
-            )
+            return _json_error('Thân request phải là JSON dạng {"name": "..."}.', 400)
         name = body.get("name")
         if not isinstance(name, str):
             return _json_error("Tên người học phải là chữ.", 400)
@@ -650,9 +833,7 @@ def create_app(
         if not ok:
             return result
         if not result:
-            return _json_error(
-                f"Không tìm thấy người học có mã {person_id!r}.", 404
-            )
+            return _json_error(f"Không tìm thấy người học có mã {person_id!r}.", 404)
         return jsonify({"ok": True, "message": "Đã xoá người học."})
 
     @app.get("/api/enroll/<enroll_id>")
@@ -699,9 +880,7 @@ def create_app(
         if not ok:
             return result
         if not result:
-            return _json_error(
-                f"Không tìm thấy người học có mã {person_id!r}.", 404
-            )
+            return _json_error(f"Không tìm thấy người học có mã {person_id!r}.", 404)
         message = (
             "Đã bỏ chọn người đang học."
             if person_id is None
@@ -757,32 +936,81 @@ def create_app(
     return app
 
 
+@functools.lru_cache(maxsize=1)
+def _placeholder_jpeg() -> bytes:
+    """Ảnh JPEG xám 320x240 để lấp chỗ khi camera chưa gửi khung nào.
+
+    Phải là **JPEG thật**: luồng ``multipart/x-mixed-replace`` chỉ được chứa
+    một kiểu ``Content-Type``. Bản cũ chèn ``text/plain`` vào giữa luồng, và
+    trình duyệt coi đó là ảnh hỏng — ảnh trắng cho tới lần nối lại, đúng hiện
+    tượng "cứ một tí lại mất hình".
+
+    Sinh một lần rồi cache: mỗi vòng chờ không phải mã hoá lại một ảnh tĩnh.
+    Nếu OpenCV không mã hoá được (gần như không xảy ra), rơi về ``None`` và
+    luồng chỉ chờ, không gửi gì.
+    """
+    import cv2  # noqa: PLC0415 - chỉ cần ở đây, không kéo vào lúc import module
+    import numpy as np  # noqa: PLC0415
+
+    frame = np.full((240, 320, 3), 32, dtype=np.uint8)
+    ok, buffer = cv2.imencode(".jpg", frame)
+    return buffer.tobytes() if ok else None
+
+
 def _mjpeg(dashboard: DashboardState):
     """Sinh luồng MJPEG từ khung mới nhất của vòng lặp chính.
 
-    Nếu chưa có khung nào — hoặc không có khung **mới** trong
-    ``STREAM_WAIT_S`` giây — trả placeholder rồi tiếp tục chờ. Không treo im
-    lặng và không tự mở camera.
+    Khi chưa có khung mới trong ``STREAM_WAIT_S`` giây, **giữ nguyên khung
+    cuối** thay vì chèn placeholder chữ: mọi phần tử trong ``multipart/
+    x-mixed-replace`` phải cùng kiểu ``image/jpeg``. Trộn một phần tử
+    ``text/plain`` vào là trình duyệt gặp phần không vẽ được và **trắng ảnh**
+    cho tới lần kết nối lại — đúng hiện tượng "cứ một tí lại mất hình".
 
-    Placeholder khi khung cũ là cố ý: lặp lại khung cuối mãi mãi sẽ hiện một
-    ảnh đứng mà người xem tưởng vẫn là hình sống. Camera đứt giữa chừng phải
-    nhìn ra được.
+    Trước khi có khung đầu tiên, gửi :func:`_placeholder_jpeg` để thẻ ``<img>``
+    có nội dung vẽ được ngay (``load`` bắn ra, ảnh không bị ẩn). Đếm
+    ``STREAM_STALE_WARN_S`` giây không có khung mới thì ghi log **một lần**
+    cho người vận hành biết camera đã đứt.
     """
     boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-    placeholder = (
-        b"--frame\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
-        + "Chưa có khung hình từ camera.\r\n".encode("utf-8")
-    )
     seq = 0
+    last_jpeg: bytes | None = None
+    #: Lúc nhận khung mới nhất, tính bằng ``time.monotonic()``. Phải đếm thời
+    #: gian thật: ``wait_frame`` chỉ chờ ``STREAM_WAIT_S`` (2 s) mỗi vòng, nên
+    #: "hết một vòng chờ" **không** đồng nghĩa với "đã cũ
+    #: ``STREAM_STALE_WARN_S``". Dùng số vòng chờ làm đồng hồ sẽ cảnh báo ở
+    #: giây thứ 2 thay vì giây thứ 5.
+    last_at = time.monotonic()
+    warned_empty = False
+    warned_stale = False
     while True:
         new_seq, frame = dashboard.wait_frame(seq)
-        if frame is None or new_seq == seq:
-            # Không có khung nào, hoặc hết giờ chờ mà chưa có khung mới.
-            yield placeholder
+        if frame is not None and new_seq != seq:
             seq = new_seq
+            last_jpeg = frame
+            last_at = time.monotonic()
+            warned_empty = False
+            warned_stale = False
+        if last_jpeg is None:
+            # Chưa từng có khung nào: gửi ảnh xám giữ chỗ để ``<img>`` có gì
+            # vẽ. Không chèn chữ: sai kiểu MIME là hỏng cả luồng.
+            if not warned_empty:
+                warned_empty = True
+                _logger.info(
+                    "Luồng xem đang chờ khung đầu tiên từ camera; đang gửi ảnh "
+                    "giữ chỗ, sẽ thay bằng hình thật ngay khi có khung."
+                )
+            placeholder = _placeholder_jpeg()
+            if placeholder is not None:
+                yield boundary + placeholder + b"\r\n"
             continue
-        seq = new_seq
-        yield boundary + frame + b"\r\n"
+        if not warned_stale and time.monotonic() - last_at >= STREAM_STALE_WARN_S:
+            warned_stale = True
+            _logger.warning(
+                "Không có khung mới trong %.0f giây; luồng xem đang lặp lại "
+                "khung cuối. Kiểm tra camera/kết nối RTSP.",
+                STREAM_STALE_WARN_S,
+            )
+        yield boundary + last_jpeg + b"\r\n"
 
 
 def _public_person(item: Mapping[str, Any]) -> dict[str, Any]:
@@ -832,8 +1060,7 @@ def run_server(app: Flask, config=None, **kwargs) -> None:
     host = str(getattr(web_cfg, "host", "0.0.0.0"))
     port = int(getattr(web_cfg, "port", 8000))
     _logger.info(
-        "Dashboard chạy tại http://%s:%d/ (chỉ trong LAN, không mở ra "
-        "Internet)",
+        "Dashboard chạy tại http://%s:%d/ (chỉ trong LAN, không mở ra Internet)",
         "127.0.0.1" if host == "0.0.0.0" else host,
         port,
     )

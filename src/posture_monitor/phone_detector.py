@@ -61,12 +61,22 @@ from typing import Any, Sequence
 import numpy as np
 
 from .logging_setup import get_logger
-from .phone import PHONE_CLASS_ID, HandPhoneResult, hand_phone_contact
+from .phone import (
+    PHONE_CLASS_ID,
+    HandPhoneResult,
+    hand_phone_contact,
+    is_head_like_box,
+    is_plausible_phone_box,
+    shoulder_width_px,
+)
 
 logger = get_logger(__name__)
 
 #: Ngưỡng tin cậy mặc định khi gọi model detect (khớp ``phone.conf_threshold``).
-DEFAULT_CONF_THRESHOLD = 0.25
+#: **Đo trên camera Tiandy thật**: bản NCNN không vượt 0,236 cho điện thoại
+#: thật, nên 0,25 (giá trị cũ) cho 0/30 khung có hộp. 0,06 nằm trong dải đo
+#: được dùng (0,05 → 29/30 khung, 0,08 → 20/30).
+DEFAULT_CONF_THRESHOLD = 0.06
 
 #: ``imgsz`` mặc định (khớp ``phone.imgsz``).
 DEFAULT_IMGSZ = 320
@@ -245,9 +255,7 @@ class PhoneDetector:
         try:
             self._model = self._yolo()(str(self._weights))
             self._backend = "pt"
-            logger.info(
-                "Đã nạp model dò điện thoại PyTorch từ '%s'.", self._weights
-            )
+            logger.info("Đã nạp model dò điện thoại PyTorch từ '%s'.", self._weights)
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning("Nạp model dò điện thoại PyTorch thất bại: %s", exc)
@@ -367,26 +375,33 @@ class PhoneSignal:
     Mỗi khung gọi :meth:`observe`:
 
     - Nếu tắt (``config.enabled`` sai) hoặc khung không có keypoint dùng được
-      (không đọc được hình dạng, hoặc cả hai cổ tay dưới ``min_kp_conf``) thì
-      **không** chạy detect và trả ``None``.
+      (không đọc được hình dạng, hoặc cả hai cổ tay dưới ``wrist_conf_min``)
+      thì **không** chạy detect và trả ``None``.
     - Cứ ``detect_every_n_frames`` khung dùng được thì chạy detect một lần,
-      ghi lại hộp cùng thời điểm.
+      ghi lại hộp cùng thời điểm. Hộp phủ vùng đầu (gọng kính giả) bị bỏ
+      trước khi lưu nếu ``head_filter`` bật.
     - Hộp cũ hơn ``box_ttl_s`` bị bỏ; sau đó không có hộp nào để xét.
     - Có hộp còn hạn thì gọi ``hand_phone_contact`` với keypoint của **khung
-      hiện tại** và hộp đã lưu, trả :class:`HandPhoneResult`.
+      hiện tại** và hộp đã lưu, trả :class:`HandPhoneResult`. Ngưỡng "chạm"
+      là ``touching_slack_px + shoulder_ratio * bề_rộng_vai`` — co theo kích
+      cỡ người trong khung; vai không đọc được thì coi như không chạm.
 
     Thời gian chạm liên tục nằm ở :attr:`held_s`; :attr:`in_use` thành
-    ``True`` khi ``held_s >= config.hold_s``.
+    ``True`` khi ``held_s >= config.hold_s``. ``miss_tolerance_frames`` khung
+    "không chạm" liên tiếp mới làm đứt chuỗi — ở 5,2 FPS trên camera thật, hộp
+    detect chỉ sống ~1/3 số khung nên cần khoan dung ngắn để ``hold_s`` có
+    nghĩa.
 
     Args:
         config: :class:`~posture_monitor.config.Config` đầy đủ; đọc
-            ``config.phone``, ``config.model.format`` và
-            ``config.model.kp_conf_min``.
+            ``config.phone`` và ``config.model.format``.
         detector: :class:`PhoneDetector` (hoặc đối tượng cùng giao diện).
             ``None`` thì tự dựng từ ``config.phone`` — an toàn vì model nạp
             lười, thiếu trọng số chỉ lỗi ở lần detect đầu.
         min_kp_conf: ngưỡng tin cậy cổ tay; mặc định lấy
-            ``config.model.kp_conf_min``.
+            ``config.phone.wrist_conf_min`` (**không** phải
+            ``config.model.kp_conf_min`` — ngưỡng 0,5 của pose loại luôn cổ
+            tay đang cầm điện thoại, đo được 0,35–0,43).
 
     Raises:
         ValueError: khi một ngưỡng trong ``config.phone`` vô lý (âm/không hữu
@@ -407,11 +422,29 @@ class PhoneSignal:
         )
         self._box_ttl_s = _finite_non_negative(self._cfg.box_ttl_s, "box_ttl_s")
         self._hold_s = _finite_non_negative(self._cfg.hold_s, "hold_s")
-        self._proximity_px = _finite_non_negative(
+        self._slack_px = _finite_non_negative(
             self._cfg.touching_slack_px, "touching_slack_px"
         )
+        self._shoulder_ratio = _finite_non_negative(
+            self._cfg.shoulder_ratio, "shoulder_ratio"
+        )
+        self._head_filter = bool(self._cfg.head_filter)
+        self._phone_like_filter = bool(getattr(self._cfg, "phone_like_filter", True))
+        self._min_size_ratio = _finite_non_negative(
+            getattr(self._cfg, "min_size_ratio", 0.45), "min_size_ratio"
+        )
+        self._max_above_shoulder_px = _finite_non_negative(
+            getattr(self._cfg, "max_above_shoulder_px", 10.0),
+            "max_above_shoulder_px",
+        )
+        self._oversize_ratio = _finite_non_negative(
+            getattr(self._cfg, "oversize_ratio", 1.2), "oversize_ratio"
+        )
+        self._miss_tolerance = _non_negative_int(
+            self._cfg.miss_tolerance_frames, "miss_tolerance_frames"
+        )
         self._min_kp_conf = (
-            float(config.model.kp_conf_min)
+            float(self._cfg.wrist_conf_min)
             if min_kp_conf is None
             else float(min_kp_conf)
         )
@@ -440,6 +473,8 @@ class PhoneSignal:
         self._failed = False
         #: Số giây chạm liên tục tới lần :meth:`observe` gần nhất.
         self._held_s = 0.0
+        #: Số khung "không chạm" liên tiếp trong chuỗi còn khoan dung.
+        self._miss_streak = 0
 
     @property
     def enabled(self) -> bool:
@@ -455,6 +490,36 @@ class PhoneSignal:
     def in_use(self) -> bool:
         """``True`` khi đã chạm liên tục đủ ``config.phone.hold_s``."""
         return self._held_s >= self._hold_s
+
+    def boxes(self, now: float) -> tuple[tuple[float, float, float, float], ...]:
+        """Hộp điện thoại còn trong hạn ``box_ttl_s`` tại ``now``.
+
+        **Chỉ để hiển thị** (vẽ khung trên khung xem trước). Quyết định "đang
+        dùng điện thoại" vẫn là :attr:`in_use`; hàm này không cập nhật trạng
+        thái chạm, không chạm vào ``_held_s`` và không chạy detect.
+
+        Vì sao cần hàm riêng thay vì đọc ``_boxes``: hộp được detect thưa
+        (mỗi ``detect_every_n_frames`` khung) và chỉ sống ``box_ttl_s``. Đọc
+        thẳng trường nội bộ sẽ vẽ lại hộp đã hết hạn ở những khung mà
+        :meth:`observe` thoát sớm (không có keypoint dùng được) — hộp "ma"
+        đứng yên trên hình trong khi mô hình không còn xác nhận nó.
+
+        Args:
+            now: thời điểm hiện tại (giây, cùng gốc với ``observe``).
+
+        Returns:
+            Tuple các hộp ``(x1, y1, x2, y2)`` pixel; rỗng khi tính năng tắt,
+            chưa detect lần nào, hoặc hộp đã cũ.
+        """
+        try:
+            moment = float(now)
+        except (TypeError, ValueError):
+            return ()
+        if not math.isfinite(moment) or not self.enabled:
+            return ()
+        if self._boxes_expired(moment):
+            return ()
+        return tuple(self._boxes)
 
     def observe(
         self, frame: np.ndarray, keypoints: object, now: float
@@ -485,20 +550,24 @@ class PhoneSignal:
 
         self._frames_seen += 1
         if (self._frames_seen - 1) % self._detect_every == 0:
-            if not self._run_detect(frame, now):
+            if not self._run_detect(frame, now, keypoints_array):
                 return None
 
         if self._boxes_expired(now):
             self._boxes = []
             self._boxes_ts = None
         if not self._boxes:
-            self._reset_contact()
+            # Không có hộp để xét: đó cũng là một lần "không chạm", nên đi qua
+            # cùng ngưỡng khoan dung như một khung chạm hụt. Đặt lại ngay thì
+            # ở 5,2 FPS (hộp chỉ sống ~1/3 số khung) ``hold_s`` không bao giờ
+            # đạt tới.
+            self._register_miss(now)
             return None
 
         result = hand_phone_contact(
             keypoints_array,
             self._boxes,
-            proximity_px=self._proximity_px,
+            proximity_px=self._proximity(keypoints_array),
             min_kp_conf=self._min_kp_conf,
         )
         self._update_contact(result.co_cham, now)
@@ -506,21 +575,59 @@ class PhoneSignal:
 
     # -- nội bộ ---------------------------------------------------------
 
-    def _run_detect(self, frame: np.ndarray, now: float) -> bool:
+    def _proximity(self, keypoints_array: np.ndarray) -> float:
+        """Ngưỡng "chạm" pixel: hằng số cộng phần co theo bề rộng vai.
+
+        Không đọc được vai (người quay lưng, vai bị che, ``conf`` thấp) thì
+        chỉ còn ``touching_slack_px`` — tức là chặt lại, không nới ra. Đây là
+        hướng an toàn: thiếu dữ liệu **không** được biến thành báo động giả.
+        """
+        if self._shoulder_ratio <= 0.0:
+            return self._slack_px
+        width = shoulder_width_px(keypoints_array, min_kp_conf=self._min_kp_conf)
+        if width is None:
+            return self._slack_px
+        return self._slack_px + self._shoulder_ratio * width
+
+    def _run_detect(
+        self, frame: np.ndarray, now: float, keypoints_array: np.ndarray
+    ) -> bool:
         """Chạy detect, cập nhật hộp. Trả ``False`` nếu tính năng vừa tắt."""
         try:
             boxes = self._detector.detect(frame)
         except PhoneDetectorError as exc:
             # Thiếu trọng số/thiếu backend: tắt tính năng điện thoại và để
             # luồng chính chạy tiếp (spec v2 §11.4).
-            logger.warning(
-                "Tắt tính năng phát hiện điện thoại: %s", exc
-            )
+            logger.warning("Tắt tính năng phát hiện điện thoại: %s", exc)
             self._failed = True
             self._boxes = []
             self._boxes_ts = None
             self._reset_contact()
             return False
+        if self._head_filter:
+            boxes = [
+                box
+                for box in boxes
+                if not is_head_like_box(
+                    box,
+                    keypoints_array,
+                    min_kp_conf=self._min_kp_conf,
+                    oversize_ratio=self._oversize_ratio,
+                )
+            ]
+        if self._phone_like_filter:
+            boxes = [
+                box
+                for box in boxes
+                if is_plausible_phone_box(
+                    box,
+                    keypoints_array,
+                    min_kp_conf=self._min_kp_conf,
+                    min_size_ratio=self._min_size_ratio,
+                    max_above_shoulder_px=self._max_above_shoulder_px,
+                    oversize_ratio=self._oversize_ratio,
+                )
+            ]
         self._boxes = list(boxes)
         self._boxes_ts = now
         return True
@@ -530,17 +637,42 @@ class PhoneSignal:
             return True
         return (now - self._boxes_ts) > self._box_ttl_s
 
+    def reset(self) -> None:
+        """Quên hộp và chuỗi chạm hiện tại.
+
+        Dùng khi bắt đầu phiên học mới. Hộp điện thoại chỉ có hạn
+        ``box_ttl_s``, nhưng ``held_s`` thì **đứng yên** ở giá trị cũ khi
+        không có hộp để xét (xem ``_register_miss``/``_reset_contact``). Giữ
+        nó qua một khoảng nghỉ dài sẽ khiến khung đầu tiên của phiên mới đã
+        "chạm đủ lâu" và báo oan.
+        """
+        self._boxes = []
+        self._boxes_ts = None
+        self._frames_seen = 0
+        self._reset_contact()
+
     def _update_contact(self, touching: bool, now: float) -> None:
-        if not touching:
+        if touching:
+            self._miss_streak = 0
+            if self._contact_since is None:
+                self._contact_since = now
+            self._held_s = max(0.0, now - self._contact_since)
+            return
+        self._register_miss(now)
+
+    def _register_miss(self, now: float) -> None:
+        """Một khung không chạm: chịu ``miss_tolerance_frames`` rồi mới đứt."""
+        self._miss_streak += 1
+        if self._miss_streak > self._miss_tolerance:
             self._reset_contact()
             return
-        if self._contact_since is None:
-            self._contact_since = now
-        self._held_s = max(0.0, now - self._contact_since)
+        if self._contact_since is not None:
+            self._held_s = max(0.0, now - self._contact_since)
 
     def _reset_contact(self) -> None:
         self._contact_since = None
         self._held_s = 0.0
+        self._miss_streak = 0
 
 
 def _usable_keypoints(keypoints: object, min_kp_conf: float) -> np.ndarray | None:
@@ -577,7 +709,15 @@ def _positive_int(value: object, name: str) -> int:
 def _finite_non_negative(value: object, name: str) -> float:
     number = float(value)
     if not math.isfinite(number) or number < 0:
-        raise ValueError(
-            f"{name} phải là số hữu hạn không âm, nhận được {value!r}"
-        )
+        raise ValueError(f"{name} phải là số hữu hạn không âm, nhận được {value!r}")
+    return number
+
+
+def _non_negative_int(value: object, name: str) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} phải là số nguyên không âm") from exc
+    if number < 0:
+        raise ValueError(f"{name} phải >= 0, nhận được {value!r}")
     return number

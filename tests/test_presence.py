@@ -173,6 +173,27 @@ def test_absent_accumulator_resets_when_person_returns():
     assert result.present is True
 
 
+def test_reset_xoa_chuoi_vang_cu():
+    """``reset()`` dùng khi bắt đầu phiên mới: khoảng vắng trước giờ nghỉ
+    không được cộng dồn vào phiên vừa bắt đầu."""
+    clock = _FakeClock()
+    tracker = PresenceTracker(absent_hold_s=3.0, clock=clock)
+
+    for _ in range(10):
+        tracker.update(None)
+        clock.advance(1.0)
+
+    assert tracker.update(None).present is False
+
+    tracker.reset()
+    result = tracker.update(None)
+    assert result.present is True, "sau reset phải như vừa thấy người"
+    assert result.absent_for_s == 0.0
+
+    clock.advance(1.0)
+    assert tracker.update(None).present is True, "mới vắng 1 s, chưa đủ 3 s"
+
+
 def test_heads_down_but_shoulders_visible_is_not_absent():
     """Ca biên quan trọng nhất: cúi xuống bàn, đầu khuất nhưng vai còn.
 

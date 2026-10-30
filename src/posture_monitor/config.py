@@ -29,10 +29,24 @@ from .faces import STORE_FILENAME as FACE_STORE_FILENAME
 from .schedule import (
     ALERT_KINDS,
     DEFAULT_KINDS,
+    DEFAULT_PHONE_HOLD_S,
     ScheduleConfig,
     ScheduleError,
     parse_kind_settings,
     parse_window,
+)
+from .voice_library import (
+    DEFAULT_SPEECH_SPEED,
+    DEFAULT_VOLUME,
+    MAX_SPEECH_SPEED,
+    MAX_VOLUME,
+    MIN_SPEECH_SPEED,
+    MIN_VOLUME,
+)
+from .study_session import (
+    DEFAULT_MINUTES as DEFAULT_SESSION_MINUTES,
+    StudySessionError,
+    normalise_minutes,
 )
 
 #: Biến môi trường ghi đè ``camera.source``; dùng để đặt URL camera IP kèm mật
@@ -162,6 +176,15 @@ class FaceConfig:
     impostor_hold_s: float = 5.0
     enroll_step_s: float = 1.5
     enroll_min_samples: int = 3
+    #: Ngưỡng điểm của bộ phát hiện YuNet. Trước đây là hằng số 0,9 nằm trong
+    #: ``faces.DEFAULT_SCORE_THRESHOLD`` — spec §11 cấm điều đó ("mọi ngưỡng
+    #: đặt trong config.yaml"). Ở 0,9 bộ phát hiện bỏ mất mặt thật trên một
+    #: phần khung nên đăng ký hỏng ngẫu nhiên. Đo trên 10 ảnh tĩnh sạch: 0,9
+    #: giữ được mặt ở 7/10 ảnh, 0,7 giữ 10/10; mặt thật điểm 0,862-0,928 còn
+    #: ứng viên kế tiếp chỉ 0,451, nên 0,7 nằm giữa dải trống. Bảng đo đầy đủ
+    #: ở ``config.yaml``. Mặc định của lớp vẫn là 0,9 (giữ nguyên hành vi cũ
+    #: khi cấu hình không nêu khoá); ``config.yaml`` của dự án đặt 0,7.
+    score_threshold: float = 0.9
     detect_width: int = 320
     clahe_enabled: bool = True
     store_path: str = f"data/{FACE_STORE_FILENAME}"
@@ -212,14 +235,74 @@ class PhoneConfig:
     #: Chạy detect mỗi N khung. Giá trị 1 = mọi khung (không đạt FPS trên Pi).
     detect_every_n_frames: int = 2
     imgsz: int = 320
-    conf_threshold: float = 0.25
+    #: Ngưỡng tin cậy của model detect. **Đo trên camera Tiandy thật**: bản
+    #: NCNN không bao giờ vượt 0,236 cho điện thoại thật, nên ``0.25`` cũ cho
+    #: **0/30** khung có hộp thật. Dải dùng được là 0,05–0,08 (0,05 → 29/30
+    #: khung, 0,08 → 20/30). Hộp "đeo kính" giả nằm ở 0,023–0,068 nên **không**
+    #: tách được bằng ngưỡng này — nó bị lọc hình học bởi
+    #: :func:`~posture_monitor.phone.is_head_like_box`.
+    conf_threshold: float = 0.06
+    #: Ngưỡng ``conf`` riêng của cổ tay cho đường điện thoại. **Không** dùng
+    #: ``model.kp_conf_min`` (0,5): đo được cổ tay trái chỉ 0,35–0,43 khi đang
+    #: cầm điện thoại, nên ngưỡng 0,5 loại luôn cổ tay duy nhất và không chạy
+    #: detect lần nào.
+    wrist_conf_min: float = 0.25
     #: Hộp detect còn dùng được bao lâu sau lần detect (giây).
     box_ttl_s: float = 0.5
     #: Phải chạm liên tục bao lâu mới thành "sự kiện" dùng điện thoại (giây).
-    hold_s: float = 2.0
-    #: Khoảng cách cho phép giữa cổ tay và mép hộp điện thoại (pixel). Mặc
-    #: định 0 = chạm chính xác theo yêu cầu "khoảng cách = 0" của đề tài.
+    #: Lấy :data:`~posture_monitor.schedule.DEFAULT_PHONE_HOLD_S` để mặc định
+    #: **không bao giờ lệch** với ngưỡng của loa
+    #: (``schedule.kinds.phone.hold_s``): dashboard hiện theo giá trị này,
+    #: loa quyết định theo giá trị kia, và lệch nhau từng gây lỗi "web hiện
+    #: đang dùng điện thoại mà loa không báo".
+    hold_s: float = DEFAULT_PHONE_HOLD_S
+    #: Khoảng cách cộng thêm cố định giữa cổ tay và mép hộp điện thoại (pixel).
+    #: 0 = không nới thêm; phần nới thật sự đến từ ``shoulder_ratio``.
     touching_slack_px: float = 0.0
+    #: Ngưỡng "chạm" co theo bề rộng vai: ``proximity = touching_slack_px +
+    #: shoulder_ratio * bề_rộng_vai``. Đo được cổ tay cách hộp thật
+    #: **112–138 px = 0,70–0,86 lần** bề rộng vai, nên 0 ở đây cho **0/40**
+    #: khung chạm. 1,0 là mốc phủ hết dải đo cộng biên rung keypoint.
+    shoulder_ratio: float = 1.0
+    #: Bỏ hộp lớp 67 phủ vùng đầu (gọng kính/khung mặt) trước khi xét chạm.
+    #: **Đo được trên dữ liệu thật: phép thử này không bắt được hộp nào**
+    #: (0/32 hộp), vì hộp gọng kính hẹp và lệch theo trục x nên không phủ
+    #: điểm mũi. Nó được giữ làm lớp phòng vệ nhưng **không** phải thứ sửa
+    #: lỗi báo nhầm; ``phone_like_filter`` mới là. Đừng tắt cái kia mà nghĩ
+    #: cái này đang bảo vệ.
+    head_filter: bool = True
+    #: Bỏ hộp lớp 67 không nằm đúng chỗ điện thoại đang cầm
+    #: (:func:`~posture_monitor.phone.is_plausible_phone_box`). Đây là bộ lọc
+    #: sửa lỗi "báo đang dùng điện thoại khi thật ra không có": trên camera
+    #: thật, hộp gọng kính lúc đưa tay lên cằm đạt conf **0,699** còn điện
+    #: thoại thật chỉ **0,347**, nên ngưỡng conf **không** tách được.
+    phone_like_filter: bool = True
+    #: Cạnh dài hộp tối thiểu theo bề rộng vai (``min_size_ratio`` của
+    #: :func:`~posture_monitor.phone.is_plausible_phone_box`). **Đo được**:
+    #: sau khi vế đường vai đã loại 22/24 hộp giả, hộp giả còn lại có
+    #: ``cạnh_dài/vai`` 0,310 và 0,382; 8 hộp thật là 0,515–1,061. 0,45 nằm
+    #: giữa hai mép. Dùng **cạnh dài** chứ không phải bề rộng: điện thoại cầm
+    #: dọc có bề rộng nhỏ và sẽ bị loại oan.
+    min_size_ratio: float = 0.45
+    #: Hộp được phép cao hơn đường vai bao nhiêu pixel. **Đo được**: hộp thật
+    #: cao nhất là 13 px *dưới* vai; hộp giả thấp nhất là 68 px *trên* vai.
+    #: 10 px nằm giữa dải trống đó.
+    max_above_shoulder_px: float = 10.0
+    #: **Van an toàn cho điện thoại giơ lên che mặt.** Hộp có cạnh dài vượt
+    #: ``oversize_ratio`` lần bề rộng vai thì được giữ bất kể hai ngưỡng trên.
+    #: Lý do: hai ngưỡng trên đo trên điện thoại cầm **trước ngực**; tư thế
+    #: dùng điện thoại rõ nhất — giơ lên che mặt — cho hộp phủ mũi, tâm cao
+    #: hơn vai hơn 200 px và cạnh dài 2,83 lần bề rộng vai, nên **cả hai** bộ
+    #: lọc đều bỏ đúng trường hợp thật. Không chọn mốc thấp được: bề rộng vai
+    #: **co lại khi người quay chéo** (112 px trên ``frame.jpg``), lúc đó hộp
+    #: gọng kính thật đạt 1,35 và hộp giả rộng đạt 1,67. Quét 8 ca cho dải an
+    #: toàn **1,8–2,8**; 2,25 nằm giữa. 0 = tắt van.
+    oversize_ratio: float = 2.25
+    #: Cho phép bao nhiêu khung liên tiếp "không chạm" mà chưa đứt chuỗi.
+    #: 0 = đứt ngay (mặc định an toàn). Trên camera thật ở 5,2 FPS, hộp chỉ
+    #: sống 11/60 khung nên ``hold_s: 2.0`` không bao giờ chạm tới nếu đứt
+    #: ngay; xem ``config.yaml``.
+    miss_tolerance_frames: int = 0
 
 
 @dataclass
@@ -305,6 +388,61 @@ class WebConfig:
 
 
 @dataclass
+class SessionConfig:
+    """Cấu hình phiên học bật/tắt bằng tay (``session``).
+
+    Khác ``schedule``: mục này **không** mô tả giờ nào được cảnh báo mà chỉ nói
+    phiên học do người dùng bấm nút kéo dài bao lâu và có bắt đầu ngay khi khởi
+    động hay không. Cổng cảnh báo cuối cùng là hội của hai mục — xem
+    :mod:`posture_monitor.study_session`.
+
+    Args:
+        default_minutes: thời lượng gợi ý, tính bằng phút.
+        auto_start: ``True`` thì vào phiên luôn khi ``run`` khởi động. Mặc định
+            ``False``: người dùng phải bấm **Bắt đầu**, đúng yêu cầu "bấm bắt
+            đầu học tập thì mới dùng các model AI".
+
+    Raises:
+        ConfigError: khi ``default_minutes`` ngoài khoảng cho phép.
+    """
+
+    default_minutes: int = DEFAULT_SESSION_MINUTES
+    auto_start: bool = False
+
+
+@dataclass
+class SpeakerAlertConfig:
+    """Cấu hình giọng đọc cảnh báo (spec v3 §5.15).
+
+    Tách khỏi ``camera.speaker`` một cách có chủ đích: ``camera.speaker`` nói
+    *phát qua đâu* (host, cổng RTSP, track backchannel), còn mục này nói *phát
+    cái gì* (giọng nào, thư mục bản thu, dự phòng tiếng bíp). Gộp lại thì đổi
+    giọng trên dashboard sẽ phải ghi vào cùng chỗ với mật khẩu camera.
+    """
+
+    #: Bật giọng nói. ``False`` = chỉ phát tiếng bíp.
+    say: bool = True
+    #: Thiếu ffmpeg/bản thu thì phát bíp thay vì im lặng.
+    tone_fallback: bool = True
+    #: Thư mục chứa WAV máy sinh và hai thư mục con bản thu (``giongnam``,
+    #: ``giongnu``).
+    audio_dir: str = "data/audio"
+    #: Ngôn ngữ cho ``espeak-ng`` khi phải dùng giọng máy.
+    language: str = "vi"
+    #: Giọng mặc định khi chưa có lựa chọn nào được lưu: ``nam`` | ``nu`` |
+    #: ``espeak``. Lựa chọn trên dashboard ghi vào ``audio_dir/voice.json`` và
+    #: thắng giá trị này ở lần chạy sau.
+    voice: str = "nam"
+    #: Âm lượng gửi đi khi phát câu nói (0,05..1,0). Đây **không** phải núm
+    #: vặn của camera: hạ xuống thì loa nhận tín hiệu nhỏ hơn nên ít méo. Loa
+    #: nhỏ của camera thường dễ nghe hơn ở 0,6–0,7 so với 1,0.
+    volume: float = DEFAULT_VOLUME
+    #: Tốc độ đọc so với bản thu gốc (0,5..1,0). 0,9 = chậm lại 10 % mà **giữ
+    #: nguyên cao độ**; câu nhắc vì thế dễ nghe hơn trên loa hẹp của camera.
+    speed: float = DEFAULT_SPEECH_SPEED
+
+
+@dataclass
 class Config:
     """Toàn bộ cấu hình của ứng dụng."""
 
@@ -325,8 +463,14 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     #: Nhận diện khuôn mặt (``face``); mặc định TẮT vì chưa đo ngưỡng.
     face: FaceConfig = field(default_factory=FaceConfig)
+    #: Giọng đọc cảnh báo (``speaker_alert``): giọng nam/nữ thu sẵn, dự phòng
+    #: ``espeak-ng`` và tiếng bíp.
+    speaker_alert: SpeakerAlertConfig = field(default_factory=SpeakerAlertConfig)
     #: Giờ học quy định (``schedule``); mặc định tắt.
     schedule: ScheduleConfig = field(default_factory=ScheduleConfig)
+    #: Phiên học bật/tắt bằng tay (``session``): người dùng bấm Bắt đầu thì
+    #: model AI mới chạy.
+    session: SessionConfig = field(default_factory=SessionConfig)
     #: Nhãn tư thế vẫn được tính (để hiển thị/debug) nhưng mặc định KHÔNG
     #: được đưa vào tập nhãn sinh cảnh báo. ``ABSENT`` không bị ảnh hưởng.
     posture_labels_enabled: bool = False
@@ -368,9 +512,7 @@ def _get_int(data: dict[str, Any], key: str, default: int, section: str) -> int:
     return value
 
 
-def _get_float(
-    data: dict[str, Any], key: str, default: float, section: str
-) -> float:
+def _get_float(data: dict[str, Any], key: str, default: float, section: str) -> float:
     if key not in data or data[key] is None:
         return default
     value = data[key]
@@ -390,9 +532,7 @@ def _get_float(
         ) from None
 
 
-def _get_bool(
-    data: dict[str, Any], key: str, default: bool, section: str
-) -> bool:
+def _get_bool(data: dict[str, Any], key: str, default: bool, section: str) -> bool:
     if key not in data or data[key] is None:
         return default
     value = data[key]
@@ -404,9 +544,7 @@ def _get_bool(
     return value
 
 
-def _get_str(
-    data: dict[str, Any], key: str, default: str, section: str
-) -> str:
+def _get_str(data: dict[str, Any], key: str, default: str, section: str) -> str:
     if key not in data or data[key] is None:
         return default
     value = data[key]
@@ -458,9 +596,7 @@ def _normalize_env_source(override: str) -> str:
     return text
 
 
-def _get_optional_bool(
-    data: dict[str, Any], key: str, section: str
-) -> bool | None:
+def _get_optional_bool(data: dict[str, Any], key: str, section: str) -> bool | None:
     """Như :func:`_get_bool` nhưng thiếu khóa/``null`` trả ``None`` (tự động).
 
     ``None`` không phải giá trị sai kiểu — nó là trạng thái "người dùng không
@@ -530,6 +666,7 @@ def camera_source_host(source: str) -> str:
     """
     return _source_host(source)
 
+
 def _source_credentials(source: str) -> tuple[str, str]:
     """``(user, password)`` nhúng trong URL ``camera.source``; rỗng nếu không có.
 
@@ -595,9 +732,7 @@ def _resolve_onvif(onvif: OnvifConfig, source: str, *, from_env: bool) -> OnvifC
     return onvif
 
 
-def _check_onvif_ready(
-    onvif: OnvifConfig, source: str, *, from_env: bool
-) -> None:
+def _check_onvif_ready(onvif: OnvifConfig, source: str, *, from_env: bool) -> None:
     """Kiểm tra ``enabled: true`` có đủ host và mật khẩu; ném ``ConfigError``.
 
     Thông điệp chỉ nêu **tên biến môi trường**, không bao giờ chứa giá trị mật
@@ -647,6 +782,7 @@ def camera_credentials(user: str, source: str) -> tuple[str, str]:
         return source_user, source_password
     return user, ""
 
+
 def onvif_credentials(onvif: OnvifConfig, source: str) -> tuple[str, str]:
     """``(user, password)`` để mở phiên ONVIF; xem :func:`camera_credentials`.
 
@@ -687,9 +823,7 @@ def _parse_speaker(raw: Any) -> CameraSpeakerConfig:
         ),
     )
     if not 0 < cfg.port < 65536:
-        raise ConfigError(
-            "'camera.speaker.port' phải nằm trong khoảng 1..65535."
-        )
+        raise ConfigError("'camera.speaker.port' phải nằm trong khoảng 1..65535.")
     # Kiểm tra "enabled nhưng thiếu host" **không** làm ở đây: host có thể suy
     # từ ``camera.source``, mà nguồn chưa được chốt (biến môi trường áp sau).
     # Việc đó nằm ở :func:`_parse_camera`, sau khi biết nguồn cuối cùng — và ở
@@ -766,19 +900,11 @@ def _parse_model(raw: Any) -> ModelConfig:
     data = _as_dict(raw, "model")
     cfg = ModelConfig(
         name=_get_str(data, "name", ModelConfig.name, "model"),
-        format=_get_choice(
-            data, "format", ModelConfig.format, MODEL_FORMATS, "model"
-        ),
+        format=_get_choice(data, "format", ModelConfig.format, MODEL_FORMATS, "model"),
         imgsz=_get_int(data, "imgsz", ModelConfig.imgsz, "model"),
-        target_fps=_get_int(
-            data, "target_fps", ModelConfig.target_fps, "model"
-        ),
-        kp_conf_min=_get_float(
-            data, "kp_conf_min", ModelConfig.kp_conf_min, "model"
-        ),
-        export_on_pc=_get_bool(
-            data, "export_on_pc", ModelConfig.export_on_pc, "model"
-        ),
+        target_fps=_get_int(data, "target_fps", ModelConfig.target_fps, "model"),
+        kp_conf_min=_get_float(data, "kp_conf_min", ModelConfig.kp_conf_min, "model"),
+        export_on_pc=_get_bool(data, "export_on_pc", ModelConfig.export_on_pc, "model"),
     )
     if cfg.imgsz <= 0:
         raise ConfigError("'model.imgsz' phải là số dương.")
@@ -792,9 +918,7 @@ def _parse_model(raw: Any) -> ModelConfig:
 def _parse_tracking(raw: Any) -> TrackingConfig:
     data = _as_dict(raw, "tracking")
     return TrackingConfig(
-        enabled=_get_bool(
-            data, "enabled", TrackingConfig.enabled, "tracking"
-        ),
+        enabled=_get_bool(data, "enabled", TrackingConfig.enabled, "tracking"),
         tracker=_get_str(data, "tracker", TrackingConfig.tracker, "tracking"),
     )
 
@@ -809,12 +933,8 @@ def _parse_phone(raw: Any) -> PhoneConfig:
     base = PhoneConfig()
     cfg = PhoneConfig(
         enabled=_get_bool(data, "enabled", base.enabled, "phone"),
-        detect_model=_get_str(
-            data, "detect_model", base.detect_model, "phone"
-        ),
-        detect_weights=_get_str(
-            data, "detect_weights", base.detect_weights, "phone"
-        ),
+        detect_model=_get_str(data, "detect_model", base.detect_model, "phone"),
+        detect_weights=_get_str(data, "detect_weights", base.detect_weights, "phone"),
         detect_every_n_frames=_get_int(
             data,
             "detect_every_n_frames",
@@ -822,13 +942,28 @@ def _parse_phone(raw: Any) -> PhoneConfig:
             "phone",
         ),
         imgsz=_get_int(data, "imgsz", base.imgsz, "phone"),
-        conf_threshold=_get_float(
-            data, "conf_threshold", base.conf_threshold, "phone"
-        ),
+        conf_threshold=_get_float(data, "conf_threshold", base.conf_threshold, "phone"),
+        wrist_conf_min=_get_float(data, "wrist_conf_min", base.wrist_conf_min, "phone"),
         box_ttl_s=_get_float(data, "box_ttl_s", base.box_ttl_s, "phone"),
         hold_s=_get_float(data, "hold_s", base.hold_s, "phone"),
         touching_slack_px=_get_float(
             data, "touching_slack_px", base.touching_slack_px, "phone"
+        ),
+        shoulder_ratio=_get_float(data, "shoulder_ratio", base.shoulder_ratio, "phone"),
+        head_filter=_get_bool(data, "head_filter", base.head_filter, "phone"),
+        phone_like_filter=_get_bool(
+            data, "phone_like_filter", base.phone_like_filter, "phone"
+        ),
+        min_size_ratio=_get_float(data, "min_size_ratio", base.min_size_ratio, "phone"),
+        max_above_shoulder_px=_get_float(
+            data, "max_above_shoulder_px", base.max_above_shoulder_px, "phone"
+        ),
+        oversize_ratio=_get_float(data, "oversize_ratio", base.oversize_ratio, "phone"),
+        miss_tolerance_frames=_get_int(
+            data,
+            "miss_tolerance_frames",
+            base.miss_tolerance_frames,
+            "phone",
         ),
     )
     if not cfg.detect_model.strip():
@@ -839,12 +974,24 @@ def _parse_phone(raw: Any) -> PhoneConfig:
         raise ConfigError("'phone.imgsz' phải là số dương.")
     if not 0.0 <= cfg.conf_threshold <= 1.0:
         raise ConfigError("'phone.conf_threshold' phải nằm trong [0, 1].")
+    if not 0.0 < cfg.wrist_conf_min <= 1.0:
+        raise ConfigError("'phone.wrist_conf_min' phải nằm trong (0, 1].")
     if cfg.box_ttl_s < 0:
         raise ConfigError("'phone.box_ttl_s' không được âm.")
     if cfg.hold_s < 0:
         raise ConfigError("'phone.hold_s' không được âm.")
     if cfg.touching_slack_px < 0:
         raise ConfigError("'phone.touching_slack_px' không được âm.")
+    if cfg.shoulder_ratio < 0:
+        raise ConfigError("'phone.shoulder_ratio' không được âm.")
+    if cfg.min_size_ratio < 0:
+        raise ConfigError("'phone.min_size_ratio' không được âm.")
+    if cfg.max_above_shoulder_px < 0:
+        raise ConfigError("'phone.max_above_shoulder_px' không được âm.")
+    if cfg.oversize_ratio < 0:
+        raise ConfigError("'phone.oversize_ratio' không được âm.")
+    if cfg.miss_tolerance_frames < 0:
+        raise ConfigError("'phone.miss_tolerance_frames' không được âm.")
     return cfg
 
 
@@ -884,12 +1031,8 @@ def _parse_timing(raw: Any) -> TimingConfig:
         smooth_window_s=_get_float(
             data, "smooth_window_s", base.smooth_window_s, "timing"
         ),
-        bad_hold_s=_get_float(
-            data, "bad_hold_s", base.bad_hold_s, "timing"
-        ),
-        good_hold_s=_get_float(
-            data, "good_hold_s", base.good_hold_s, "timing"
-        ),
+        bad_hold_s=_get_float(data, "bad_hold_s", base.bad_hold_s, "timing"),
+        good_hold_s=_get_float(data, "good_hold_s", base.good_hold_s, "timing"),
         alert_cooldown_s=_get_float(
             data, "alert_cooldown_s", base.alert_cooldown_s, "timing"
         ),
@@ -902,9 +1045,7 @@ def _parse_timing(raw: Any) -> TimingConfig:
         absent_reset_s=_get_float(
             data, "absent_reset_s", base.absent_reset_s, "timing"
         ),
-        drowsy_hold_s=_get_float(
-            data, "drowsy_hold_s", base.drowsy_hold_s, "timing"
-        ),
+        drowsy_hold_s=_get_float(data, "drowsy_hold_s", base.drowsy_hold_s, "timing"),
     )
 
 
@@ -971,15 +1112,11 @@ def _parse_schedule(raw: Any) -> ScheduleConfig:
                     f"dùng một trong {ALERT_KINDS}."
                 )
             try:
-                kinds[name] = parse_kind_settings(
-                    item, f"schedule.kinds.{name}"
-                )
+                kinds[name] = parse_kind_settings(item, f"schedule.kinds.{name}")
             except ScheduleError as exc:
                 raise ConfigError(str(exc)) from exc
 
-    enabled = _get_bool(
-        data, "enabled", ScheduleConfig.enabled, "schedule"
-    )
+    enabled = _get_bool(data, "enabled", ScheduleConfig.enabled, "schedule")
     if enabled and not windows:
         raise ConfigError(
             "'schedule.enabled' là true nhưng 'schedule.windows' đang trống. "
@@ -999,14 +1136,10 @@ def _parse_pins(raw: Any) -> PinsConfig:
     base = PinsConfig()
     return PinsConfig(
         led_green=_get_int(data, "led_green", base.led_green, "hardware.pins"),
-        led_yellow=_get_int(
-            data, "led_yellow", base.led_yellow, "hardware.pins"
-        ),
+        led_yellow=_get_int(data, "led_yellow", base.led_yellow, "hardware.pins"),
         led_red=_get_int(data, "led_red", base.led_red, "hardware.pins"),
         buzzer=_get_int(data, "buzzer", base.buzzer, "hardware.pins"),
-        vibration=_get_int(
-            data, "vibration", base.vibration, "hardware.pins"
-        ),
+        vibration=_get_int(data, "vibration", base.vibration, "hardware.pins"),
         trig=_get_int(data, "trig", base.trig, "hardware.pins"),
         echo=_get_int(data, "echo", base.echo, "hardware.pins"),
     )
@@ -1024,8 +1157,7 @@ def _parse_hardware(raw: Any) -> HardwareConfig:
             mock = True if value == "true" else False if value == "false" else "auto"
         else:
             raise ConfigError(
-                "'hardware.mock' phải là auto, true hoặc false, nhận được "
-                f"{value!r}."
+                f"'hardware.mock' phải là auto, true hoặc false, nhận được {value!r}."
             )
     return HardwareConfig(mock=mock, pins=_parse_pins(data.get("pins")))
 
@@ -1085,9 +1217,7 @@ def _parse_storage(raw: Any) -> StorageConfig:
     return cfg
 
 
-def _get_optional_float(
-    data: dict[str, Any], key: str, section: str
-) -> float | None:
+def _get_optional_float(data: dict[str, Any], key: str, section: str) -> float | None:
     """Như :func:`_get_float` nhưng thiếu khóa/``null`` trả ``None``.
 
     Dùng cho ``face.match_threshold``: ``None`` là trạng thái **hợp lệ và có
@@ -1122,12 +1252,8 @@ def _parse_face(raw: Any) -> FaceConfig:
     cfg = FaceConfig(
         enabled=_get_optional_bool(data, "enabled", "face"),
         detector=_get_str(data, "detector", FaceConfig.detector, "face"),
-        recognizer=_get_str(
-            data, "recognizer", FaceConfig.recognizer, "face"
-        ),
-        interval_s=_get_float(
-            data, "interval_s", FaceConfig.interval_s, "face"
-        ),
+        recognizer=_get_str(data, "recognizer", FaceConfig.recognizer, "face"),
+        interval_s=_get_float(data, "interval_s", FaceConfig.interval_s, "face"),
         match_threshold=_get_optional_float(data, "match_threshold", "face"),
         impostor_hold_s=_get_float(
             data, "impostor_hold_s", FaceConfig.impostor_hold_s, "face"
@@ -1138,15 +1264,14 @@ def _parse_face(raw: Any) -> FaceConfig:
         enroll_min_samples=_get_int(
             data, "enroll_min_samples", FaceConfig.enroll_min_samples, "face"
         ),
-        detect_width=_get_int(
-            data, "detect_width", FaceConfig.detect_width, "face"
+        score_threshold=_get_float(
+            data, "score_threshold", FaceConfig.score_threshold, "face"
         ),
+        detect_width=_get_int(data, "detect_width", FaceConfig.detect_width, "face"),
         clahe_enabled=_get_bool(
             data, "clahe_enabled", FaceConfig.clahe_enabled, "face"
         ),
-        store_path=_get_str(
-            data, "store_path", FaceConfig.store_path, "face"
-        ),
+        store_path=_get_str(data, "store_path", FaceConfig.store_path, "face"),
     )
     if not cfg.detector.strip():
         raise ConfigError("'face.detector' không được để trống.")
@@ -1158,15 +1283,11 @@ def _parse_face(raw: Any) -> FaceConfig:
             "đường dẫn tệp."
         )
     if cfg.interval_s <= 0:
-        raise ConfigError(
-            "'face.interval_s' phải là số dương (nhịp nhận diện, giây)."
-        )
+        raise ConfigError("'face.interval_s' phải là số dương (nhịp nhận diện, giây).")
     if cfg.impostor_hold_s < 0:
         raise ConfigError("'face.impostor_hold_s' không được âm.")
     if cfg.enroll_step_s <= 0:
-        raise ConfigError(
-            "'face.enroll_step_s' phải là số dương (giây mỗi tư thế)."
-        )
+        raise ConfigError("'face.enroll_step_s' phải là số dương (giây mỗi tư thế).")
     if cfg.enroll_min_samples <= 0:
         raise ConfigError(
             "'face.enroll_min_samples' phải là số dương (số mẫu tối thiểu)."
@@ -1175,6 +1296,11 @@ def _parse_face(raw: Any) -> FaceConfig:
         raise ConfigError(
             "'face.detect_width' phải là số dương (chiều rộng thu nhỏ trước "
             "khi detect, spec §5.13)."
+        )
+    if not math.isfinite(cfg.score_threshold) or not (0.0 < cfg.score_threshold <= 1.0):
+        raise ConfigError(
+            "'face.score_threshold' phải nằm trong (0, 1] (ngưỡng điểm của "
+            f"bộ phát hiện YuNet), nhận được {cfg.score_threshold!r}."
         )
     if cfg.match_threshold is not None:
         if not (-1.0 <= cfg.match_threshold <= 1.0):
@@ -1215,6 +1341,84 @@ def _parse_web(raw: Any) -> WebConfig:
     )
     if not 0 < cfg.port < 65536:
         raise ConfigError("'web.port' phải nằm trong khoảng 1..65535.")
+    return cfg
+
+
+def _parse_session(raw: Any) -> SessionConfig:
+    """Nạp mục ``session`` (tuỳ chọn; thiếu mục = giá trị mặc định).
+
+    Kiểm **ngay lúc nạp** chứ không đợi tới lúc bấm nút: một
+    ``default_minutes: 0`` trong ``config.yaml`` phải hiện ra kèm tên khóa khi
+    khởi động, không phải thành lỗi 400 sau khi người dùng bấm Bắt đầu.
+    """
+    data = _as_dict(raw, "session")
+    raw_minutes = data.get("default_minutes")
+    if raw_minutes is None:
+        minutes = SessionConfig.default_minutes
+    else:
+        try:
+            minutes = normalise_minutes(raw_minutes)
+        except StudySessionError as exc:
+            raise ConfigError(f"'session.default_minutes' không hợp lệ: {exc}") from exc
+    return SessionConfig(
+        default_minutes=minutes,
+        auto_start=_get_bool(data, "auto_start", SessionConfig.auto_start, "session"),
+    )
+
+
+def _parse_speaker_alert(raw: Any) -> SpeakerAlertConfig:
+    """Nạp mục ``speaker_alert`` (tuỳ chọn; thiếu mục = giá trị mặc định).
+
+    Không kiểm tra sự tồn tại của ``audio_dir`` hay các thư mục bản thu ở đây:
+    người dùng có thể chép bản thu vào sau khi đã nạp cấu hình, và một thư mục
+    chưa có **không** phải lỗi cấu hình — ``speaker_alert`` tự rơi về giọng
+    máy rồi tới tiếng bíp. Chỉ kiểm những gì là lỗi gõ tay thật sự.
+    """
+    from .voice_library import VOICE_LABELS, VOICES, normalise_voice
+
+    data = _as_dict(raw, "speaker_alert")
+    raw_voice = _get_str(data, "voice", SpeakerAlertConfig.voice, "speaker_alert")
+    voice = normalise_voice(raw_voice)
+    if isinstance(raw_voice, str) and raw_voice.strip().lower() not in VOICES:
+        # Gõ sai tên giọng là lỗi cấu hình thật (không im lặng đổi giọng):
+        # người dùng sẽ tưởng đã đổi mà loa vẫn đọc giọng cũ.
+        raise ConfigError(
+            f"'speaker_alert.voice' phải là một trong "
+            f"{', '.join(repr(v) for v in VOICES)} (nhãn: "
+            f"{', '.join(VOICE_LABELS[v] for v in VOICES)}), nhận được "
+            f"{raw_voice!r}."
+        )
+    volume = _get_float(data, "volume", SpeakerAlertConfig.volume, "speaker_alert")
+    if not math.isfinite(volume) or not (MIN_VOLUME <= volume <= MAX_VOLUME):
+        raise ConfigError(
+            f"'speaker_alert.volume' phải trong khoảng "
+            f"{MIN_VOLUME:g}..{MAX_VOLUME:g} (1.0 = nguyên bản), "
+            f"nhận được {volume!r}."
+        )
+    speed = _get_float(data, "speed", SpeakerAlertConfig.speed, "speaker_alert")
+    if not math.isfinite(speed) or not (MIN_SPEECH_SPEED <= speed <= MAX_SPEECH_SPEED):
+        raise ConfigError(
+            f"'speaker_alert.speed' phải trong khoảng "
+            f"{MIN_SPEECH_SPEED:g}..{MAX_SPEECH_SPEED:g} (0.9 = chậm lại 10 %), "
+            f"nhận được {speed!r}."
+        )
+    cfg = SpeakerAlertConfig(
+        say=_get_bool(data, "say", SpeakerAlertConfig.say, "speaker_alert"),
+        tone_fallback=_get_bool(
+            data, "tone_fallback", SpeakerAlertConfig.tone_fallback, "speaker_alert"
+        ),
+        audio_dir=_get_str(
+            data, "audio_dir", SpeakerAlertConfig.audio_dir, "speaker_alert"
+        ),
+        language=_get_str(
+            data, "language", SpeakerAlertConfig.language, "speaker_alert"
+        ),
+        voice=voice,
+        volume=volume,
+        speed=speed,
+    )
+    if not cfg.audio_dir.strip():
+        raise ConfigError("'speaker_alert.audio_dir' không được để trống.")
     return cfg
 
 
@@ -1353,16 +1557,12 @@ def parse_camera_source(source: str) -> tuple[str, int | str | None]:
                 f"'camera.source' = {safe!r}: chỉ số USB phải là số nguyên."
             ) from exc
         if index < 0:
-            raise ConfigError(
-                f"'camera.source' = {safe!r}: chỉ số USB không được âm."
-            )
+            raise ConfigError(f"'camera.source' = {safe!r}: chỉ số USB không được âm.")
         return "usb", index
 
     if kind == "file":
         if not value:
-            raise ConfigError(
-                f"'camera.source' = {safe!r}: thiếu đường dẫn file."
-            )
+            raise ConfigError(f"'camera.source' = {safe!r}: thiếu đường dẫn file.")
         return "file", value
 
     if kind == "rtsp":
@@ -1438,7 +1638,9 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         storage=_parse_storage(raw.get("storage")),
         web=_parse_web(raw.get("web")),
         face=_parse_face(raw.get("face")),
+        speaker_alert=_parse_speaker_alert(raw.get("speaker_alert")),
         schedule=_parse_schedule(raw.get("schedule")),
+        session=_parse_session(raw.get("session")),
         posture_labels_enabled=_get_bool(
             raw, "posture_labels_enabled", Config.posture_labels_enabled, ""
         ),

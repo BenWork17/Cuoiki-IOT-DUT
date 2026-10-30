@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#f9f9f7" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0d0d0d" media="(prefers-color-scheme: dark)">
-  <title>Giám sát tư thế</title>
+  <title>Giám sát học tập</title>
   <!-- Biểu tượng nhúng thẳng dạng data: URI — Pi có thể không có Internet, và
        trình duyệt tự xin /favicon.ico nếu thiếu nên sẽ rác log 404. -->
   <link rel="icon" type="image/png" sizes="32x32"
@@ -21,7 +21,7 @@
       data-min-distance="{{ min_distance_cm }}">
   <main class="page">
     <header class="head">
-      <h1>Giám sát tư thế học tập</h1>
+      <h1>Giám sát học tập</h1>
       <p class="sub" id="updated">Đang tải trạng thái…</p>
     </header>
 
@@ -52,6 +52,53 @@
       </div>
     </section>
     {% endif %}
+
+    <!-- Phiên học: công tắc DUY NHẤT bật model AI. Chưa bấm Bắt đầu thì
+         vòng lặp chỉ đọc camera (vẫn nhận diện khuôn mặt để biết ai đang
+         ngồi), không chạy pose / dò điện thoại, không phát cảnh báo. Đếm
+         ngược theo thời lượng đặt trước; hết giờ thì tự dừng và báo một câu.
+         Đặt ngay dưới camera để công tắc hiện ra trước số liệu — đúng thứ tự
+         thao tác thật. -->
+    <section id="session-card" class="card session"
+             aria-labelledby="session-title"
+             data-session-enabled="{{ '1' if session_enabled else '0' }}">
+      <h2 id="session-title" class="session__title">Phiên học</h2>
+
+      {% if session_enabled %}
+      <p id="session-state" class="session__state" role="status">
+        Chưa bắt đầu. Bấm “Bắt đầu học” để hệ thống theo dõi.
+      </p>
+
+      <p class="session__clock" aria-live="polite">
+        <span id="session-countdown" class="session__countdown">—</span>
+        <span id="session-countdown-label" class="session__countdown-label"></span>
+      </p>
+
+      <div class="session__controls">
+        <label for="session-minutes" class="session__label">
+          Thời lượng (phút)
+        </label>
+        <input id="session-minutes" name="minutes" type="number"
+               class="session__input" inputmode="numeric"
+               min="{{ session_min_minutes }}" max="{{ session_max_minutes }}"
+               step="1" value="{{ session_default_minutes }}">
+        <button id="session-start-btn" type="button" class="btn btn--primary">
+          Bắt đầu học
+        </button>
+        <button id="session-stop-btn" type="button" class="btn btn--quiet"
+                disabled>
+          Dừng học
+        </button>
+      </div>
+      <p id="session-hint" class="session__hint">
+        Hết giờ hệ thống tự dừng và báo một câu. Bấm Dừng để nghỉ giữa chừng.
+      </p>
+      {% else %}
+      <p id="session-disabled" class="session__disabled">
+        Phiên học chưa được bật trong lần chạy này.
+      </p>
+      {% endif %}
+    </section>
 
     <!-- Thẻ "Trạng thái học" (spec v3 §5.16): ba dòng tín hiệu — Có mặt,
          Điện thoại, Danh tính. Mỗi dòng có biểu tượng + nhãn chữ + tuổi tín
@@ -195,6 +242,29 @@
       {% else %}
       <p id="people-disabled" class="people__disabled">
         {{ people_disabled_message }}
+      </p>
+      {% endif %}
+    </section>
+
+    <!-- Giọng đọc cảnh báo: chọn bản thu giọng nam/nữ thay cho giọng máy.
+         Ba câu cố định nên chỉ có ba lựa chọn; chọn xong là lần cảnh báo kế
+         tiếp đã dùng giọng mới (không cần khởi động lại). -->
+    <section id="voice-card" class="card voice"
+             aria-labelledby="voice-title"
+             data-speaker-enabled="{{ '1' if speaker_enabled else '0' }}">
+      <h2 id="voice-title" class="voice__title">Giọng đọc cảnh báo</h2>
+
+      {% if speaker_enabled %}
+      <div id="voice-options" class="voice__options" role="radiogroup"
+           aria-labelledby="voice-title">
+        <!-- Nút được app.js dựng từ /api/voice để nhãn và tình trạng luôn
+             khớp dữ liệu thật (thiếu bản thu cho câu nào thì nói rõ). -->
+      </div>
+      <p id="voice-status" class="voice__status" role="status">Đang tải…</p>
+      {% else %}
+      <p id="voice-disabled" class="voice__disabled">
+        Loa cảnh báo chưa được bật trong phiên chạy này nên chưa đổi được
+        giọng đọc. Kiểm tra mục 'speaker_alert' trong config.yaml.
       </p>
       {% endif %}
     </section>

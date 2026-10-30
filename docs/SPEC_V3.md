@@ -449,9 +449,15 @@ Bằng chứng hai chiều (đo trên Pi, khung thật, 2026-10-29):
 > Nghĩa là ở ngưỡng đang dùng, bước thu nhỏ **làm mất mặt**, nên câu "thu nhỏ
 > là bắt buộc, không thu nhỏ thì chỉ chậm hơn mà không được thêm gì" ở (1)
 > **không còn đúng**. Muốn bật lại thu nhỏ thì phải hạ ngưỡng điểm của YuNet
-> trước; hiện `config.yaml` **không có khoá nào** cho ngưỡng đó, và hạ ngưỡng
-> sẽ thêm mặt giả — mỗi mặt giả là một vector rác vào bộ phân loại danh tính.
-> Vì vậy việc "không thu nhỏ" hiện là lựa chọn có căn cứ, không phải thiếu sót.
+> trước. Ngưỡng đó **nay đã có khoá** `face.score_threshold` (thêm sau đính
+> chính này); `config.yaml` của dự án đặt **0,7** vì ở 0,9 bộ phát hiện bỏ mất
+> mặt thật trên một phần khung (đo trên 10 ảnh tĩnh sạch: 0,9 giữ mặt ở 7/10,
+> 0,7 giữ 10/10; mặt thật điểm 0,862–0,928, ứng viên kế tiếp chỉ 0,451).
+> **Nhưng** code vẫn **cố ý chưa bật thu nhỏ**: các số 0–3/20 ở `detect_width`
+> 320 được đo ở ngưỡng 0,9, chưa đo lại ở 0,7, nên chưa có căn cứ để nói thu
+> nhỏ đã an toàn — và hạ ngưỡng vốn đã thêm mặt giả, mỗi mặt giả là một vector
+> rác vào bộ phân loại danh tính. Vì vậy việc "không thu nhỏ" hiện vẫn là lựa
+> chọn có căn cứ, không phải thiếu sót.
 >
 > Số 99,9 ms / 19,3 ms ở trên vẫn là số đo hợp lệ về **chi phí**, chỉ là nó
 > đánh đổi bằng số mặt phát hiện được — hai thứ phải đọc cùng nhau.
@@ -631,11 +637,15 @@ Giữ nguyên toàn bộ route v2 (`/`, `/api/status`, `/api/history`, `/api/cal
 | `DELETE /api/people/<id>` | JSON | Xoá danh tính + vector |
 | `POST /api/select` | JSON | Chọn `person_id` đang học cho phiên hiện tại |
 | `GET /api/schedule` / `PUT /api/schedule` | JSON | Đọc/ghi khung giờ học |
+| `GET /api/session` | JSON | Trạng thái phiên học bật/tắt bằng tay: `state`, `minutes`, `remaining_s`, `elapsed_s`, `ends_in_text`, `finish_text`, `default_minutes`, `min_minutes`, `max_minutes` |
+| `POST /api/session/start` | JSON | Bắt đầu (hoặc bắt đầu lại) phiên; thân tuỳ chọn `{"minutes": 60}`. Thiếu thân = dùng `session.default_minutes`. Sai khoảng/kiểu → 400 |
+| `POST /api/session/stop` | JSON | Dừng phiên, về `idle`. Gọi lúc đang nghỉ là no-op (200) |
 | `GET /api/signals` | JSON | Tín hiệu thô gần nhất: presence, phone, identity + tuổi của mỗi tín hiệu |
 
 UI:
 
 - Thẻ "Trạng thái học" thay thẻ "Tư thế": ba dòng (Có mặt / Điện thoại / Danh tính), mỗi dòng màu + biểu tượng + chữ (giữ nguyên tắc v2 không truyền đạt chỉ bằng màu).
+- **Thẻ "Phiên học"** đặt ngay dưới camera: ô nhập thời lượng (phút), nút **Bắt đầu học**, nút **Dừng học**, số đếm ngược. Đây là **công tắc duy nhất** bật model AI — xem §5.18.
 - Nút "Thêm người" mở luồng đăng ký có hướng dẫn từng bước.
 - Nút "Chọn người đang học".
 - **Bốn nút PTZ — chưa tồn tại, phải làm mới.** Route `/api/ptz` đã có và đã test, nhưng `index.html` hiện **không** có nút nào và `app.js` **không** gọi `/api/ptz` lần nào. Ba lớp lỗi phải sửa đồng thời; xem §17.
@@ -669,6 +679,67 @@ CREATE TABLE IF NOT EXISTS face_embeddings (
 - `events.type` thêm các giá trị: `PHONE_USE`, `ABSENT`, `IMPOSTOR`, `UNKNOWN`, `SPEAK_FAILED`, `ENROLL`.
 - **Không** có bảng nào chứa ảnh, đường dẫn ảnh, hay JPEG/BLOB hình ảnh. Cột `vector` chứa **số thực**, không phải dữ liệu hình — không thể dựng lại khuôn mặt từ đó nếu không có model, nhưng vẫn là dữ liệu sinh trắc học; xem §5.13.1 và §15.
 - Giữ nguyên v2: ghi theo lô, `retention_days`, lỗi DB không được giết chương trình. Bảng `people`/`face_embeddings` **không** bị `retention_days` xoá — dữ liệu đăng ký là cấu hình, không phải log.
+
+### 5.18 study_session.py — phiên học bật/tắt bằng tay
+
+Yêu cầu: **bấm "Bắt đầu học" thì model AI mới chạy**. Trước mô-đun này hệ thống chỉ có lịch theo tuần (`schedule`, §5.14) — tự động, không ai bấm gì. Hai khái niệm tồn tại song song và **không** thay thế nhau:
+
+- `schedule` trả lời *"bây giờ có nằm trong giờ được phép cảnh báo không"*.
+- `StudySession` trả lời *"có ai đang mở phiên học ngay lúc này không"*.
+
+Cổng cuối cùng là **hội** của hai: ngoài giờ học thì không cảnh báo, và chưa bấm Bắt đầu thì cũng không (`_monitor_loop`).
+
+**Module thuần**: không đọc file, không đọc đồng hồ hệ thống, không phụ thuộc camera/model/Flask. Mọi thời điểm đến từ tham số/tham số khởi tạo `clock`. Nhờ vậy test điều khiển được thời gian mà không cần `sleep`.
+
+**Ba trạng thái** (`STATE_IDLE` / `STATE_RUNNING` / `STATE_FINISHED`):
+
+| Trạng thái | Nghĩa | `minutes` | Đếm ngược |
+| --- | --- | --- | --- |
+| `idle` | chưa bao giờ bấm, hoặc vừa bấm **Dừng** | 0 | không hiện |
+| `running` | đang trong phiên | thời lượng đã đặt | còn lại, làm tròn **lên** |
+| `finished` | hết giờ, tự dừng | thời lượng đã đặt (giữ lại để hiện tổng kết) | 0, `ends_in_text = None` |
+
+`finished` **khác** `idle` có chủ ý: hết giờ mà nhảy về `idle` thì màn hình quay lại "Chưa bắt đầu" ngay sau khi vừa học xong, người dùng mất dấu phiên vừa rồi. Hiện `00:00` thay vì `00:01` trong giây cuối cũng là lỗi hiển thị — làm tròn lên.
+
+**Giới hạn thời lượng** — một nguồn duy nhất:
+
+- `MIN_MINUTES = 1`, `MAX_MINUTES = 720`, `DEFAULT_MINUTES = 60` (khớp `session.default_minutes` trong §6).
+- `normalise_minutes(value)` nhận **số nguyên** trong `[MIN_MINUTES, MAX_MINUTES]`; từ chối: ngoài khoảng, số lẻ (`60.5`), `NaN`/`inf`, `bool` (`True == 1` trong Python — người dùng gõ `true` không có nghĩa là "một phút"), và mọi kiểu không phải số (`"60"`, `None`, list, dict). Sai → `StudySessionError` với câu tiếng Việt đọc được; route `POST /api/session/start` đổi nó thành **400**, không 500.
+
+**Hai đường đọc khác nhau, khác hẳn nhau về tác dụng phụ:**
+
+| Hàm | Ai gọi | Chuyển `running` → `finished` | Trả `finished_message` |
+| --- | --- | --- | --- |
+| `tick()` | vòng lặp camera, **mỗi khung** | có | **có**, đúng **một lần** cho mỗi phiên |
+| `snapshot()` | `GET /api/session`, mỗi giây | có | **không bao giờ** |
+
+Quy tắc bắt buộc: **`tick` là nơi duy nhất được "nói"**. Dashboard hỏi trạng thái mỗi giây; nếu `snapshot` cũng trả câu thông báo thì cùng một câu sẽ ra loa nhiều lần, hoặc tệ hơn là ra loa tuỳ theo việc có ai đang mở trình duyệt hay không.
+
+Câu "hết giờ" còn phải sống sót qua một tình huống dễ mất: `snapshot` chạy **trước** `tick` sau mốc hết giờ. Vì thế điều kiện phát là *"đang `FINISHED` **và** chưa báo"*, **không** phải *"lần này vừa đổi trạng thái"*. Một lần poll đúng nhịp của web sẽ nuốt mất câu nói nếu dùng điều kiện sau — im lặng, không lỗi, rất khó lần ra.
+
+`payload(snapshot)` trả dict JSON thuần cho web, **không** có dữ liệu cá nhân. Ngoài `state`/`minutes`/`remaining_s`/`elapsed_s`/`ends_in_text`, có hai khoá dễ nhầm:
+
+- `finished_message` — câu một lần, chỉ có ngay sau `tick` phát hiện hết giờ. Web không được tự bịa câu khác.
+- `finish_text` — **bền**: cùng một câu, có mặt ở **mọi** lần đọc trong lúc `finished`. Cần trường này vì web hỏi mỗi giây nên rất dễ lỡ đúng lần duy nhất; thiếu nó thì màn hình quay về "Chưa bắt đầu" ngay sau khi hết giờ.
+
+**An toàn đa luồng.** Trạng thái nằm sau một `threading.Lock`: vòng lặp camera đọc 5–6 lần/giây trong khi nút bấm trên web ghi ở luồng khác (Flask). Không khoá thì một lần đọc có thể thấy `state == running` cùng `remaining_s == 0` — cặp không tồn tại.
+
+**Việc cổng này bật/tắt — và việc nó cố ý *không* tắt:**
+
+| Thành phần | Ngoài phiên | Trong phiên |
+| --- | --- | --- |
+| Đọc camera + đẩy JPEG lên `/stream` | **chạy** | chạy |
+| Nhận diện khuôn mặt (`people.observe`) | **chạy** | chạy |
+| Pose (`estimator.detect`), phân loại tư thế, máy trạng thái | **không** | chạy |
+| Dò điện thoại (`PhoneSignal.observe`) | **không** | chạy |
+| Tính `held`, `schedule.should_alert`, phát loa | **không** | chạy |
+| Ghi `storage.record` | **không** — tránh lịch sử đầy khung 0 điểm không phải kết quả đo | chạy |
+
+Ngoài phiên, dashboard nhận `StateUpdate(state=STATE_PAUSED)` với `message = PAUSED_MESSAGE` ("Chưa bắt đầu phiên học nên chưa đo tư thế."). `PAUSED` **không** nằm trong `state.STATES` và không bao giờ tới phần cứng — máy trạng thái không sinh ra nó; vòng lặp chính đặt nó. Nó cũng **không** phải `ABSENT`: người dùng đang ngồi trước camera, báo "không thấy ai" là nói dối. Vì vậy `people.update_signals(presence=...)` cũng **không** được gọi ngoài phiên — hệ thống đang không đo, để tín hiệu tự hết hạn và dashboard hiện "chưa có dữ liệu mới".
+
+**Xoá bộ đếm khi đổi phiên.** Mỗi lần `session_active` đổi (bật **hoặc** tắt), vòng lặp gọi `smoother.reset()`, `machine.reset()`, `presence_tracker.reset()`, `phone_signal.reset()` và xoá `active_alerts`/`last_alert_at`/`stranger_since`. Lý do: cả `PresenceTracker.absent_for_s` lẫn `PhoneSignal.held_s` đều đo khoảng **liên tục** và **đứng yên** khi không có dữ liệu để xét. Không reset thì một chuỗi "vắng 4 giây" từ trước giờ nghỉ khiến khung đầu tiên của phiên mới báo vắng oan, và một hộp điện thoại cũ khiến báo "đang dùng điện thoại" ngay — dù người dùng vừa ngồi xuống.
+
+**Lỗi đọc phiên không được tắt máy.** `tick()` ném exception → vòng lặp **coi như đang trong phiên** (hành vi bản cũ) và log lần đầu, thay vì lặng lẽ tắt model cả buổi học.
 
 ---
 
@@ -716,6 +787,14 @@ schedule:
     phone:       {enabled: true, cooldown_s: 120, hold_s: 10}
     stranger:    {enabled: true, cooldown_s: 300, hold_s: 5}
 
+session:
+  # Phiên học bật/tắt BẰNG TAY (nút trên dashboard). Khác 'schedule' ở trên:
+  # 'schedule' là lịch theo tuần (tự động), mục này là việc người dùng ngồi
+  # xuống bấm "Bắt đầu học". Cổng cuối cùng là HỘI của hai: chưa bấm Bắt đầu
+  # thì model AI (pose + dò điện thoại) KHÔNG chạy, dù có đang trong giờ học.
+  default_minutes: 60             # gợi ý khi mở dashboard, đếm NGƯỢC
+  auto_start: false               # true = vào phiên ngay khi khởi động (chỉ để demo)
+
 speaker_alert:
   enabled: true
   tone_fallback: true           # thiếu ffmpeg thì bíp thay vì im
@@ -759,14 +838,39 @@ lặp `run`**. Cờ `--no-face`/`--no-phone` chỉ có nghĩa sau khi việc n�
 ### 7.1 Lệnh chạy được hôm nay
 
 ```
-python -m posture_monitor run [--config config.yaml] [--no-gpio] [--view front|side] [--save-overlay out.jpg]
+python -m posture_monitor run [--config config.yaml] [--no-gpio] [--view front|side] [--save-overlay out.jpg] [--preview]
 python -m posture_monitor calibrate [--config config.yaml] [--output calibration.json]
 python -m posture_monitor replay video.mp4 [--config config.yaml] [--save-report out.json]
 python -m posture_monitor benchmark [--seconds 60] [--config config.yaml] [--source ...] [--json out.json] [--profile pose|pose_phone|pose_phone_face]
+python -m posture_monitor speak-test [--config config.yaml] [--kind leave_frame|phone|stranger|all] [--voice nam|nu|espeak] [--volume 0..1] [--speed 0.5..1.0] [--tone] [--list]
 ```
 
-Cả bốn lệnh đều có nhánh xử lý riêng trong `main()`. `benchmark` được mở rộng
+Cả năm lệnh đều có nhánh xử lý riêng trong `main()`. `benchmark` được mở rộng
 để đo **ba cấu hình** (xem §8) và báo cáo ghi rõ hồ sơ nào chạy model nào.
+
+`run` **mặc định không mở** cửa sổ OpenCV: hình đã có trên dashboard web, còn
+cửa sổ thì cần màn hình thật (trên Pi qua xrdp nó còn ném lỗi Qt) và mỗi khung
+phải vẽ lại cùng xử lý sự kiện cửa sổ. Cờ `--preview` bật lại cửa sổ khi ngồi
+ngay máy có màn hình; `--no-preview` vẫn được nhận nhưng không còn cần thiết
+(giữ để lệnh cũ không gãy). Ảnh vẫn đi tới trình duyệt qua `DashboardState`
+như thường.
+
+`run` **không** bật model AI ngay khi khởi động. Mặc định `session.auto_start`
+là `false`, nên lúc mới chạy hệ thống chỉ mở camera, đẩy khung lên dashboard và
+nhận diện khuôn mặt; muốn đo tư thế / dò điện thoại / cảnh báo thì phải bấm
+**Bắt đầu học** trên web (§5.18). Khối trạng thái in lúc khởi động nói rõ điều
+này, để người dùng không ngồi chờ một hệ thống đang im lặng vì lý do hiển
+nhiên. Đặt `session.auto_start: true` chỉ khi cần demo liên tục.
+
+`speak-test` phát thử câu cảnh báo ra loa camera rồi thoát. Không mở luồng
+hình, không đụng GPIO/DB, nên chạy được trong lúc `run` đang chạy (loa chỉ
+nhận một phiên backchannel; đang bận thì báo rõ, không xếp hàng — §3.4).
+`--voice`/`--volume`/`--speed` **chỉ** có hiệu lực cho lần chạy đó và **không**
+ghi `data/audio/voice.json`, nên nghe thử giọng khác không âm thầm đổi giọng
+thật của hệ thống. `--tone` phát bíp (không cần ffmpeg, không cần bản thu) để
+tách "loa không nhận backchannel" khỏi "file giọng đọc hỏng". `--list` chỉ
+liệt kê giọng/câu đang có. Mã thoát: 0 phát được hết, 1 có câu lỗi, 2 cấu
+hình sai/không dùng được, 130 Ctrl+C.
 
 ### 7.2 Lệnh đã hứa nhưng **CHƯA HIỆN THỰC** (giữ nguyên văn để đối chiếu)
 
@@ -779,12 +883,14 @@ python -m posture_monitor faces list                      # chưa hiện thực:
 python -m posture_monitor faces add TEN                   # chưa hiện thực: không có parser `faces`; đăng ký qua camera chưa có
 python -m posture_monitor faces remove ID                 # chưa hiện thực: không có parser `faces`
 python -m posture_monitor schedule check                  # chưa hiện thực: không có parser `schedule`
-python -m posture_monitor speak-test                      # chưa hiện thực: không có parser `speak-test`
+python -m posture_monitor speak-test                      # ĐÃ HIỆN THỰC (xem §7.1)
 python -m posture_monitor replay video.mp4 --signals      # chưa hiện thực: `replay` không có cờ `--signals`
 ```
 
 `git grep` cho `no-face|no-phone|--signals` trong `src/` trả về **0** kết quả;
-không có parser nào tên `faces`, `schedule`, `speak-test`.
+không có parser nào tên `faces`, `schedule`. **``speak-test`` đã có** — lệnh
+này được thêm sau khi khối trên được viết, để kiểm tra âm thanh thật ra loa
+trước khi trình diễn.
 
 ### 7.3 Cách làm thật cho từng việc (dùng cái đang có)
 
@@ -802,7 +908,7 @@ nhưng **chưa có chỗ nào khởi tạo nó**. Đã thử bằng `create_app(
 | --- | --- |
 | Đăng ký / liệt kê / xoá người | Route web **đã đăng ký nhưng chưa dùng được khi chạy `run`**: `POST /api/people` (bắt đầu đăng ký, thân `{"name": "..."}`), `GET /api/people`, `DELETE /api/people/<id>` — tất cả trả 503 vì `run` không truyền `people=`. **Không** có đường dòng lệnh. Việc phải làm: nối `people_service.PeopleService` vào `_Dashboard` (`__main__.py:326`). |
 | Xem khung giờ học | `GET /api/schedule` / `PUT /api/schedule` **đã đăng ký nhưng cũng trả 503** cùng lý do. **Không** có lệnh in 7 ngày tới. |
-| Phát thử ra loa camera | `POST /api/speak` — route này **dùng được thật** (không phụ thuộc `people`), thân JSON `{"tone_hz": 880, "duration": 0.5}` (bíp, không cần ffmpeg) hoặc `{"file": "duong_dan.wav"}`. Cần `camera.audio` cấu hình, nếu không trả 403. **Không** có lệnh `speak-test`. |
+| Phát thử ra loa camera | Hai đường, cùng một bộ dựng loa. **Dòng lệnh:** `python -m posture_monitor speak-test` — phát lần lượt ba câu, in rõ giọng/âm lượng/tốc độ và câu nào còn thiếu bản thu; cờ `--kind`, `--voice`, `--volume`, `--speed`, `--tone`, `--list`. Không mở luồng hình, không đụng GPIO/DB nên chạy song song được với `run`. **HTTP:** `POST /api/speak`, thân `{"tone_hz": 880, "duration": 0.5}` (bíp, không cần ffmpeg) hoặc `{"file": "duong_dan.wav"}`; cần `camera.audio` cấu hình, nếu không trả 403. |
 | Xem cả tín hiệu khi replay | `replay` xuất JSON có `labels`/`states` từng khung. Cờ `--signals` **chưa có**; `GET /api/signals` chỉ có tín hiệu khi `people` được nối — hiện **chưa** (503). |
 
 ---
@@ -848,6 +954,7 @@ nhưng **chưa có chỗ nào khởi tạo nó**. Đã thử bằng `create_app(
 | 7 | Chọn người đang học | Đổi người chọn thì identity so với đúng người mới; chọn người chưa đăng ký bị từ chối | Kiểm tra tay + test `POST /api/select` |
 | 8 | PTZ | Bốn hướng xoay đúng chiều; camera không hỗ trợ thì báo lỗi tiếng Việt | Đã có test `test_web_ptz.py` ở v2; bổ sung kiểm tra tay trên camera thật |
 | 9 | Giờ học | `is_active`/`should_alert` đúng trong khung, đúng tên thứ, đúng khung vắt nửa đêm; `enabled: false` → **không giới hạn giờ** (vẫn phát); `kinds.<loại>.enabled: false` → loại đó không phát | `tests/test_schedule.py` + `tests/test_config.py` của `00ce781` (đã có, đã ACCEPT); ca 22:00–02:00, thứ 7/CN, biên `start` trong/`end` ngoài |
+| 10 | **Phiên học bấm tay** | Ngoài phiên: **0** lần gọi `estimator.detect`, **0** lần dò điện thoại, **0** cảnh báo, nhưng camera và nhận diện khuôn mặt vẫn chạy; dashboard hiện "Chưa bắt đầu phiên học", **không** hiện `ABSENT`. Bấm Bắt đầu → model chạy từ khung kế tiếp. Bấm Dừng → model tắt ngay, trạng thái về "Chưa bắt đầu". Hết giờ → tự dừng, ghi log và hiện câu "hết giờ" trên dashboard **đúng một lần**, kể cả khi dashboard đang mở và poll mỗi giây | `tests/test_study_session.py` (44), `tests/test_wire_study_session.py` (12) — chạy `_monitor_loop` thật với `StudySession` thật; chạy tay: bấm Bắt đầu/Dừng trên điện thoại, xem log, chạy phiên 1 phút |
 
 **Tiêu chí "báo nhầm" chung:** khi ngồi đúng, không dùng điện thoại, trong giờ học, **tối đa 1 cảnh báo sai / 10 phút**. Đây là mục tiêu, đo bằng chạy tay 30 phút.
 
@@ -873,7 +980,7 @@ nhưng **chưa có chỗ nào khởi tạo nó**. Đã thử bằng `create_app(
   - `test_speaker_alert.py`: chọn câu theo loại sự kiện, thứ tự ưu tiên, tôn trọng `muted`, loa bận thì bỏ, thiếu ffmpeg thì rơi về bíp (dùng controller giả).
   - `test_enroll_api.py`: đủ mẫu mới ghi, ngắt giữa chừng không ghi, tên rỗng bị từ chối. **CHƯA CÓ** — file này chưa tồn tại; phần API đăng ký hiện được kiểm trong `tests/test_web_people.py`.
 - **Tích hợp bằng `replay`:** clip mẫu có dùng điện thoại / không dùng / hai người / ra khỏi khung. Kỳ vọng ghi trong `tests/data/expected_v3.json` — **CHƯA CÓ**: cả file kỳ vọng lẫn thư mục `tests/data/` chưa tồn tại; đây là việc phải làm, không phải thứ đã có.
-- **Trên Pi (bắt buộc, người triển khai chạy):** `benchmark` cho ba cấu hình; **phát thử bằng `POST /api/speak`** (lệnh `speak-test` **chưa hiện thực**, xem §7.2); đăng ký người thật; chạy 30 phút trong giờ học để đếm báo nhầm.
+- **Trên Pi (bắt buộc, người triển khai chạy):** `benchmark` cho ba cấu hình; **phát thử bằng `python -m posture_monitor speak-test`** (hoặc `POST /api/speak` nếu đang mở web — xem §7.1/§7.3); đăng ký người thật; chạy 30 phút trong giờ học để đếm báo nhầm.
 - Mọi test trừ phần âm thanh/PTZ phải chạy được trên PC (giữ nguyên v2 §9).
 
 ---
@@ -915,7 +1022,7 @@ Kế thừa nguyên vẹn 8 quy tắc của v2 §11. Bổ sung:
 | Báo nhầm "dùng điện thoại" khi tay đặt lên bàn cạnh máy | Cao | Quy tắc đòi cổ tay **trong** hộp bao + `hold_s`; đo FP trên clip thật; nếu vẫn cao, nới `touching_slack_px` **không** cứu được — phải xem lại quy tắc và báo người dùng |
 | Báo nhầm "học hộ" do nhận diện khuôn mặt kém (ánh sáng, khẩu trang) | **Cao** | Ba kết quả `MATCH`/`MISMATCH`/`UNKNOWN`; `UNKNOWN` không bao giờ báo; ngưỡng đo bằng thực nghiệm; `impostor_hold_s` dài |
 | Người học **giả** bằng ảnh/video trên điện thoại | Trung bình | **Không** xử lý trong v3. Phải ghi rõ trong README: hệ thống không chống giả mạo. Thêm phát hiện liveness là đề tài khác |
-| Loa camera không mở backchannel trên một số firmware | Trung bình | Đã kiểm chứng trên **đúng camera của dự án**; camera khác phải phát thử trước bằng `POST /api/speak` (lệnh `speak-test` **chưa hiện thực**, §7.2). Thiếu thì rơi về bíp, thiếu nữa thì ghi `SPEAK_FAILED` |
+| Loa camera không mở backchannel trên một số firmware | Trung bình | Đã kiểm chứng trên **đúng camera của dự án**; camera khác phải phát thử trước bằng `python -m posture_monitor speak-test` (§7.1) hoặc `POST /api/speak` nếu đang mở web. Thiếu thì rơi về bíp, thiếu nữa thì ghi `SPEAK_FAILED` |
 | `espeak-ng` giọng tiếng Việt khó nghe | Trung bình | **Chưa đo chất lượng**; nếu không đủ rõ thì dùng tiếng bíp + chữ trên dashboard. Không tự ý thêm dịch vụ TTS cloud (vi phạm "không truyền ra ngoài") |
 | Mất mạng làm rơi cảnh báo đúng lúc cần | Trung bình | Ghi sự kiện; dashboard hiện trạng thái "loa không phản hồi"; không có kênh dự phòng tự động trong v3 |
 | Đồng hồ Pi sai → cảnh báo ngoài giờ | Trung bình | **Chưa có trong code**: `00ce781` không có `clock_skew_warn_s` và module cố ý thuần. Việc kiểm tra lệch NTP thuộc tầng gọi, cần làm thêm; lệch nhiều thì tắt phát và cảnh báo trên dashboard |

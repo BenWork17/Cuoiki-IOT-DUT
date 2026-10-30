@@ -47,9 +47,7 @@ from posture_monitor.schedule import (  # noqa: E402
 )
 
 #: Keypoint thân trên đủ tin cậy: presence cần >= 2 điểm trong 7 điểm đầu.
-_PRESENT_CONF = np.array(
-    [0.9] * 7 + [0.0] * 10, dtype=np.float32
-)
+_PRESENT_CONF = np.array([0.9] * 7 + [0.0] * 10, dtype=np.float32)
 _ABSENT_CONF = np.zeros(17, dtype=np.float32)
 
 
@@ -125,13 +123,25 @@ class _RecordingAlerter:
     giả phải trả một :class:`AlertOutcome` thật. ``spoken``/``error`` là kịch
     bản do từng bài test đặt; ``muted=True`` luôn cho kết quả "bỏ, không lỗi"
     đúng như :class:`SpeakerAlerter` thật.
+
+    ``busy_until`` mô phỏng loa đang phát tiếng khác trong một khoảng thời
+    gian: trong khoảng đó ``alert_many`` trả ``retryable=True`` (mode
+    ``skipped``) đúng như :class:`SpeakerAlerter` khi ``controller.busy``.
     """
 
     def __init__(self) -> None:
+        #: Mọi lần vòng lặp **gọi** alerter (kể cả tắt tiếng/loa bận): đây là
+        #: số *quyết định*, không phải số lần ra tiếng. Giữ nguyên ngữ nghĩa
+        #: này để các bài cũ về cooldown vẫn đọc được.
         self.calls: list[tuple[str, float | None]] = []
+        #: Những lần **thật sự phát ra loa** — dùng khi cần phân biệt "có
+        #: quyết định" với "có nói gì không".
+        self.played: list[tuple[str, float | None]] = []
         self.muted_values: list[bool] = []
         self.spoken = False
         self.error: str | None = None
+        #: Thời điểm (theo ``now``) loa rảnh trở lại; ``None`` = luôn rảnh.
+        self.busy_until: float | None = None
 
     @property
     def available(self) -> bool:
@@ -151,9 +161,11 @@ class _RecordingAlerter:
         )
 
         chosen = next(iter(kinds), None)
+        # Mọi lần gọi đều là một *quyết định* — kể cả khi tắt tiếng hay loa
+        # bận. ``played`` mới là "đã nói ra loa".
         self.calls.append((chosen, now))
-        self.muted_values.append(bool(muted))
         if muted:
+            self.muted_values.append(True)
             return AlertOutcome(
                 kind=chosen,
                 text=None,
@@ -163,6 +175,20 @@ class _RecordingAlerter:
                 error=None,
                 at=float(now or 0.0),
             )
+        if self.busy_until is not None and float(now or 0.0) < self.busy_until:
+            return AlertOutcome(
+                kind=chosen,
+                text=None,
+                spoken=False,
+                mode=MODE_SKIPPED,
+                reason="Loa camera đang phát tiếng khác nên bỏ lần cảnh báo này.",
+                error=None,
+                at=float(now or 0.0),
+                retryable=True,
+            )
+        self.muted_values.append(False)
+        if self.spoken:
+            self.played.append((chosen, now))
         return AlertOutcome(
             kind=chosen,
             text=None,
@@ -256,9 +282,11 @@ def _schedule(inside: bool, phone_enabled: bool = True) -> ScheduleConfig:
         ),
         kinds={
             "leave_frame": KindSettings(enabled=True, cooldown_s=60.0, hold_s=5.0),
-            "phone": KindSettings(
-                enabled=phone_enabled, cooldown_s=120.0, hold_s=5.0
-            ),
+            # ``hold_s`` để **bằng mặc định** của ``PhoneConfig`` (2.0): các bài
+            # ở đây không nói về ngưỡng điện thoại, nên hai tầng không được lệch
+            # nhau — lệch sẽ kích hoạt ``_warn_phone_threshold_mismatch`` và làm
+            # nhiễu những phép đếm cảnh báo/warning.
+            "phone": KindSettings(enabled=phone_enabled, cooldown_s=120.0, hold_s=2.0),
             "stranger": KindSettings(enabled=True, cooldown_s=300.0, hold_s=5.0),
         },
     )
@@ -282,9 +310,26 @@ class _FakeStorage:
         self.events.append(event)
 
 
-def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
-         phone_script, people=None, logger=None, state=None, storage=None,
-         spoken=False, error=None, baseline=None, dispatcher=None):
+def _run(
+    monkeypatch,
+    tmp_path,
+    *,
+    estimator,
+    frames,
+    clock,
+    wall_clock,
+    config,
+    phone_script,
+    people=None,
+    logger=None,
+    state=None,
+    storage=None,
+    spoken=False,
+    error=None,
+    baseline=None,
+    dispatcher=None,
+    busy_until=None,
+):
     """Chạy ``_monitor_loop`` thật với các seam đã thay, trả kết quả quan sát.
 
     ``baseline`` mặc định là baseline rỗng (mọi đặc trưng ``None``) để các bài
@@ -292,6 +337,8 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
     sinh ra nhãn tư thế. ``dispatcher``/``state`` chuyển thẳng vào vòng lặp để
     quan sát bản ``StateUpdate`` mà nó thật sự đẩy đi. ``spoken``/``error``
     là kịch bản của loa giả cho các bài về tắt tiếng và sự kiện SPEAK_*.
+    ``busy_until`` đặt loa giả ở trạng thái **bận** (trả ``retryable=True``)
+    cho tới mốc thời gian đó, để kiểm việc cooldown không bị tiêu oan.
     """
     import posture_monitor.__main__ as cli
     import posture_monitor.calibration as calibration_mod
@@ -319,12 +366,12 @@ def _run(monkeypatch, tmp_path, *, estimator, frames, clock, wall_clock, config,
         cli.cv2, "waitKey", lambda *a, **k: keys.pop(0) if keys else ord("q")
     )
 
-    monkeypatch.setattr(
-        phone_mod, "PhoneSignal", _make_phone_signal_fake(phone_script)
-    )
+    monkeypatch.setattr(phone_mod, "PhoneSignal", _make_phone_signal_fake(phone_script))
     alerter = _RecordingAlerter()
     alerter.spoken = spoken
     alerter.error = error
+    if busy_until is not None:
+        alerter.busy_until = float(busy_until)
     _AlerterHolder.instance = alerter
     monkeypatch.setattr(speaker_mod, "SpeakerAlerter", _RecordingAlerter)
 
@@ -390,9 +437,7 @@ def test_roi_khung_qua_grace_va_hold_thi_co_quyet_dinh(monkeypatch, tmp_path):
     # Hai giá trị mỗi khung: một cho ``alert_now``, một cho đồng hồ của
     # PresenceTracker. Cùng giá trị để đọc dễ.
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     config = _config(_schedule(inside=True))
 
     exit_code, observed, alerter = _run(
@@ -416,9 +461,7 @@ def test_ngoai_gio_hoc_khong_co_quyet_dinh(monkeypatch, tmp_path):
     """Ngoài khung giờ: ``held`` vẫn lớn nhưng ``should_alert`` trả ``None``."""
     frames = 6
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     # Cùng ``held`` như bài trên, nhưng lịch chỉ áp cho ngày khác.
     config = _config(_schedule(inside=False))
 
@@ -466,9 +509,7 @@ def test_phone_result_none_thi_held_bang_khong(monkeypatch, tmp_path):
     schedule = _schedule(inside=True)
     # Nâng ``hold_s`` của phone để khung 0 (held 50) không tự thành cảnh báo;
     # bài này chỉ kiểm đúng việc ``None`` phải cho 0.0.
-    schedule.kinds["phone"] = KindSettings(
-        enabled=True, cooldown_s=120.0, hold_s=100.0
-    )
+    schedule.kinds["phone"] = KindSettings(enabled=True, cooldown_s=120.0, hold_s=100.0)
     config = _config(schedule)
 
     exit_code, observed, alerter = _run(
@@ -500,9 +541,7 @@ def test_cooldown_chi_mot_canh_bao_cho_hai_khung_lien_tiep(monkeypatch, tmp_path
     frames = 6
     # absents: khung 0-1 có người, khung 2-5 vắng; 16 s và 20 s đều > 5.
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     config = _config(_schedule(inside=True))
 
     exit_code, observed, alerter = _run(
@@ -519,9 +558,7 @@ def test_cooldown_chi_mot_canh_bao_cho_hai_khung_lien_tiep(monkeypatch, tmp_path
 
     assert exit_code == 0
     # Hai khung cuối đều đã vượt hold_s; chỉ khung đầu tiên được phát.
-    over_threshold = [
-        held for held in observed if held.get("leave_frame", 0.0) >= 5.0
-    ]
+    over_threshold = [held for held in observed if held.get("leave_frame", 0.0) >= 5.0]
     assert len(over_threshold) >= 2, observed
     assert len(alerter.calls) == 1, alerter.calls
 
@@ -572,7 +609,7 @@ def _pose_head_down() -> PoseResult:
     hơn hẳn ``1.0 * 0.70`` nên ``HEAD_DOWN`` luôn bật.
     """
     xy = np.full((17, 2), 100.0, dtype=np.float32)
-    xy[5] = (50.0, 100.0)   # vai trái
+    xy[5] = (50.0, 100.0)  # vai trái
     xy[6] = (150.0, 100.0)  # vai phải → mid_y = 100, width = 100
     xy[0] = (100.0, 200.0)  # mũi thấp hơn vai 100 px → head_height = -1.0
     conf = np.zeros(17, dtype=np.float32)
@@ -581,8 +618,16 @@ def _pose_head_down() -> PoseResult:
     return PoseResult(xy=xy, conf=conf, bbox=bbox)
 
 
-def _run_voi_dispatch(monkeypatch, tmp_path, *, config, frames=6,
-                      estimator=None, baseline=None, state=None):
+def _run_voi_dispatch(
+    monkeypatch,
+    tmp_path,
+    *,
+    config,
+    frames=6,
+    estimator=None,
+    baseline=None,
+    state=None,
+):
     """Chạy vòng lặp thật với dispatcher ghi lại; trả ``(exit, updates)``."""
     dispatcher = _RecordingDispatcher()
     if estimator is None:
@@ -686,9 +731,7 @@ def test_vong_lap_chan_gpio_khi_tat(monkeypatch, tmp_path):
     assert exit_tat == 0
     assert updates_tat, "vòng lặp phải đẩy StateUpdate cho dispatcher"
     # Nội dung phải có: ``EVENT_BREAK`` xuất hiện trong sự kiện của update.
-    loai_su_kien = [
-        event.type for update in updates_tat for event in update.events
-    ]
+    loai_su_kien = [event.type for update in updates_tat for event in update.events]
     assert state_mod.EVENT_BREAK in loai_su_kien, (
         "máy trạng thái không sinh EVENT_BREAK nên bài này không chứng minh "
         f"được gì: {loai_su_kien}"
@@ -744,6 +787,7 @@ def test_presence_config_duoc_nap_va_anh_xa_vao_tracker():
             encoding="utf-8",
         )
         assert load_config(custom).presence.absent_grace_s == pytest.approx(4.5)
+
 
 class _FakePeople:
     """``PeopleService`` giả: chỉ trả tín hiệu danh tính, không chạy model.
@@ -974,9 +1018,7 @@ def test_tat_tieng_khong_phat_loa_nhung_van_giu_cooldown(monkeypatch, tmp_path):
     """
     frames = 6
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     config = _config(_schedule(inside=True))
 
     exit_code, observed, alerter = _run(
@@ -1032,9 +1074,7 @@ def test_da_phat_thi_ghi_su_kien_speak_ok(monkeypatch, tmp_path):
 
     frames = 6
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     storage = _FakeStorage()
 
     exit_code, _observed, alerter = _run(
@@ -1064,9 +1104,7 @@ def test_loi_loa_thi_ghi_su_kien_speak_failed(monkeypatch, tmp_path):
 
     frames = 6
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     storage = _FakeStorage()
     logger = _QuietLogger()
 
@@ -1085,9 +1123,7 @@ def test_loi_loa_thi_ghi_su_kien_speak_failed(monkeypatch, tmp_path):
     )
 
     assert exit_code == 0, "lỗi loa không được giết vòng lặp"
-    failed = [
-        event for event in storage.events if event.type == EVENT_SPEAK_FAILED
-    ]
+    failed = [event for event in storage.events if event.type == EVENT_SPEAK_FAILED]
     assert len(failed) == 1, storage.events
     assert failed[0].label == "leave_frame"
     assert any("SPEAK_FAILED" in line for line in logger.warnings), logger.warnings
@@ -1103,9 +1139,7 @@ def test_tat_tieng_khong_phai_speak_failed_va_van_ghi_su_kien(monkeypatch, tmp_p
 
     frames = 6
     clock = _QueueClock([0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20])
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     storage = _FakeStorage()
 
     exit_code, _observed, alerter = _run(
@@ -1144,9 +1178,7 @@ def test_canh_bao_duoc_ghi_vao_bang_events(monkeypatch, tmp_path):
 
     frames = 6
     clock_values = [0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20]
-    estimator = _ScriptedEstimator(
-        [_pose(True), _pose(True), None, None, None, None]
-    )
+    estimator = _ScriptedEstimator([_pose(True), _pose(True), None, None, None, None])
     config = _config(_schedule(inside=True))
 
     storage = _FakeStorage()
@@ -1269,9 +1301,7 @@ def test_vong_lap_day_trang_thai_dien_thoai_sang_dich_vu_nguoi_hoc(
     assert alerter.calls == [], alerter.calls
 
 
-def test_dich_vu_thieu_note_phone_khong_lam_roi_canh_bao_khac(
-    monkeypatch, tmp_path
-):
+def test_dich_vu_thieu_note_phone_khong_lam_roi_canh_bao_khac(monkeypatch, tmp_path):
     """Dịch vụ nửa vời (không có ``note_phone``) chỉ mất dòng điện thoại.
 
     Đây là hồi quy thật: ``_FakePeople`` bản cũ thiếu ``note_phone``, và lời
@@ -1318,3 +1348,132 @@ def test_dich_vu_thieu_note_phone_khong_lam_roi_canh_bao_khac(
     assert exit_code == 0
     assert len(observed) == frames, observed
     assert [kind for kind, _ in alerter.calls] == ["leave_frame"], alerter.calls
+
+
+# ---------------------------------------------------------------------------
+# Loa bận không được tiêu cooldown (lỗi "chỉ báo được lần đầu")
+#
+# Bối cảnh: ``last_alert_at`` từng được đẩy **vô điều kiện** sau mỗi quyết
+# định. Nếu lần đó loa đang phát tiếng khác (``retryable=True``), cooldown bị
+# tiêu dù chưa nói gì — người dùng thấy web báo "đang dùng điện thoại" mà loa
+# im, và lần dùng sau trong cùng cửa sổ cooldown cũng không được nhắc. Ba bài
+# dưới khoá đúng hành vi đó.
+# ---------------------------------------------------------------------------
+
+
+def _schedule_chi_leave_frame(cooldown_s: float = 30.0) -> ScheduleConfig:
+    """Lịch chỉ có thể sinh cảnh báo ``leave_frame``, cooldown ngắn để đo được."""
+    schedule = _schedule(inside=True)
+    schedule.kinds["leave_frame"] = KindSettings(
+        enabled=True, cooldown_s=cooldown_s, hold_s=5.0
+    )
+    schedule.kinds["phone"] = KindSettings(
+        enabled=True, cooldown_s=120.0, hold_s=1000.0
+    )
+    schedule.kinds["stranger"] = KindSettings(
+        enabled=True, cooldown_s=300.0, hold_s=1000.0
+    )
+    return schedule
+
+
+#: Bốn khung: người có mặt (0,0) rồi vắng ở 10, 12, 16, 20 s.
+_CLOCK_VANG = [0, 0, 0, 0, 10, 10, 12, 12, 16, 16, 20, 20]
+_ESTIMATOR_VANG = [_pose(True), _pose(True), None, None, None, None]
+
+
+def test_loa_ban_khong_tieu_cooldown(monkeypatch, tmp_path):
+    """Loa bận ở lần đầu → cooldown KHÔNG tiến, khung sau vẫn được nhắc.
+
+    Đây chính là lỗi "chỉ báo được 1 lần đầu tiên". Trước bản sửa,
+    ``last_alert_at`` bị đẩy ngay cả khi ``outcome.retryable`` là ``True``,
+    nên cả cửa sổ cooldown bị tiêu mà loa chưa hề nói. Bài này đặt loa bận
+    suốt 13 giây đầu: lần quyết định ở giây 10 bị bỏ, nhưng giây 16 (khung
+    kế tiếp sau khi loa rảnh) **phải** phát được.
+
+    Vì vòng lặp chỉ đẩy ``last_alert_at`` khi ``not outcome.retryable``, số
+    lần gọi vẫn có thể > 1; điều quan trọng là ``played`` phải **có** một lần.
+    """
+    config = _config(_schedule_chi_leave_frame())
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator(_ESTIMATOR_VANG),
+        frames=6,
+        clock=_QueueClock(_CLOCK_VANG),
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        spoken=True,
+        # Loa bận tới giây 13: lần quyết định ở 10 s bị bỏ (retryable).
+        busy_until=13.0,
+    )
+
+    assert exit_code == 0
+    over_threshold = [held for held in observed if held.get("leave_frame", 0.0) >= 5.0]
+    assert len(over_threshold) >= 2, observed
+    assert alerter.played, (
+        "loa bận lần đầu đã tiêu mất cooldown: khung sau không được nhắc nữa — "
+        f"đúng lỗi 'chỉ báo được lần đầu'. calls={alerter.calls}"
+    )
+    # Lần phát thật phải diễn ra SAU khi loa rảnh, không phải lần bị bỏ.
+    played_at = [now for _kind, now in alerter.played if now is not None]
+    assert played_at and min(played_at) >= 13.0, alerter.played
+
+
+def test_loa_ban_lien_tuc_thi_khong_bao_gio_tieu_cooldown(monkeypatch, tmp_path):
+    """Loa bận suốt phiên: không phát gì, và cũng **không** đánh dấu đã báo.
+
+    Vế thứ hai mới là điểm sửa: ``played`` rỗng là đúng (loa bận thật), nhưng
+    ``calls`` phải > 1 — vòng lặp vẫn thử lại ở mỗi khung thay vì bỏ cuộc sau
+    lần đầu. Nếu cooldown vẫn bị tiêu, ``calls`` sẽ đúng bằng 1.
+    """
+    config = _config(_schedule_chi_leave_frame())
+
+    exit_code, _observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator(_ESTIMATOR_VANG),
+        frames=6,
+        clock=_QueueClock(_CLOCK_VANG),
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        spoken=True,
+        busy_until=10_000.0,
+    )
+
+    assert exit_code == 0
+    assert alerter.played == [], "loa bận thì không được tính là đã phát"
+    assert len(alerter.calls) > 1, (
+        "loa bận liên tục nhưng vòng lặp chỉ thử đúng một lần: cooldown đã bị "
+        f"tiêu oan dù chưa nói gì. calls={alerter.calls}"
+    )
+
+
+def test_phat_duoc_roi_thi_cooldown_moi_tien(monkeypatch, tmp_path):
+    """Đã phát thật → cooldown tiến: hai khung vượt ngưỡng liền nhau chỉ 1 lần.
+
+    Vế đối chứng của bài trên. Thiếu nó thì một bản sửa "luôn không đẩy
+    ``last_alert_at``" cũng xanh ở bài kia, trong khi thực tế loa sẽ kêu ở
+    **mọi** khung — đúng lỗi log storm mà ``should_alert`` cần cooldown để chặn.
+    """
+    config = _config(_schedule_chi_leave_frame())
+
+    exit_code, observed, alerter = _run(
+        monkeypatch,
+        tmp_path,
+        estimator=_ScriptedEstimator(_ESTIMATOR_VANG),
+        frames=6,
+        clock=_QueueClock(_CLOCK_VANG),
+        wall_clock=_StepWallClock(_WALL_TIME, step_s=1.0),
+        config=config,
+        phone_script=[(None, 0.0)],
+        spoken=True,
+    )
+
+    assert exit_code == 0
+    over_threshold = [held for held in observed if held.get("leave_frame", 0.0) >= 5.0]
+    assert len(over_threshold) >= 2, observed
+    assert len(alerter.calls) == 1, alerter.calls
+    assert len(alerter.played) == 1, alerter.played

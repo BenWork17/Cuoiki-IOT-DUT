@@ -407,3 +407,80 @@ def test_nguong_tai_sinh_khop_voi_ham_suy(tmp_path: Path) -> None:
     )
     assert in_memory == pytest.approx(expected)
     assert saved["threshold"] == pytest.approx(expected)
+
+
+# ---------------------------------------------------------------------------
+# 8. Ngưỡng chạm sàn phải KÊU, không được im lặng
+# ---------------------------------------------------------------------------
+class _ContradictorySamples:
+    """Ba mẫu "cùng người" nhưng lệch nhau nhiều — như phiên bị tay che mặt.
+
+    Đo thật: chuỗi 14 khung bị tay che mặt cho cosine thấp nhất 0,40, tức là
+    0,40 - 0,15 = 0,25 < sàn 0,30 -> ngưỡng kẹp về đúng sàn. Cùng người trên
+    khung sạch cho cosine 0,92 -> 0,77. Ba vector dưới đây tái hiện đúng tình
+    huống thứ nhất ở mức cosine 0,40.
+    """
+
+    def __init__(self) -> None:
+        self.samples = [
+            BASE_VECTOR,
+            _vector_at_cosine(0.40),
+            _vector_at_cosine(0.95),
+        ]
+        self.index = 0
+
+    def __call__(self, _frame: object) -> np.ndarray:
+        vector = self.samples[min(self.index, len(self.samples) - 1)]
+        self.index += 1
+        return np.array(vector)
+
+
+def test_nguong_cham_san_thi_canh_bao_lo_nguong(tmp_path: Path) -> None:
+    """Mẫu đăng ký mâu thuẫn -> ngưỡng về sàn -> PHẢI có cảnh báo.
+
+    Vì sao cần: sàn 0,30 làm cổng danh tính lỏng đến mức người khác có thể
+    được nhận thành chủ, mà ``_classify`` dùng con số đó y như ngưỡng thật.
+    Không có dòng cảnh báo thì sự cố này hoàn toàn vô hình — đúng kiểu "cảnh
+    báo người lạ không bao giờ kêu" mà spec §5.13 lo.
+
+    Đột biến để kiểm chứng: bỏ khối ``if derived <= AUTO_THRESHOLD_MIN`` trong
+    ``_derive_auto_threshold`` — test này phải đỏ.
+    """
+    logger = RecordingLogger()
+    service = _new_service(tmp_path, logger=logger)
+    try:
+        service.set_processor(_ContradictorySamples())
+        started = service.start_enroll("An")
+        for now in (100.0, 101.5, 103.0):
+            service.process_frame(object(), now=now)
+        assert service.enroll_status(started["enroll_id"])["state"] == "done"
+        assert service._auto_threshold == pytest.approx(0.30)
+    finally:
+        service.close()
+
+    assert any("chạm sàn" in message for message in logger.warnings), (
+        "Ngưỡng tự suy chạm sàn 0,30 mà không có cảnh báo; người dùng không "
+        f"thể biết cổng danh tính đã lỏng. Cảnh báo có: {logger.warnings}"
+    )
+
+
+def test_nguong_tot_thi_khong_canh_bao_san(tmp_path: Path) -> None:
+    """Mẫu đồng ý với nhau -> ngưỡng bình thường -> KHÔNG được kêu.
+
+    Cặp test này giữ cho cảnh báo trên có nghĩa: nếu nó kêu ở mọi lần đăng ký
+    thì nó thành tiếng ồn và người dùng sẽ học cách bỏ qua.
+    """
+    logger = RecordingLogger()
+    service = _new_service(tmp_path, logger=logger)
+    try:
+        _enroll_with_distinct_samples(service, "An")
+        # Ba mẫu gần nhau (cosine thấp nhất 0,95) -> 0,95 - 0,15 = 0,80, trên
+        # sàn. Không khoá đúng con số: điều cần khẳng định là "trên sàn".
+        assert service._auto_threshold > 0.30
+    finally:
+        service.close()
+
+    assert not any("chạm sàn" in message for message in logger.warnings), (
+        f"Ngưỡng {service._auto_threshold} (tốt) mà vẫn cảnh báo chạm sàn: "
+        f"{logger.warnings}"
+    )

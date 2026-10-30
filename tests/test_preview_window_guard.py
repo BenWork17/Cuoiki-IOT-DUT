@@ -115,9 +115,7 @@ def _run(monkeypatch, *, logger, keys=(), frames=_FRAMES, **window):
     """Chạy ``_monitor_loop`` vô hạn phụ thuộc; ``window`` thay từng hàm cv2."""
     import posture_monitor.calibration as calibration_mod
 
-    monkeypatch.setattr(
-        calibration_mod, "load", lambda path: _neutral_baseline()
-    )
+    monkeypatch.setattr(calibration_mod, "load", lambda path: _neutral_baseline())
     monkeypatch.setattr(cli.cv2, "namedWindow", lambda *a, **k: None)
     monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda *a, **k: None)
     monkeypatch.setattr(cli.cv2, "imshow", lambda *a, **k: None)
@@ -197,9 +195,7 @@ def test_named_window_error_does_not_kill_loop(monkeypatch):
     logger = RecordingLogger()
     boom = Boom()
 
-    exit_code, source, storage = _run(
-        monkeypatch, logger=logger, namedWindow=boom
-    )
+    exit_code, source, storage = _run(monkeypatch, logger=logger, namedWindow=boom)
 
     assert exit_code == 1
     assert len(storage.records) == _FRAMES
@@ -259,3 +255,138 @@ def test_healthy_window_closing_quits(monkeypatch):
     assert source.reads == 2
     assert logger.warnings == []
     assert any("đã đóng" in info for info in logger.infos)
+
+
+# ---------------------------------------------------------------------------
+# --no-preview: tắt cửa sổ vì người dùng chỉ xem qua web
+# ---------------------------------------------------------------------------
+def _run_no_preview(monkeypatch, *, logger, frames=_FRAMES, window=None):
+    """Chạy vòng lặp với ``show_preview=False`` và các hàm cửa sổ ghi lại lời gọi."""
+    import posture_monitor.calibration as calibration_mod
+
+    calls = {"namedWindow": 0, "imshow": 0, "waitKey": 0, "destroyAllWindows": 0}
+
+    def counted(name, result=0):
+        def _fake(*_args, **_kwargs):
+            calls[name] += 1
+            return result
+
+        return _fake
+
+    monkeypatch.setattr(calibration_mod, "load", lambda path: _neutral_baseline())
+    monkeypatch.setattr(cli.cv2, "namedWindow", counted("namedWindow"))
+    monkeypatch.setattr(cli.cv2, "imshow", counted("imshow"))
+    monkeypatch.setattr(cli.cv2, "waitKey", counted("waitKey", -1))
+    monkeypatch.setattr(cli.cv2, "destroyAllWindows", counted("destroyAllWindows"))
+    monkeypatch.setattr(cli.cv2, "getWindowProperty", lambda *a, **k: 1.0)
+    for name, fake in (window or {}).items():
+        monkeypatch.setattr(cli.cv2, name, fake)
+
+    storage = RecordingStorage()
+    exit_code = cli._monitor_loop(
+        FakeEstimator(),
+        CountingSource(frames),
+        Config(),
+        logger,
+        state=None,
+        storage=storage,
+        sensor=None,
+        dispatcher=None,
+        show_preview=False,
+    )
+    return exit_code, storage, calls
+
+
+def test_no_preview_khong_mo_cua_so_nao(monkeypatch):
+    """``show_preview=False``: không ``namedWindow``/``imshow``/``waitKey``/``destroy``.
+
+    Người dùng chạy máy chỉ có web nên cửa sổ OpenCV là việc vô ích: mỗi khung
+    vẫn phải vẽ và xử lý sự kiện cửa sổ, và trên máy không có màn hình nó còn
+    ném lỗi Qt. Bài này khoá rằng cả bốn lời gọi đều bằng 0 — không chỉ là
+    "không hiện ảnh" mà không đụng tới nền tảng giao diện.
+    """
+    logger = RecordingLogger()
+
+    exit_code, storage, calls = _run_no_preview(monkeypatch, logger=logger)
+
+    assert exit_code == 1, "hết khung là đường thoát bình thường"
+    assert len(storage.records) == _FRAMES, "vẫn phải xử lý mọi khung"
+    assert calls == {
+        "namedWindow": 0,
+        "imshow": 0,
+        "waitKey": 0,
+        "destroyAllWindows": 0,
+    }, calls
+    assert logger.warnings == [], "tắt theo yêu cầu không phải lỗi"
+    assert any("cửa sổ xem trước" in info for info in logger.infos), logger.infos
+
+
+def test_no_preview_khong_thu_lai_khi_cua_so_hong(monkeypatch):
+    """Tắt xem trước thì cửa sổ hỏng cũng không thành cảnh báo hay log lỗi."""
+    logger = RecordingLogger()
+
+    exit_code, storage, calls = _run_no_preview(
+        monkeypatch, logger=logger, window={"imshow": Boom()}
+    )
+
+    assert exit_code == 1
+    assert len(storage.records) == _FRAMES
+    assert calls["imshow"] == 0, "không được gọi imshow dù nó sẽ ném lỗi"
+    assert logger.warnings == []
+
+
+def test_no_preview_la_mac_dinh_cua_lenh_run():
+    """``run`` **mặc định** không mở cửa sổ; ``--preview`` mới bật.
+
+    Yêu cầu của người dùng là "chạy code cũng không cần hiện process camera,
+    tôi sẽ lên web để xem". Mặc định phải là không có cửa sổ, nếu không họ
+    vẫn phải nhớ thêm một cờ mỗi lần chạy — và quên thì cửa sổ lại hiện.
+    """
+    args = cli.build_parser().parse_args(["run"])
+    assert args.preview is False, "mặc định KHÔNG được mở cửa sổ"
+
+    args_bat = cli.build_parser().parse_args(["run", "--preview"])
+    assert args_bat.preview is True
+
+    # ``--no-preview`` vẫn phải nhận để lệnh cũ không gãy.
+    args_cu = cli.build_parser().parse_args(["run", "--no-preview"])
+    assert args_cu.no_preview is True
+    assert args_cu.preview is False
+
+
+def _status_text(monkeypatch, *, show_preview: bool) -> str:
+    """Gọi ``_print_status`` và trả toàn bộ văn bản nó in."""
+    captured: list[str] = []
+
+    def fake_print(*args, **_kwargs):
+        captured.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr(cli, "print", fake_print, raising=False)
+
+    class _Hardware:
+        state = "GOOD"
+
+    cli._print_status(Config(), _Hardware(), None, "front", "onnx", show_preview)
+    return "\n".join(captured)
+
+
+def test_banner_khong_noi_bam_q_khi_khong_mo_cua_so(monkeypatch):
+    """Khi mặc định không có cửa sổ, banner không được dặn "bấm q".
+
+    Chỉ dẫn sai kiểu này khiến người dùng ngồi chờ một cửa sổ không bao giờ
+    hiện (và tưởng chương trình hỏng).
+    """
+    text = _status_text(monkeypatch, show_preview=False)
+
+    assert "bấm q" not in text, text
+    assert "dashboard web" in text, text
+    assert "Ctrl+C" in text, text
+    assert "--preview" in text, text
+
+
+def test_banner_van_dan_bam_q_khi_bat_preview(monkeypatch):
+    """Bật ``--preview`` thì banner phải nói đúng cách thoát cửa sổ."""
+    text = _status_text(monkeypatch, show_preview=True)
+
+    assert "bấm q" in text, text
+    assert "Ctrl+C" not in text, text
