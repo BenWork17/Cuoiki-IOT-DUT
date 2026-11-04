@@ -323,7 +323,10 @@ h1 {
 
 .btn:disabled {
   cursor: not-allowed;
-  color: #8a9099;
+  /* #666c76 đạt 4,8:1 trên nền #f2f4f7. Nút mờ vẫn phải đọc được: người dùng
+     cần biết nút đó là "Dừng học" dù chưa bấm được, và bản mờ chỉ khác bằng
+     nền xám + con trỏ, không bằng chữ quá nhạt. */
+  color: #666c76;
   background: #f2f4f7;
   border-color: #e3e6ea;
 }
@@ -393,7 +396,7 @@ h1 {
 }
 
 .field:disabled {
-  color: #8a9099;
+  color: #666c76;
   background: #f2f4f7;
 }
 
@@ -615,7 +618,7 @@ h1 {
 .sign__icon {
   font-size: 12px;
   line-height: 18px;
-  color: #8a9099;
+  color: #7a8089;
   text-align: center;
 }
 
