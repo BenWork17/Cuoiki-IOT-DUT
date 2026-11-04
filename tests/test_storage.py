@@ -168,9 +168,7 @@ def test_khong_tao_phien_mo_coi_khi_tien_trinh_chet(tmp_path, clock):
     second.open()
     try:
         assert second.session_id != first_session
-        rows = fetch_all(
-            db_path, "SELECT * FROM sessions WHERE end_ts IS NULL"
-        )
+        rows = fetch_all(db_path, "SELECT * FROM sessions WHERE end_ts IS NULL")
         assert len(rows) == 1, "chỉ phiên mới được để mở"
         assert rows[0]["id"] == second.session_id
 
@@ -272,9 +270,7 @@ def test_good_pct_tinh_theo_thoi_gian_khong_phai_so_khung(storage, clock):
 
     row = fetch_all(storage.db_path, "SELECT * FROM minute_stats")[0]
     assert row["good_pct"] == pytest.approx(90.0, abs=0.5)
-    assert row["avg_score"] == pytest.approx(
-        (95 * 9 + 70 * 1) / 10, abs=0.2
-    )
+    assert row["avg_score"] == pytest.approx((95 * 9 + 70 * 1) / 10, abs=0.2)
 
 
 def test_khoang_trong_dai_khong_bi_tinh_la_thoi_gian_quan_sat(storage, clock):
@@ -316,9 +312,7 @@ def test_khung_qua_hai_phut_duoc_chia_dung(storage, clock):
     storage.record(make_update(clock.now, state=STATE_GOOD, score=90.0))
     storage.flush()
 
-    rows = fetch_all(
-        storage.db_path, "SELECT * FROM minute_stats ORDER BY minute_ts"
-    )
+    rows = fetch_all(storage.db_path, "SELECT * FROM minute_stats ORDER BY minute_ts")
     assert len(rows) == 2
     assert rows[0]["minute_ts"] == minute_start
     assert rows[1]["minute_ts"] == minute_start + MINUTE_S
@@ -363,9 +357,7 @@ def test_su_kien_duoc_ghi_kem_extra_json(storage, clock):
 
 
 def test_record_event_rieng(storage, clock):
-    storage.record_event(
-        Event(ts=clock.now, type=EVENT_ALERT_START, label=HEAD_DOWN)
-    )
+    storage.record_event(Event(ts=clock.now, type=EVENT_ALERT_START, label=HEAD_DOWN))
     storage.flush()
     rows = fetch_all(storage.db_path, "SELECT * FROM events")
     assert len(rows) == 1
@@ -417,9 +409,7 @@ def test_close_ghi_not_phan_con_lai(tmp_path, clock):
 
 def test_retention_xoa_dung_du_lieu_cu(tmp_path, clock):
     db_path = tmp_path / "posture.db"
-    store = Storage(
-        StorageConfig(db_path=str(db_path), retention_days=30), clock=clock
-    )
+    store = Storage(StorageConfig(db_path=str(db_path), retention_days=30), clock=clock)
     store.open()
     try:
         # Ghi một phiên cũ 40 ngày trước bằng tay.
@@ -451,24 +441,33 @@ def test_retention_xoa_dung_du_lieu_cu(tmp_path, clock):
 
         removed = store.cleanup_retention()
         assert removed > 0
-        assert fetch_all(
-            db_path, "SELECT * FROM events WHERE session_id = ?", (old_session,)
-        ) == []
+        assert (
+            fetch_all(
+                db_path, "SELECT * FROM events WHERE session_id = ?", (old_session,)
+            )
+            == []
+        )
+        assert (
+            fetch_all(
+                db_path,
+                "SELECT * FROM minute_stats WHERE session_id = ?",
+                (old_session,),
+            )
+            == []
+        )
+        assert (
+            fetch_all(db_path, "SELECT * FROM sessions WHERE id = ?", (old_session,))
+            == []
+        )
+        # Phiên đang mở và dữ liệu của nó còn nguyên.
         assert fetch_all(
             db_path,
             "SELECT * FROM minute_stats WHERE session_id = ?",
-            (old_session,),
-        ) == []
-        assert fetch_all(
-            db_path, "SELECT * FROM sessions WHERE id = ?", (old_session,)
-        ) == []
-        # Phiên đang mở và dữ liệu của nó còn nguyên.
-        assert fetch_all(
-            db_path, "SELECT * FROM minute_stats WHERE session_id = ?",
             (store.session_id,),
         )
         assert fetch_all(
-            db_path, "SELECT * FROM sessions WHERE id = ?",
+            db_path,
+            "SELECT * FROM sessions WHERE id = ?",
             (store.session_id,),
         )
     finally:
@@ -552,9 +551,7 @@ def test_history_loai_absent_khoi_diem_trung_binh(storage, clock):
 
 
 def test_history_khong_loi_khi_db_chua_ton_tai(tmp_path, clock):
-    store = Storage(
-        StorageConfig(db_path=str(tmp_path / "missing.db")), clock=clock
-    )
+    store = Storage(StorageConfig(db_path=str(tmp_path / "missing.db")), clock=clock)
     # Chưa open(): đọc phải trả rỗng, không raise.
     assert store.history("today")["has_data"] is False
 
@@ -566,23 +563,64 @@ def test_history_khong_loi_khi_db_chua_ton_tai(tmp_path, clock):
 #: Các mốc từng làm ``history()`` ném ``OSError`` trên Windows trước khi sửa:
 #: trước 1970 (``-1``), đúng epoch (``0``), rất gần epoch (``2000``), và xa
 #: tới mức vượt cả ``datetime.MAXYEAR`` (``1e18``).
-CLOCK_NGOAI_DAI = (-1.0, 0.0, 2000.0, 1e18)
+CLOCK_LA = (-1.0, 0.0, 2000.0, 1e18)
 
 
-@pytest.mark.parametrize("bad_clock", CLOCK_NGOAI_DAI)
+def _doc_duoc(ts: float) -> bool:
+    """Nền tảng hiện tại có đổi được ``ts`` sang ``datetime`` địa phương không."""
+    try:
+        datetime.fromtimestamp(ts)
+    except (OSError, OverflowError, ValueError):
+        return False
+    return True
+
+
+def _lay_duoc_nua_dem(ts: float) -> bool:
+    """Có lấy lại được mốc 00:00 của ngày chứa ``ts`` không.
+
+    Đây mới là phép mà ``_local_midnight`` cần: Windows đọc được ``ts`` nhưng
+    ``.timestamp()`` của nửa đêm **trước 1970** vẫn ném, nên hai năng lực này
+    khác nhau và test phải phân biệt, không gộp chung một cờ.
+    """
+    try:
+        moment = datetime.fromtimestamp(ts).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        moment.timestamp()
+    except (OSError, OverflowError, ValueError):
+        return False
+    return True
+
+
+#: Mốc mà ``_local_midnight`` buộc phải trả ``None`` trên nền tảng hiện tại.
+MIDNIGHT_NGOAI_DAI = tuple(ts for ts in CLOCK_LA if not _lay_duoc_nua_dem(ts))
+
+#: Mốc mà ``_local_day_key``/``_format_local`` buộc phải trả dự phòng.
+DOC_NGOAI_DAI = tuple(ts for ts in CLOCK_LA if not _doc_duoc(ts))
+
+#: Mốc mà ``_local_midnight`` trả được số thật (nền tảng đọc được nửa đêm).
+MIDNIGHT_DUOC = tuple(ts for ts in CLOCK_LA if _lay_duoc_nua_dem(ts))
+
+#: Mốc lạ nhưng nền tảng vẫn đọc được: phải ra giá trị thật, không phải dự phòng.
+CLOCK_LA_NHUNG_HOP_LE = tuple(ts for ts in CLOCK_LA if _doc_duoc(ts))
+
+#: Mốc chắc chắn ngoài dải trên MỌI nền tảng, dùng khi test cần đúng một cảnh báo.
+CLOCK_CHAC_CHAN_NGOAI_DAI = 1e18
+
+
+@pytest.mark.parametrize("value", CLOCK_LA)
 @pytest.mark.parametrize("range_key", ["today", "7d"])
-def test_history_khong_raise_khi_dong_ho_ngoai_dai(
-    tmp_path, bad_clock, range_key
-):
+def test_history_khong_raise_voi_clock_la(tmp_path, value, range_key):
     """``clock`` là tham số tiêm được, nên mọi ``float`` hữu hạn phải an toàn.
 
     Trước khi sửa, cả bốn mốc này ném ``OSError: [Errno 22] Invalid argument``
     từ ``datetime.fromtimestamp(...).timestamp()`` trong ``_local_midnight``
     (Windows không biểu diễn được mốc trước 1970/gần epoch). Đó là lỗi ở biên
-    API chứ không phải lỗi của người gọi.
+    API chứ không phải lỗi của người gọi. Trên Linux các mốc gần epoch lại hợp
+    lệ, nên thông báo được kiểm theo năng lực thật của nền tảng.
     """
     store = Storage(
-        StorageConfig(db_path=str(tmp_path / "p.db")), clock=FakeClock(bad_clock)
+        StorageConfig(db_path=str(tmp_path / "p.db")), clock=FakeClock(value)
     )
     store.open()
     try:
@@ -591,24 +629,27 @@ def test_history_khong_raise_khi_dong_ho_ngoai_dai(
         assert result["range"] == range_key
         assert result["has_data"] is False
         assert result["labels"] == []
-        # Thông báo tiếng Việt phải nói rõ vấn đề là mốc ngày, không phải
-        # "chưa có dữ liệu" — người dùng cần biết đồng hồ thiết bị có vấn đề.
-        assert "mốc ngày" in result["message"]
-        assert "Chưa có dữ liệu" not in result["message"]
+        if _lay_duoc_nua_dem(value):
+            # Mốc hợp lệ nhưng chưa có dòng nào: đây là "chưa có dữ liệu",
+            # không phải lỗi đồng hồ, nên không được báo động người dùng.
+            assert "mốc ngày" not in result["message"]
+        else:
+            # Thông báo tiếng Việt phải nói rõ vấn đề là mốc ngày, không phải
+            # "chưa có dữ liệu" — người dùng cần biết đồng hồ thiết bị có vấn đề.
+            assert "mốc ngày" in result["message"]
+            assert "Chưa có dữ liệu" not in result["message"]
     finally:
         store.close()
 
 
-@pytest.mark.parametrize("bad_clock", CLOCK_NGOAI_DAI)
-def test_history_voi_now_ngoai_dai_khong_raise(tmp_path, clock, bad_clock):
+@pytest.mark.parametrize("value", CLOCK_LA)
+def test_history_voi_now_ngoai_dai_khong_raise(tmp_path, clock, value):
     """``now`` truyền thẳng vào cũng phải an toàn, không chỉ ``clock``."""
-    store = Storage(
-        StorageConfig(db_path=str(tmp_path / "p.db")), clock=clock
-    )
+    store = Storage(StorageConfig(db_path=str(tmp_path / "p.db")), clock=clock)
     store.open()
     try:
-        assert store.history("today", now=bad_clock)["has_data"] is False
-        assert store.history("7d", now=bad_clock)["has_data"] is False
+        assert store.history("today", now=value)["has_data"] is False
+        assert store.history("7d", now=value)["has_data"] is False
     finally:
         store.close()
 
@@ -616,7 +657,8 @@ def test_history_voi_now_ngoai_dai_khong_raise(tmp_path, clock, bad_clock):
 def test_history_chi_canh_bao_dong_ho_mot_lan(tmp_path, caplog):
     """Dashboard gọi ``history()`` định kỳ: log WARNING chỉ được ghi một lần."""
     store = Storage(
-        StorageConfig(db_path=str(tmp_path / "p.db")), clock=FakeClock(-1.0)
+        StorageConfig(db_path=str(tmp_path / "p.db")),
+        clock=FakeClock(CLOCK_CHAC_CHAN_NGOAI_DAI),
     )
     store.open()
     try:
@@ -627,13 +669,12 @@ def test_history_chi_canh_bao_dong_ho_mot_lan(tmp_path, caplog):
         warnings = [
             record
             for record in caplog.records
-            if record.levelno == logging.WARNING
-            and "mốc ngày" in record.getMessage()
+            if record.levelno == logging.WARNING and "mốc ngày" in record.getMessage()
         ]
         assert len(warnings) == 1, (
             f"phải cảnh báo đúng một lần, thực tế {len(warnings)} lần"
         )
-        assert "-1" in warnings[0].getMessage(), "log cần nêu mốc đã nhận"
+        assert "1e+18" in warnings[0].getMessage(), "log cần nêu mốc đã nhận"
     finally:
         store.close()
 
@@ -644,7 +685,7 @@ def test_moi_doi_tuong_storage_canh_bao_rieng(tmp_path, caplog):
         for _ in range(2):
             store = Storage(
                 StorageConfig(db_path=str(tmp_path / "p.db")),
-                clock=FakeClock(0.0),
+                clock=FakeClock(CLOCK_CHAC_CHAN_NGOAI_DAI),
             )
             store.open()
             try:
@@ -661,7 +702,7 @@ def test_moi_doi_tuong_storage_canh_bao_rieng(tmp_path, caplog):
 
 def test_history_hoat_dong_lai_khi_dong_ho_tro_lai_binh_thuong(tmp_path):
     """Cảnh báo đã ghi rồi không được làm hỏng dữ liệu khi đồng hồ đúng lại."""
-    clock = FakeClock(-1.0)
+    clock = FakeClock(CLOCK_CHAC_CHAN_NGOAI_DAI)
     store = Storage(StorageConfig(db_path=str(tmp_path / "p.db")), clock=clock)
     store.open()
     try:
@@ -684,7 +725,7 @@ def test_history_hoat_dong_lai_khi_dong_ho_tro_lai_binh_thuong(tmp_path):
 
 def test_cleanup_retention_khong_raise_khi_dong_ho_ngoai_dai(tmp_path):
     """Dọn dữ liệu cũ phải chịu được ``clock`` lạ (log dùng mốc đã định dạng)."""
-    for bad_clock in CLOCK_NGOAI_DAI:
+    for bad_clock in CLOCK_LA:
         store = Storage(
             StorageConfig(db_path=str(tmp_path / f"r{bad_clock}.db")),
             clock=FakeClock(bad_clock),
@@ -696,7 +737,7 @@ def test_cleanup_retention_khong_raise_khi_dong_ho_ngoai_dai(tmp_path):
             store.close()
 
 
-@pytest.mark.parametrize("value", CLOCK_NGOAI_DAI + (float("nan"), float("inf")))
+@pytest.mark.parametrize("value", CLOCK_LA + (float("nan"), float("inf")))
 def test_ham_dinh_dang_khong_bao_gio_raise(value):
     """Ba helper định dạng là hàng rào cuối: mọi ``float`` đều phải an toàn.
 
@@ -715,12 +756,31 @@ def test_ham_dinh_dang_khong_bao_gio_raise(value):
         assert isinstance(_format_local(value, fmt), str)
 
 
-@pytest.mark.parametrize("value", (-1.0, 1e18, float("nan"), float("inf")))
+@pytest.mark.parametrize("value", DOC_NGOAI_DAI + (float("nan"), float("inf")))
 def test_ham_dinh_dang_tra_du_phong_ro_rang(value):
-    """Mốc thật sự không dùng được phải trả giá trị dự phòng nhìn thấy được."""
-    assert _local_midnight(value) is None
+    """Mốc thật sự không dùng được phải trả giá trị dự phòng nhìn thấy được.
+
+    Chỉ chạy với mốc mà nền tảng hiện tại KHÔNG đọc được. Trên Linux (máy Pi)
+    ``-1.0`` là 1969-12-31 giờ địa phương, hoàn toàn hợp lệ, nên nó nằm ở
+    danh sách còn lại chứ không phải ở đây.
+    """
     assert _local_day_key(value) is None
     assert _format_local(value, "%d/%m", "--/--") == "--/--"
+    if value in MIDNIGHT_NGOAI_DAI:
+        assert _local_midnight(value) is None
+
+
+@pytest.mark.parametrize("value", MIDNIGHT_DUOC)
+def test_ham_dinh_dang_van_dung_voi_moc_la_nhung_hop_le(value):
+    """Mốc lạ (gần/trước epoch) mà nền tảng biểu diễn được thì phải ra số thật.
+
+    Đây chính là khác biệt Windows/Linux làm bộ test đỏ trên Pi: không được
+    coi "gần 0" là "hỏng", chỉ được coi là hỏng khi ``datetime`` thật sự ném.
+    """
+    assert isinstance(_local_midnight(value), float)
+    assert isinstance(_local_day_key(value), str)
+    assert _local_day_key(value).count("-") == 2
+    assert _format_local(value, "%d/%m") != "?"
 
 
 def test_ham_dinh_dang_van_dung_voi_moc_hop_le():
@@ -730,5 +790,3 @@ def test_ham_dinh_dang_van_dung_voi_moc_hop_le():
     )
     assert _local_day_key(BASE_TS) == "2026-10-10"
     assert _format_local(BASE_TS, "%H:00") == "08:00"
-
-
