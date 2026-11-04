@@ -53,6 +53,8 @@
     sessionState: el("session-state"),
     sessionCountdown: el("session-countdown"),
     sessionCountdownLabel: el("session-countdown-label"),
+    sessionTrack: el("session-track"),
+    sessionFill: el("session-fill"),
     sessionMinutes: el("session-minutes"),
     sessionStart: el("session-start-btn"),
     sessionStop: el("session-stop-btn"),
@@ -78,18 +80,27 @@
    * "absent" nên dòng "Có mặt" không bao giờ hiện chữ của mình.
    * Giá trị của bảng *_STATE mới là khoá CSS trong `style.css`; tách riêng
    * để đổi tên phía server không kéo theo đổi giao diện. */
-  var PRESENCE_TEXT = { co_mat: "Có mặt", vang_mat: "Vắng mặt" };
+  /* Nhãn dòng đã là "Có mặt"; giá trị nói thêm *điều gì đang xảy ra* thay vì
+   * lặp lại đúng hai chữ đó ("Có mặt / Có mặt"). */
+  var PRESENCE_TEXT = {
+    co_mat: "Đang trong khung hình",
+    vang_mat: "Không thấy ai"
+  };
+  /* Dấu hiệu là ký tự hình học, không phải emoji: emoji bị cấm trên giao
+   * diện này (nó đổi hình theo từng hệ điều hành và đọc thành biểu tượng
+   * cảm xúc). Màu trạng thái do `data-state` trong style.css quyết định, nên
+   * hình dấu hiệu chỉ cần đọc được cùng nhãn chữ bên cạnh. */
   var PRESENCE_ICON = { co_mat: "●", vang_mat: "○" };
   var PRESENCE_STATE = { co_mat: "present", vang_mat: "absent" };
   var PHONE_TEXT = { khong_dung: "Không dùng", dung: "Đang dùng" };
-  var PHONE_ICON = { khong_dung: "✓", dung: "!" };
+  var PHONE_ICON = { khong_dung: "○", dung: "●" };
   var PHONE_STATE = { khong_dung: "none", dung: "use" };
   var IDENTITY_TEXT = {
     MATCH: "Đúng người",
     MISMATCH: "Khác người",
     UNKNOWN: "Chưa nhận ra"
   };
-  var IDENTITY_ICON = { MATCH: "✓", MISMATCH: "✕", UNKNOWN: "?" };
+  var IDENTITY_ICON = { MATCH: "●", MISMATCH: "○", UNKNOWN: "?" };
 
   /* Câu bắt buộc khi tín hiệu không còn mới (§5.16). Không được thay bằng
    * kết luận cũ: người dùng sẽ tưởng hệ thống vừa đo. */
@@ -106,9 +117,9 @@
   }
 
   function formatAge(seconds) {
-    if (seconds === null || seconds === undefined) return "—";
+    if (seconds === null || seconds === undefined) return "–";
     var value = Number(seconds);
-    if (!isFinite(value)) return "—";
+    if (!isFinite(value)) return "–";
     return "cập nhật " + value.toFixed(1).replace(".", ",") + " s trước";
   }
 
@@ -117,7 +128,7 @@
   function signalPresentation(kind, signal) {
     var data = signal || {};
     if (data.fresh !== true) {
-      return { text: NO_FRESH_TEXT, icon: "…", state: "stale", age: "—" };
+      return { text: NO_FRESH_TEXT, icon: "…", state: "stale", age: "–" };
     }
     var state = String(data.state || "").toLowerCase();
     if (kind === "presence") {
@@ -190,14 +201,20 @@
   function renderStatus(data) {
     if (els.stale) els.stale.hidden = !data.stale;
     if (els.updated) {
+      /* Dòng ngắn ở đây, câu giải thích đầy đủ nằm trong thẻ trạng thái: nói
+       * cùng một chuyện ở hai chỗ chỉ làm mắt đọc hai lần. */
       els.updated.textContent = data.stale
-        ? "Dữ liệu đã cũ — vòng lặp giám sát có thể đã dừng."
+        ? "Dữ liệu đã cũ"
         : "Cập nhật liên tục · " + new Date().toLocaleTimeString("vi-VN");
     }
 
     var muted = !!data.muted;
-    if (els.muteBtn) els.muteBtn.dataset.muted = muted ? "1" : "0";
-    if (els.muteIcon) els.muteIcon.textContent = muted ? "🔇" : "🔊";
+    if (els.muteBtn) {
+      /* Nút hiện trạng thái bằng dấu gạch chéo trong SVG và bằng nhãn chữ;
+       * `data-muted` chỉ để style.css bật/tắt nét gạch. */
+      els.muteBtn.dataset.muted = muted ? "1" : "0";
+      els.muteBtn.setAttribute("aria-pressed", muted ? "true" : "false");
+    }
     if (els.muteText) {
       els.muteText.textContent = muted
         ? "Bật lại tiếng cảnh báo"
@@ -240,13 +257,17 @@
    * vỡ đứng nguyên mãi. Thử lại bằng cách gắn lại src (kèm mốc thời gian
    * để trình duyệt không dùng bản cache).
    *
-   * Khung hình chỉ đi qua bộ nhớ phía server và tới trình duyệt — không
+   * Khung hình chỉ đi qua bộ nhớ phía server và tới trình duyệt, không
    * ghi ra đĩa, không lưu lịch sử (spec v2 §11.5). */
   var CAMERA_RETRY_MS = 5000;
   var cameraRetryTimer = null;
 
   function setCameraNote(text) {
-    if (els.cameraNote) els.cameraNote.textContent = text;
+    if (!els.cameraNote) return;
+    els.cameraNote.textContent = text;
+    /* Ẩn hẳn khi không có chữ: khối rỗng vẫn giữ padding và cộng thêm chiều
+     * cao vào khung hình. */
+    els.cameraNote.hidden = !text;
   }
 
   function cameraFailed() {
@@ -352,7 +373,7 @@
 
   /* Đây là công tắc DUY NHẤT bật model AI. Toàn bộ quyết định "đang chạy hay
    * không" nằm ở máy chủ (StudySession): web chỉ hiển thị và gửi lệnh. Không
-   * đoán trạng thái ở client — hai nguồn sự thật cho một câu hỏi "model có
+   * đoán trạng thái ở client, hai nguồn sự thật cho một câu hỏi "model có
    * đang chạy không" là cách chắc chắn nhất để nút và thực tế lệch nhau.
    *
    * Đếm ngược hiển thị theo `remaining_s` máy chủ trả, trừ dần bằng đồng hồ
@@ -376,7 +397,7 @@
       if (running) {
         els.sessionState.textContent =
           "Đang trong phiên " + Number(data.minutes || 0) + " phút. " +
-          "Hệ thống đang theo dõi tư thế và điện thoại.";
+          "Hệ thống đang theo dõi người học và điện thoại.";
       } else if (state === "finished") {
         els.sessionState.textContent =
           data.finish_text ||
@@ -390,10 +411,10 @@
 
     if (els.sessionCountdown) {
       els.sessionCountdown.textContent = running
-        ? data.ends_in_text || "—"
+        ? data.ends_in_text || "–"
         : state === "finished"
         ? "00:00"
-        : "—";
+        : "–";
     }
     if (els.sessionCountdownLabel) {
       els.sessionCountdownLabel.textContent = running
@@ -408,8 +429,17 @@
       els.sessionStart.textContent = running
         ? "Bắt đầu lại"
         : "Bắt đầu học";
+      /* Đang chạy thì việc duy nhất người dùng làm được là dừng: nút đậm phải
+       * là nút đó. Để "Bắt đầu lại" đậm trong khi phiên đang chạy là chỉ sai
+       * việc chính. */
+      els.sessionStart.classList.toggle("btn--primary", !running);
+      els.sessionStart.classList.toggle("btn--quiet", running);
     }
-    if (els.sessionStop) els.sessionStop.disabled = !running;
+    if (els.sessionStop) {
+      els.sessionStop.disabled = !running;
+      els.sessionStop.classList.toggle("btn--primary", running);
+      els.sessionStop.classList.toggle("btn--quiet", !running);
+    }
     if (els.sessionMinutes && running) {
       /* Đang chạy thì khoá ô nhập: đổi số giữa phiên không có tác dụng (máy
        * chủ đã chốt ends_at), để nó sửa được sẽ khiến người dùng tưởng đã
@@ -422,10 +452,36 @@
     if (running && Number.isFinite(Number(data.remaining_s))) {
       sessionBase = {
         remaining: Number(data.remaining_s),
-        at: Date.now()
+        at: Date.now(),
+        total: Math.max(1, Number(data.minutes) || 0) * 60
       };
     } else {
       sessionBase = null;
+    }
+
+    paintSessionBar();
+  }
+
+  /* Thanh tiến độ: phần đã trôi qua trên tổng thời lượng. Đây là phần duy
+   * nhất của màn hình mang sắc xanh (xem style.css), nên nó chỉ được vẽ khi
+   * con số thật sự có nghĩa, ngoài phiên thì để rãnh rỗng, không bịa một
+   * thanh "0 %" trông như đang chạy. */
+  function paintSessionBar() {
+    if (!els.sessionFill) return;
+    var ratio = 0;
+    if (sessionBase && sessionBase.total > 0) {
+      var left = Math.max(
+        0,
+        sessionBase.remaining - (Date.now() - sessionBase.at) / 1000
+      );
+      ratio = Math.min(1, Math.max(0, 1 - left / sessionBase.total));
+    }
+    els.sessionFill.style.width = (ratio * 100).toFixed(2) + "%";
+    if (els.sessionTrack) {
+      els.sessionTrack.setAttribute(
+        "aria-valuenow",
+        String(Math.round(ratio * 100))
+      );
     }
   }
 
@@ -440,6 +496,7 @@
     var ss = total % 60;
     els.sessionCountdown.textContent =
       (mm < 10 ? "0" + mm : String(mm)) + ":" + (ss < 10 ? "0" + ss : String(ss));
+    paintSessionBar();
   }
 
   function fetchSession() {
@@ -484,7 +541,7 @@
       var raw = els.sessionMinutes ? els.sessionMinutes.value : "";
       var body = {};
       /* Để trống = dùng mặc định của máy chủ. Gửi số 0 hay NaN sẽ bị từ chối
-       * 400 và người dùng không hiểu vì sao — bỏ hẳn khóa thì máy chủ dùng
+       * 400 và người dùng không hiểu vì sao, bỏ hẳn khóa thì máy chủ dùng
        * `default_minutes`. */
       if (raw !== "" && raw !== null) {
         var minutes = Number(raw);
@@ -583,7 +640,7 @@
         if (!state.held) return;
         if (!ok) {
           /* Lỗi (PTZ chưa cấu hình, mất mạng): dừng ngay, đừng thử lại liên
-           * tục — người dùng đã thấy thông báo giải thích. */
+           * tục, người dùng đã thấy thông báo giải thích. */
           if (ptzHold === state) stopHold();
           return;
         }
@@ -628,7 +685,7 @@
   });
 
   /* Chốt an toàn: nếu tab mất focus khi đang giữ (đổi ứng dụng trên điện
-   * thoại), nhả tay sẽ không bao giờ tới nơi — phải tự dừng. */
+   * thoại), nhả tay sẽ không bao giờ tới nơi, phải tự dừng. */
   window.addEventListener("blur", stopHold);
   document.addEventListener("visibilitychange", function () {
     if (document.hidden) stopHold();
@@ -646,8 +703,8 @@
       return person.id === personId;
     })[0];
     els.selected.textContent = match
-      ? "Đang chọn: " + match.name
-      : "Đang chọn người học có mã " + personId + ".";
+      ? match.name
+      : "mã " + personId + " (không có trong danh sách)";
   }
 
   function renderPeople(data) {
@@ -772,7 +829,7 @@
     }
     if (els.enrollStep) {
       els.enrollStep.textContent =
-        "Bước " + (Number(data.step_index) + 1) + ": " + (data.step_name || "—");
+        "Bước " + (Number(data.step_index) + 1) + ": " + (data.step_name || "–");
     }
     if (els.enrollSamples) {
       els.enrollSamples.textContent =
@@ -861,16 +918,16 @@
     if (!els.schedule) return;
     var schedule = (data && data.schedule) || null;
     if (!schedule) {
-      els.schedule.textContent = "Giờ học: chưa đọc được.";
+      els.schedule.textContent = "Chưa đọc được.";
       return;
     }
     if (schedule.enabled === false) {
-      els.schedule.textContent = "Giờ học: không giới hạn giờ.";
+      els.schedule.textContent = "Không giới hạn giờ.";
       return;
     }
     var windows = schedule.windows || [];
     if (!windows.length) {
-      els.schedule.textContent = "Giờ học: chưa đặt khung giờ nào.";
+      els.schedule.textContent = "Chưa đặt khung giờ nào.";
       return;
     }
     var dayNames = {
@@ -888,7 +945,7 @@
       });
       return days.join(", ") + " " + window.start + "–" + window.end;
     });
-    els.schedule.textContent = "Giờ học: " + parts.join("; ");
+    els.schedule.textContent = parts.join("; ");
   }
 
   function fetchSchedule() {
@@ -906,7 +963,7 @@
         });
       })
       .catch(function () {
-        if (els.schedule) els.schedule.textContent = "Giờ học: mất kết nối.";
+        if (els.schedule) els.schedule.textContent = "Mất kết nối.";
       });
   }
 
@@ -956,7 +1013,7 @@
 
   /* Ba câu cảnh báo là cố định, nên lựa chọn cũng cố định; danh sách nút
    * dựng từ /api/voice để nhãn và tình trạng khớp dữ liệu thật. Mỗi lựa chọn
-   * ghi rõ câu nào còn thiếu bản thu — người dùng chép file vào là thấy ngay,
+   * ghi rõ câu nào còn thiếu bản thu, người dùng chép file vào là thấy ngay,
    * không phải đoán xem đã nhận chưa.
    *
    * Không lưu gì vào localStorage: đây là cấu hình thiết bị, server đã ghi
@@ -972,7 +1029,7 @@
       var names = info.missing.map(function (kind) {
         return labels[kind] || kind;
       });
-      note = "Thiếu bản thu cho câu " + names.join(", ") + " — câu đó dùng giọng máy.";
+      note = "Thiếu bản thu cho câu " + names.join(", ") + ", câu đó dùng giọng máy.";
     } else if (voiceKey === "espeak") {
       note = "Giọng tổng hợp của máy; khó nghe hơn trên loa camera.";
     } else {

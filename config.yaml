@@ -315,12 +315,18 @@ schedule:
     # - days: [fri]
     #   start: "22:00"
     #   end: "01:00"
-  # Tắt riêng từng loại cảnh báo và đặt cooldown/thời gian giữ riêng.
+  # Tắt riêng từng loại cảnh báo và đặt nhịp nhắc lại/thời gian giữ riêng.
   # Bỏ một loại thì loại đó dùng mặc định trong src/posture_monitor/schedule.py.
+  #
+  # 'cooldown_s' ở đây là NHỊP NHẮC LẠI khi lỗi còn tiếp diễn, không phải
+  # "báo một lần rồi im". Điều kiện còn đúng thì held_s còn tăng, nên cứ mỗi
+  # 'cooldown_s' giây là loa nhắc lại một lần; điều kiện hết thì held_s về 0
+  # và chuỗi nhắc tự dừng. Giá trị 2 = đúng yêu cầu vận hành "2 giây nhắc một
+  # lần cho tới khi hết lỗi".
   kinds:
     leave_frame:           # rời khung hình
       enabled: true
-      cooldown_s: 60
+      cooldown_s: 2
       hold_s: 5
     phone:                 # dùng điện thoại
       enabled: true
@@ -328,14 +334,11 @@ schedule:
       # "web hiện đang dùng điện thoại mà loa không báo": web đọc
       # 'phone.hold_s' để hiện, loa đọc giá trị này để quyết định phát.
       hold_s: 1.0
-      # Cooldown là thời gian TỐI THIỂU giữa hai lần báo cùng một loại. 120 s
-      # khiến lần dùng điện thoại thứ hai trong vòng 2 phút không được nhắc
-      # dù web vẫn hiện đang dùng. Hạ xuống 30 s để nhắc lại được; tăng lên
-      # nếu thấy loa nhắc quá nhiều.
-      cooldown_s: 30
+      # Nhắc lại mỗi 2 giây trong khi vẫn còn cầm điện thoại.
+      cooldown_s: 2
     stranger:              # có người lạ
       enabled: true
-      cooldown_s: 300
+      cooldown_s: 2
       hold_s: 5
 
 # Phiên học bật/tắt bằng tay (nút "Bắt đầu học" trên dashboard).

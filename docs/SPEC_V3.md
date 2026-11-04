@@ -551,10 +551,12 @@ schedule:
       start: "08:00"
       end: "11:00"
   kinds:
-    leave_frame: {enabled: true, cooldown_s: 60,  hold_s: 5}
-    phone:       {enabled: true, cooldown_s: 120, hold_s: 10}
-    stranger:    {enabled: true, cooldown_s: 300, hold_s: 5}
+    leave_frame: {enabled: true, cooldown_s: 2, hold_s: 5}
+    phone:       {enabled: true, cooldown_s: 2, hold_s: 10}
+    stranger:    {enabled: true, cooldown_s: 2, hold_s: 5}
 ```
+
+- `cooldown_s` ở đây là **nhịp nhắc lại khi lỗi còn tiếp diễn**, không phải "báo một lần rồi im". Lỗi còn thì `held` còn tăng, nên cứ mỗi `cooldown_s` giây lại có quyết định mới; lỗi hết thì `held` về 0 và chuỗi nhắc tự dừng. Đặt `2` để được đúng yêu cầu vận hành "2 giây nhắc một lần cho tới khi hết lỗi".
 
 - Tên thứ: `mon tue wed thu fri sat sun` (`DAY_NAMES`), **không phân biệt hoa thường**, trùng nhau thì bỏ qua.
 - Tên sai → `ScheduleError`: `'<x>' không phải tên thứ hợp lệ; dùng một trong [...]`.
@@ -580,14 +582,16 @@ schedule:
 1. Ngoài giờ học (`is_active` sai).
 2. Loại đó bị tắt (`kinds.<loại>.enabled: false`).
 3. `held[loại]` thiếu hoặc **nhỏ hơn** `hold_s` của loại đó.
-4. `last_alert_at[loại]` còn trong `cooldown_s` của loại đó.
+4. Chưa tới nhịp nhắc lại: `last_alert_at[loại]` mới cách đây < `cooldown_s` giây.
 
 Ngoài bốn trường hợp trên, trả `AlertDecision(kind, reason)` cho **loại đầu tiên** đủ điều kiện theo thứ tự `ALERT_KINDS` (`leave_frame` → `phone` → `stranger`), kèm `reason` tiếng Việt đọc được.
 
 **Ba tham số cần hiểu đúng:**
 
 - **`held`** — ánh xạ `{loại: số giây điều kiện đã duy trì liên tục}`. Loại không có trong `held` coi như chưa xảy ra. Đây là nơi bơm kết quả của tầng presence/phone/faces sau khi đã lọc nhiễu.
-- **`last_alert_at`** — ánh xạ `{loại: datetime}` **tính theo từng loại**. Một loại đang cooldown **không** chặn loại khác. Phải **cùng dạng** với `now`: cả hai đều có timezone hoặc cả hai đều naive; trộn lẫn thì `ValueError` thay vì đoán.
+- **`last_alert_at`** — ánh xạ `{loại: datetime}` **tính theo từng loại**. Một loại đang chờ nhịp nhắc **không** chặn loại khác. Phải **cùng dạng** với `now`: cả hai đều có timezone hoặc cả hai đều naive; trộn lẫn thì `ValueError` thay vì đoán.
+
+**Nhắc lại khi lỗi còn tiếp diễn:** không có trạng thái "đã báo rồi thôi". `cooldown_s` là khoảng cách giữa hai lần nhắc **cùng loại**, nên với `cooldown_s: 2` loa nhắc lại mỗi 2 giây chừng nào điều kiện còn đúng. Điều kiện hết thì tầng gọi truyền `held[loại] = 0` (hoặc bỏ khóa) và `should_alert` trả `None` ngay — chuỗi nhắc tự dừng mà không cần cờ thứ hai.
 - **`kinds`** — thiết lập thay thế cho `schedule.kinds`, dùng khi test hoặc khi muốn ghi đè tạm; `None` = dùng cấu hình trong `schedule`.
 
 **Quy ước thời gian — bắt buộc khi gọi:**
@@ -783,9 +787,9 @@ schedule:
       start: "08:00"
       end: "11:00"
   kinds:                        # tắt riêng từng loại cảnh báo ở đây
-    leave_frame: {enabled: true, cooldown_s: 60,  hold_s: 5}
-    phone:       {enabled: true, cooldown_s: 120, hold_s: 10}
-    stranger:    {enabled: true, cooldown_s: 300, hold_s: 5}
+    leave_frame: {enabled: true, cooldown_s: 2, hold_s: 5}
+    phone:       {enabled: true, cooldown_s: 2, hold_s: 10}
+    stranger:    {enabled: true, cooldown_s: 2, hold_s: 5}
 
 session:
   # Phiên học bật/tắt BẰNG TAY (nút trên dashboard). Khác 'schedule' ở trên:

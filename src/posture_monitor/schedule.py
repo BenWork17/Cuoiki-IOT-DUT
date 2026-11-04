@@ -77,7 +77,12 @@ class KindSettings:
 
     Args:
         enabled: ``False`` thì loại này không bao giờ phát cảnh báo.
-        cooldown_s: không lặp lại cảnh báo cùng loại trong khoảng này (giây).
+        cooldown_s: khoảng cách tối thiểu giữa hai lần cảnh báo **cùng loại**
+            (giây). Vì điều kiện phải còn duy trì thì ``held_s`` mới tiếp tục
+            tăng, giá trị này chính là **nhịp nhắc lại khi lỗi còn tiếp diễn**:
+            ``2`` nghĩa là cứ 2 giây nhắc một lần cho tới khi hết lỗi. Điều
+            kiện chấm dứt thì ``held_s`` về 0, nên không còn lần nhắc nào —
+            không cần thêm cơ chế "dừng" riêng.
         hold_s: điều kiện phải duy trì liên tục ít nhất chừng này giây.
 
     Raises:
@@ -111,14 +116,21 @@ class KindSettings:
 DEFAULT_PHONE_HOLD_S = 2.0
 
 
+#: Nhịp nhắc lại mặc định khi lỗi **còn tiếp diễn** (giây). Một nguồn sự thật
+#: cho cả ba loại: yêu cầu vận hành là "cứ 2 giây nhắc một lần cho tới khi hết
+#: lỗi", không phải báo một lần rồi im vài phút. Điều kiện hết thì ``held_s``
+#: về 0 nên chuỗi nhắc tự dừng — xem :class:`KindSettings`.
+DEFAULT_REPEAT_S = 2.0
+
+
 DEFAULT_KINDS: dict[str, KindSettings] = {
-    KIND_LEAVE_FRAME: KindSettings(cooldown_s=60.0, hold_s=5.0),
+    KIND_LEAVE_FRAME: KindSettings(cooldown_s=DEFAULT_REPEAT_S, hold_s=5.0),
     #: ``hold_s`` lấy từ :data:`DEFAULT_PHONE_HOLD_S` — cùng nguồn với
     #: ``PhoneConfig.hold_s``, nên mặc định hai tầng không bao giờ lệch.
     #: ``_warn_phone_threshold_mismatch`` vẫn cảnh báo khi file cấu hình tự
     #: đặt hai giá trị khác nhau.
-    KIND_PHONE: KindSettings(cooldown_s=120.0, hold_s=DEFAULT_PHONE_HOLD_S),
-    KIND_STRANGER: KindSettings(cooldown_s=300.0, hold_s=5.0),
+    KIND_PHONE: KindSettings(cooldown_s=DEFAULT_REPEAT_S, hold_s=DEFAULT_PHONE_HOLD_S),
+    KIND_STRANGER: KindSettings(cooldown_s=DEFAULT_REPEAT_S, hold_s=5.0),
 }
 
 
@@ -393,8 +405,17 @@ def should_alert(
     Returns:
         :class:`AlertDecision` cho loại đầu tiên đủ điều kiện (theo thứ tự
         :data:`ALERT_KINDS`), hoặc ``None`` khi: ngoài giờ học, không có điều
-        kiện nào duy trì đủ ``hold_s``, loại đó bị tắt, hoặc loại đó còn
-        trong cooldown.
+        kiện nào duy trì đủ ``hold_s``, loại đó bị tắt, hoặc loại đó chưa tới
+        nhịp nhắc lại (``cooldown_s``).
+
+    Ghi chú về nhịp nhắc lại
+    ------------------------
+    Hàm này **không** có khái niệm "đã báo một lần rồi thôi". Điều kiện còn
+    tiếp diễn thì ``held`` vẫn lớn dần, nên mỗi khi qua ``cooldown_s`` lại có
+    quyết định mới. Đặt ``cooldown_s = 2`` cho đúng yêu cầu "cứ 2 giây nhắc
+    lại một lần cho tới khi hết lỗi"; điều kiện hết thì bên gọi truyền
+    ``held[kind] = 0`` (hoặc bỏ hẳn khóa đó) và chuỗi nhắc dừng ngay — không
+    cần cờ trạng thái thứ hai, cũng không có nguy cơ nhắc mãi sau khi đã hết.
 
     Raises:
         ValueError: khi ``last_alert_at`` trộn datetime naive với datetime có
@@ -419,10 +440,14 @@ def should_alert(
             if elapsed < kind_settings.cooldown_s:
                 continue
         label = KIND_LABELS[kind]
-        reason = (
-            f"{label} liên tục {held_s:.0f} s trong giờ học "
-            f"(đã hết cooldown {kind_settings.cooldown_s:.0f} s)."
-        )
+        if kind_settings.cooldown_s <= 0:
+            reason = f"{label} liên tục {held_s:.0f} s trong giờ học."
+        else:
+            reason = (
+                f"{label} liên tục {held_s:.0f} s trong giờ học "
+                f"(nhắc lại mỗi {kind_settings.cooldown_s:.0f} s khi lỗi còn "
+                "tiếp diễn)."
+            )
         return AlertDecision(kind=kind, reason=reason)
     return None
 

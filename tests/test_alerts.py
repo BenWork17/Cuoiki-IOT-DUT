@@ -52,15 +52,27 @@ class RecordingHardware:
         self.delay_s = delay_s
         self.fail_on = fail_on
         self._lock = threading.Lock()
+        #: Bật ngay khi luồng nền **bắt đầu** một lời gọi, trước cả ``delay_s``.
+        #: Nhờ nó test đo được trạng thái "phần cứng đang bận" mà không phải
+        #: ngủ mù: ``calls`` chỉ được ghi sau khi ``delay_s`` trôi qua.
+        self.started = threading.Event()
 
     def set_state(self, state: str, *, alert: bool = True) -> None:
         if self.delay_s:
+            self.started.set()
             time.sleep(self.delay_s)
         with self._lock:
             self.calls.append(state)
             self.alerts.append(alert)
         if state == self.fail_on:
             raise RuntimeError("phần cứng hỏng")
+
+    def wait_started(self, timeout: float = 2.0) -> None:
+        """Chờ tới khi luồng nền thật sự chạm phần cứng."""
+        if not self.started.wait(timeout):
+            raise AssertionError(
+                f"Chờ phần cứng bắt đầu nhưng chỉ thấy {self.calls!r}."
+            )
 
     def close(self) -> None:
         pass
@@ -205,11 +217,18 @@ def test_intermediate_states_may_be_coalesced_when_hardware_is_busy():
 
     Đây là chủ ý, không phải lỗi: ``GOOD`` bị ``WARN`` vượt qua trong lúc
     buzzer còn kêu thì việc bật đèn xanh rồi vàng trong 1,5 s là vô nghĩa.
+
+    Phải chờ ``GOOD`` **thật sự chạy** trước khi xếp hai mục sau. Nếu không,
+    ba lời gọi ``dispatch`` liền nhau có thể vào hàng đợi trước khi luồng nền
+    kịp lấy mục đầu; khi đó hàng đợi giữ ``GOOD`` và ``WARN``, và chính
+    ``GOOD`` (mục không ép buộc đầu tiên) bị đẩy ra, làm phép khẳng định
+    ``calls[0] == GOOD`` đỏ ngẫu nhiên trên máy đang tải nặng.
     """
     hardware = RecordingHardware(delay_s=0.4)
     dispatcher = make_dispatcher(hardware, queue_size=2)
     try:
         dispatcher.dispatch(update(STATE_GOOD))   # đang chạy
+        hardware.wait_started()
         dispatcher.dispatch(update(STATE_WARN))   # vào hàng đợi
         dispatcher.dispatch(update(STATE_BAD))    # đẩy WARN ra (hàng đợi đầy)
         assert dispatcher.flush(timeout=3.0)
