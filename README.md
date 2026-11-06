@@ -1,21 +1,43 @@
-# Hệ thống giám sát tư thế học tập trên Raspberry Pi 4
+# Hệ thống giám sát học tập trên Raspberry Pi 4
 
-Demo quan sát người học bằng camera, nhận diện tư thế ngồi theo thời gian thực
-bằng YOLO11n-pose, cảnh báo bằng LED/buzzer/rung, hiển thị trạng thái trên
-dashboard web trong mạng LAN và lưu thống kê vào SQLite.
+Giám sát người ngồi học bằng camera: nhận diện **có mặt / đang dùng điện thoại /
+đúng người**, nhắc bằng giọng đọc ra loa camera khi vi phạm, hiển thị trên
+dashboard web trong mạng LAN và ghi số liệu vào SQLite.
 
-> **Trạng thái hiện tại.** Đã có khung repo, cấu hình, logging, đủ bốn lệnh
-> CLI (`run`, `calibrate`, `replay`, `benchmark`), nguồn camera hai đường
-> (Pi Camera + USB), phần cứng thật/giả lập, **suy luận pose + vẽ 17
-> keypoint/xương**, **phân loại tư thế** (`classifier.py`, `state.py`) và
-> **lưu trữ SQLite** (`storage.py`).
+> **Trạng thái hiện tại.** Hệ thống đã chạy được đầu–cuối trên Raspberry Pi 4:
+> camera IP RTSP → nhận diện khuôn mặt → dashboard web → cảnh báo bằng loa →
+> ghi SQLite. Đã kiểm chứng bằng lần chạy thật trên Pi (camera 704×576, nhận
+> ra khuôn mặt đã đăng ký, dashboard phục vụ luồng MJPEG).
 >
-> Hai phần **chưa được nối**: dashboard web **có mã trong `web/` và có test
-> xanh**, nhưng chưa nối vào lệnh `run` — chạy `run` hiện chưa mở web. Lưu
-> trữ SQLite cũng chưa được lệnh nào ghi vào; nó mới được dashboard dùng để
-> đọc lịch sử. Bản thân `run` vẫn chỉ suy luận pose và vẽ lên khung hình —
-> phân loại tư thế hiện chạy trong `replay` và `benchmark`.
-> Đặc tả kỹ thuật đầy đủ nằm ở [`docs/SPEC_V2.md`](docs/SPEC_V2.md).
+> Đặc tả kỹ thuật: [`docs/SPEC_V2.md`](docs/SPEC_V2.md) (nền) và
+> [`docs/SPEC_V3.md`](docs/SPEC_V3.md) (hiện hành — bỏ nhận diện tư thế, thêm
+> nhận diện người học và phiên học bấm tay).
+
+---
+
+## Hệ thống làm gì
+
+Ba tín hiệu, hiện liên tục trên dashboard:
+
+| Tín hiệu | Câu hỏi | Cách xác định |
+| --- | --- | --- |
+| **Có mặt** | Có ai đang ngồi trước bàn không | Pose/detect trên khung hình, có bộ lọc nhiễu |
+| **Điện thoại** | Có đang dùng điện thoại không | Model detect COCO lấy lớp `cell phone`, lọc theo vị trí so với vai |
+| **Danh tính** | Có đúng người đã chọn không | YuNet phát hiện + SFace đặc trưng, so cosine với kho đã đăng ký |
+
+Ba việc hệ thống làm:
+
+1. **Dashboard web** (`http://<ip-pi>:8000/`) — khung camera trực tiếp, ba tín
+   hiệu kèm tuổi tín hiệu, nút Bắt đầu/Dừng phiên, thêm người bằng quét khuôn
+   mặt, xoay camera.
+2. **Cảnh báo bằng loa camera** — đọc tiếng Việt khi vi phạm (rời khung hình,
+   dùng điện thoại, người lạ), dùng bản thu giọng người nếu có, không thì
+   giọng máy, cuối cùng là tiếng bíp.
+3. **Ghi số liệu** — phiên học, sự kiện, thống kê mỗi phút vào SQLite.
+
+**Không lưu ảnh, không lưu video.** Khung hình chỉ đi qua RAM để hiển thị và
+suy luận. Nhận diện khuôn mặt chỉ giữ **vector đặc trưng**, không giữ ảnh mặt.
+Cảnh báo tư thế mặc định **tắt** (`posture_labels_enabled: false`).
 
 ---
 
@@ -61,81 +83,181 @@ pip install -r requirements.txt
 > `picamera2` và `lgpio` của hệ thống, và `import picamera2` sẽ thất bại dù
 > đã cài apt.
 
-### 3. Không cài `ultralytics[export]`
+### 3. Mô hình phải có sẵn
 
-Extra `export` gồm 5 sub-extra không điều kiện, đọc `requires_dist` thấy trên
-Linux/aarch64/Python 3.13 sẽ áp dụng các ràng buộc `tensorflow>2.19.0`,
-`openvino>=2024.0.0`, `onnxruntime>=1.20.0`, `onnx>=1.12.0`,
-`coremltools>=9.0` — không cần cho việc export NCNN. Ràng buộc
-`torch<2.15.0,>=2.12.0` trong extra này mang marker `python_version == "3.11"`
-nên **không** áp dụng cho máy đích (Python 3.13.5), và không phải lý do ở đây.
+Ba tệp mô hình **không nằm trong git** (quá lớn):
 
-Vì vậy chỉ cài trần `ultralytics==8.4.191` (đã có trong `requirements.txt`);
-`pnnx` **không nằm trong extra `export`**, cài riêng chỉ khi cần export NCNN
-ngay trên Pi. Chưa chạy resolve thật nên chưa khẳng định được pip cài được hay
-thất bại. Chi tiết: [`docs/SPEC_V2.md` §2b](docs/SPEC_V2.md).
+| Tệp | Dùng cho | Cách lấy |
+| --- | --- | --- |
+| `yolo11n-pose.pt` + `yolo11n-pose_ncnn_model/` | Nhận diện người, điện thoại | Ultralytics tự tải lần đầu, hoặc export NCNN |
+| `yolo11n.pt` + `yolo11n_ncnn_model/` | Dò điện thoại (lớp `cell phone`) | Như trên |
+| `yunet.onnx` (228 KB) | Phát hiện khuôn mặt | [`docs/MODELS.md`](docs/MODELS.md) |
+| `sface.onnx` (37 MB) | Đặc trưng khuôn mặt | [`docs/MODELS.md`](docs/MODELS.md) |
 
-### 4. Điều khiển xoay camera (PTZ) — tuỳ chọn
+Xem [`docs/MODELS.md`](docs/MODELS.md) để có link tải và cách kiểm chứng.
 
-Bốn nút xoay trên dashboard dùng thư viện `rtsp-backchannel`, đã có trong
-`requirements.txt` ở bản đã kiểm chứng:
+### 4. Không cài `ultralytics[export]`
 
-```bash
-pip install rtsp-backchannel==0.5.2      # bước 2 đã cài nếu chạy -r requirements.txt
-```
+Extra `export` gồm 5 sub-extra không điều kiện, kéo theo `tensorflow`,
+`openvino`, `onnxruntime`, `coremltools` — không cần cho việc export NCNN.
+Chỉ cài trần `ultralytics==8.4.191`. `pnnx` **không nằm trong extra `export`**,
+cài riêng chỉ khi cần export NCNN ngay trên Pi.
 
-Thiếu thư viện này chương trình vẫn chạy (chỉ mất nút xoay, bấm vào sẽ báo
-tiếng Việt). Để PTZ dùng được, camera phải là camera IP RTSP. Chỉ cần **một**
-chỗ khai địa chỉ camera:
+### 5. Camera — khai địa chỉ ở MỘT nơi
+
+Camera IP RTSP (khuyến nghị, đã kiểm chứng):
 
 ```bash
 export POSTURE_CAMERA_SOURCE="rtsp://admin:matkhau@<ip-camera>:554/1/2"
 ```
 
 Thay `<ip-camera>` bằng địa chỉ thật lúc chạy — đừng chép một IP cố định từ tài
-liệu, vì địa chỉ camera đổi theo mạng. Ở đây và trong toàn bộ tài liệu, mọi
-địa chỉ ví dụ đều là `192.0.2.x` (dải TEST-NET, không bao giờ là thiết bị thật).
+liệu, vì địa chỉ camera đổi theo mạng. Trong tài liệu, mọi địa chỉ ví dụ đều là
+`192.0.2.x` (dải TEST-NET) hoặc `192.168.1.x` giả định.
 
-`camera.onvif.host` để trống sẽ tự lấy host từ URL trên, và tài khoản trong URL
-được dùng luôn cho ONVIF. Chỉ điền `camera.onvif.host` khi camera PTZ nằm ở
-host khác luồng ảnh; đặt `POSTURE_ONVIF_PASSWORD` để dùng mật khẩu khác với URL
-xem ảnh. Chi tiết: [`docs/WEB_DASHBOARD.md` §7](docs/WEB_DASHBOARD.md).
+Không đặt biến môi trường thì dùng `camera.source` trong `config.yaml`
+(`usb:N`, `picamera`, `file:duong_dan.mp4`).
+
+Cùng một URL đó cũng cấp host và tài khoản cho **PTZ** (bốn nút xoay trên
+dashboard) và **loa camera** (phát cảnh báo). Chỉ điền `camera.onvif.host` khi
+camera PTZ nằm ở host khác luồng ảnh. Mật khẩu ONVIF lấy từ
+`POSTURE_ONVIF_PASSWORD`, hoặc từ tài khoản nhúng trong URL ở trên.
 
 ---
 
-## Trạng thái camera trên Pi của dự án (đo ngày 28/10/2026)
+## Chạy
 
-Kết quả chạy `python scripts/camera_probe.py` trên chính Raspberry Pi 4 của dự án:
+```bash
+# Từ gốc repo, với PYTHONPATH trỏ vào src/
+export PYTHONPATH=src          # Windows PowerShell: $env:PYTHONPATH="src"
 
-- **14 node `/dev/video10..31` là codec/ISP của SoC, không phải camera.**
-  - `video10, 11, 12, 18, 31` → driver `bcm2835-codec`
-  - `video13, 14, 15, 16, 20, 21, 22, 23` → driver `bcm2835-isp`
-  - `video19` → driver `rpi-hevc-dec`
+python -m posture_monitor --help
+python -m posture_monitor run --no-gpio       # không cần GPIO
+python -m posture_monitor run                 # tự phát hiện GPIO
+```
 
-  Script loại đúng **cả 14/14** node. Đây là lý do phải lọc theo tên driver
-  đọc từ sysfs chứ không dựa vào `isOpened()` — các node này vẫn mở được.
+Mở `http://<ip-của-Pi>:8000/` trên điện thoại hoặc máy tính cùng mạng Wi-Fi.
 
-- **Hiện chưa gắn camera nào:** Pi Camera = không có, USB = không có. Script
-  thoát với mã `1` và in hướng dẫn kiểm tra.
+Năm lệnh:
 
-### Khi cắm Pi Camera
+| Lệnh | Việc |
+| --- | --- |
+| `run` | Chạy giám sát trực tiếp + mở dashboard web + ghi SQLite |
+| `calibrate` | Hiệu chỉnh tư thế chuẩn, ghi `calibration.json` |
+| `replay <video>` | Chạy lại pipeline trên video có sẵn, xuất báo cáo JSON |
+| `benchmark` | Đo FPS/độ trễ/nhiệt/RAM trên máy đích |
+| `speak-test` | Phát thử giọng đọc ra loa camera rồi thoát |
 
-1. Kiểm tra cáp CSI đã cắm chắc ở cả hai đầu (bo mạch và camera).
-2. Bảo đảm `/boot/firmware/config.txt` có `camera_auto_detect=1`, rồi khởi động lại.
-3. Chạy lại `python scripts/camera_probe.py` — mục Pi Camera phải báo `CÓ SẴN`.
-4. Đặt `camera.source: picamera` trong `config.yaml`.
+Cờ đáng chú ý của `run`:
 
-### Khi cắm webcam USB
+| Cờ | Tác dụng |
+| --- | --- |
+| `--config` | Đường dẫn `config.yaml` (mặc định `config.yaml`) |
+| `--no-gpio` | Dùng phần cứng giả lập (bắt buộc trên PC) |
+| `--fps N` | Ghi đè `model.target_fps`. Trên laptop đặt 15 được; Pi 4 mục tiêu 5 |
+| `--view {front,side}` | Ghi đè góc đặt camera |
+| `--save-overlay DUONG_DAN` | Lưu một khung đã vẽ ra ảnh rồi thoát (kiểm chứng khi không có màn hình) |
+| `--preview` | Mở cửa sổ OpenCV. **Mặc định không mở** — hình đã có trên web, và trên Pi qua xrdp cửa sổ Qt hay lỗi |
 
-1. Cắm thẳng vào cổng USB của Pi, **không qua hub** (hub thiếu nguồn là nguyên
-   nhân phổ biến khiến camera không nhận).
-2. Chạy `lsusb` — phải thấy thiết bị UVC.
-3. Chạy `python scripts/camera_probe.py` — node camera phải hiện trong bảng
-   với kết luận `CAMERA`.
-4. Đặt `camera.source: usb:0` trong `config.yaml`.
+**Cách thoát:** `Ctrl+C`.
 
-> ⚠️ Nếu gặp `Illegal instruction` khi chạy thì đang dính `torch 2.6.0`. Xem
-> [`docs/SPEC_V2.md` §2b](docs/SPEC_V2.md) và cài lại `torch==2.7.1`.
+---
+
+## Phiên học: công tắc duy nhất bật model AI
+
+Ngoài phiên, hệ thống **vẫn xem camera và nhận diện khuôn mặt** (để dashboard
+biết ai đang ngồi) nhưng **không** chạy pose, không dò điện thoại, không cảnh
+báo. Bấm **Bắt đầu học** trên dashboard thì model AI mới chạy, và tự dừng khi
+hết thời lượng đặt trước (mặc định 60 phút).
+
+Đây là thiết kế có chủ đích: một lớp học 4 tiết không cần model chạy 8 tiếng
+liên tục trên Pi 4.
+
+`session.auto_start: true` trong `config.yaml` để vào phiên ngay khi khởi động
+(tiện demo, không nên dùng hằng ngày).
+
+---
+
+## Nhận diện người học
+
+Bấm **Thêm người** trên dashboard → nhập tên → **quét khuôn mặt kiểu Face ID**:
+vòng tròn ở giữa, năm bước hướng dẫn (nhìn thẳng → quay phải → quay trái →
+ngẩng → cúi), mỗi bước một chấm tiến độ. Chỉ khi đủ mẫu hợp lệ thì danh tính
+mới được ghi.
+
+Quét không đạt thì bấm **Quét lại** — nút này mở một phiên đăng ký **mới** ở
+máy chủ (hỏi lại phiên đã `failed` sẽ không bao giờ chạy tiếp).
+
+Ngưỡng nhận diện: `face.match_threshold: null` nghĩa là **chưa đo tay**, hệ
+thống tự suy từ chính các mẫu vừa đăng ký (độ giống nhau thấp nhất giữa hai
+mẫu cùng người, trừ một khoảng an toàn). Muốn đặt tay thì đo rồi điền số vào —
+số trong config **luôn thắng** số tự suy.
+
+`id` của một người **chính là tên của họ** (kho `faces.json` khoá theo tên), nên
+đổi tên = xoá + đăng ký lại.
+
+---
+
+## Cảnh báo bằng loa camera
+
+Ba câu cố định: rời khung hình, dùng điện thoại, người lạ. Ba nguồn tiếng, tự
+rơi xuống khi thiếu:
+
+1. **Bản thu giọng người** trong `data/audio/giongnam` hoặc `giongnu` — đo bằng
+   STOI qua đúng chuỗi của camera (8 kHz → A-law → loa nhỏ): 0,958–0,972, so
+   với 0,929–0,945 của giọng máy. Dễ nghe hơn hẳn trên loa 2 cm.
+2. **Giọng máy** `espeak-ng` cho câu chưa có bản thu.
+3. **Tiếng bíp** nếu cả hai đều không dùng được.
+
+Đặt tên tệp bản thu trùng mã loại cảnh báo (`leave_frame.mp3`, `phone.wav`,
+`stranger.m4a`) là chắc chắn nhất. Chọn giọng trên dashboard, lựa chọn được ghi
+vào `data/audio/voice.json`.
+
+Thử bằng tai: `python -m posture_monitor speak-test --speed 0.85`
+
+---
+
+## Kiểm thử
+
+```bash
+python -m pytest tests/ -q
+```
+
+**1492 passed, 4 skipped** (đo trên PC, Python 3.13).
+
+Test chạy được trên PC, không cần camera thật: video giả tạo bằng
+`cv2.VideoWriter`, dịch vụ người học tiêm bằng bản giả trong bộ nhớ.
+
+Bài cần trọng số thật (`test_bus_image_has_three_persons`) tự bỏ qua nếu thiếu
+`yolo11n-pose.pt`, `bus.jpg` hoặc các tệp mô hình khác.
+
+---
+
+## Cấu hình
+
+Toàn bộ ngưỡng nằm trong [`config.yaml`](config.yaml):
+
+| Mục | Nội dung |
+| --- | --- |
+| `camera` | `source`, kích thước, góc nhìn, `onvif` (PTZ), `speaker` (loa) |
+| `model` | model pose, định dạng, `imgsz`, `target_fps`, `kp_conf_min` |
+| `tracking` | chọn người theo track id |
+| `phone` | model dò điện thoại, ngưỡng conf, bộ lọc báo nhầm |
+| `thresholds`, `timing` | ngưỡng phân loại tư thế, hold/cooldown |
+| `alerts`, `hardware`, `sensors` | phần cứng, cảm biến |
+| `presence` | ngưỡng "vắng mặt" |
+| `face` | mô hình khuôn mặt, ngưỡng, số mẫu đăng ký |
+| `storage` | SQLite, số ngày giữ dữ liệu |
+| `speaker_alert` | giọng đọc, âm lượng, tốc độ |
+| `web` | host, port, `stream_enabled` |
+| `schedule` | khung giờ học, nhịp nhắc lại từng loại cảnh báo |
+| `session` | thời lượng gợi ý, tự vào phiên |
+
+Khóa thiếu thì dùng mặc định; khóa **sai kiểu thì báo lỗi rõ tên khóa**. File
+cấu hình không tồn tại cũng là lỗi rõ ràng, không lặng lẽ dùng mặc định.
+
+**Mật khẩu không nằm trong `config.yaml`** (file được commit). Dùng biến môi
+trường: `POSTURE_CAMERA_SOURCE`, `POSTURE_ONVIF_PASSWORD`.
 
 ---
 
@@ -147,138 +269,12 @@ Kết quả chạy `python scripts/camera_probe.py` trên chính Raspberry Pi 4 
 | `ultralytics` 8.4.0–8.4.3 | `NotImplementedError: NCNN inference is not supported on ARM64` | Pin `==8.4.191` |
 | `opencv-python==4.13.0.90` | Lỗi FIPS selftest | Pin `==5.0.0.93` |
 
-Chi tiết và nguồn issue ở [`docs/SPEC_V2.md` §2b](docs/SPEC_V2.md). **Không
-nâng `ultralytics` giữa chừng.**
+Chi tiết ở [`docs/SPEC_V2.md` §2b](docs/SPEC_V2.md). **Không nâng `ultralytics`
+giữa chừng.**
 
 ---
 
-## Chạy
-
-```bash
-# Từ gốc repo, với PYTHONPATH trỏ vào src/
-export PYTHONPATH=src          # Windows PowerShell: $env:PYTHONPATH="src"
-
-python -m posture_monitor --help
-
-python -m posture_monitor run --no-gpio       # chạy không cần GPIO
-python -m posture_monitor run                 # tự phát hiện GPIO
-```
-
-Bốn lệnh, đều đã triển khai:
-
-| Lệnh | Cờ chính |
-| --- | --- |
-| `run` | `--config`, `--no-gpio`, `--view {front,side}`, `--save-overlay`, `--log-level` |
-| `calibrate` | `--config`, `--output`, `--no-gpio` (no-op), `--log-level` |
-| `replay <video>` | `video` (vị trí), `--config`, `--no-gpio` (no-op), `--save-report`, `--log-level` |
-| `benchmark` | `--seconds`, `--config`, `--source`, `--json`, `--no-gpio` (no-op), `--log-level` |
-
-- `run` — giám sát trực tiếp từ camera: suy luận pose và vẽ lên khung hình.
-- `calibrate` — thu khung ở tư thế chuẩn rồi ghi baseline ra
-  `calibration.json`.
-- `replay` — chạy pipeline (pose → features → phân loại → máy trạng thái)
-  trên một video có sẵn, in tóm tắt và tuỳ chọn ghi báo cáo JSON.
-- `benchmark` — đo hiệu năng trên máy đích (spec §8).
-
-`run` sẽ: nạp `config.yaml` → khởi tạo phần cứng (giả lập nếu `--no-gpio`) →
-mở camera → nạp model pose → mở cửa sổ xem trước. Mỗi khung hình được suy
-luận rồi vẽ 17 keypoint (chấm đỏ) và xương (nét xanh) lên trên.
-
-> **Dashboard web chưa chạy trong `run`.** Mã dashboard nằm ở
-> `src/posture_monitor/web/` và đã có test, nhưng vòng lặp của `run` hiện
-> chưa khởi động Flask — chạy `run` sẽ **chưa** thấy web. Xem
-> [`docs/WEB_DASHBOARD.md`](docs/WEB_DASHBOARD.md) để biết giao diện và API
-> mà mã hiện có.
-
-**Cách thoát:** bấm `q` (hoặc `Q`, hoặc `Esc`) khi cửa sổ đang được chọn, hoặc
-bấm nút `X` của cửa sổ. Thoát bằng `Ctrl+C` cũng được (mã thoát `130`).
-
-**Không có camera vẫn chạy được**: chương trình ghi log lý do cụ thể và thoát
-với mã `1` — `run` cần camera để suy luận pose.
-
-### Kiểm chứng trên máy không có màn hình
-
-Cờ `--save-overlay` lưu **một** khung đã vẽ ra file ảnh rồi thoát, không mở
-cửa sổ:
-
-```bash
-python -m posture_monitor run --no-gpio --save-overlay frame.jpg
-```
-
-Chương trình in đường dẫn file đã lưu và số người phát hiện được:
-
-```
-Đã lưu khung đã vẽ: /duong/dan/frame.jpg
-persons=1
-```
-
-`persons=0` nghĩa là **không có ai trong khung ở thời điểm chụp** — trạng thái
-hợp lệ, không phải lỗi.
-
-### Nạp model và rơi cấp backend
-
-Theo `model.format` trong `config.yaml` (mặc định `ncnn`), thứ tự là NCNN →
-ONNX → PyTorch. Thiếu thư mục `*_ncnn_model` thì chương trình tự export một lần
-với `imgsz` đã cấu hình; export lỗi (ví dụ thiếu `pnnx`) thì ghi WARNING rồi
-rơi xuống backend kế tiếp, **không crash**. Chỉ khi không nạp được backend nào
-mới báo lỗi và thoát với mã `2`.
-
-Trọng số `yolo11n-pose.pt` và thư mục `yolo11n-pose_ncnn_model/` nằm trong
-`.gitignore` — **không commit** chúng.
-
----
-
-## Dò camera
-
-```bash
-python scripts/camera_probe.py
-```
-
-Script chạy được trên cả PC và Pi. Nó in:
-
-- Bảng mọi node `/dev/video*` kèm tên driver và kết luận node nào là camera thật.
-- Trạng thái Pi Camera (`picamera2`).
-- Danh sách camera USB phát hiện được.
-- Gợi ý giá trị `camera.source` nên dùng.
-
-Mã thoát `0` nếu có ít nhất một nguồn ảnh, `1` nếu không có.
-
-### Vì sao không dùng `/dev/video10..31`?
-
-Trên Pi 4, các node đó là **thiết bị codec/ISP của SoC**, không phải camera:
-
-| Node | Driver |
-| --- | --- |
-| `/dev/video10..` | `bcm2835-codec`, `bcm2835-codec (vchiq)` |
-| `/dev/video11..` | `bcm2835-isp` |
-| `/dev/video1x` | `rpi-hevc-dec` |
-
-Chúng thường **vẫn mở được** bằng `cv2.VideoCapture(idx).isOpened()` — nên
-`isOpened()` một mình không đủ để kết luận. Code dò tên driver trong
-`/sys/class/video4linux/videoN/name` và loại ba họ driver trên trước, rồi mới
-thử mở.
-
----
-
-## Cấu hình
-
-Toàn bộ ngưỡng nằm trong [`config.yaml`](config.yaml). Các mục:
-
-| Mục | Nội dung |
-| --- | --- |
-| `camera` | `source` (`usb:N` / `picamera` / `file:...`), kích thước, góc nhìn |
-| `model` | tên model, định dạng, `imgsz`, `target_fps`, `kp_conf_min`, `export_on_pc` |
-| `tracking` | chọn người theo track id |
-| `thresholds` | ngưỡng phân loại tư thế |
-| `timing` | hold, cooldown, nhắc nghỉ |
-| `alerts`, `hardware`, `sensors`, `storage`, `web` | phần cứng, dữ liệu, dashboard |
-
-Khóa thiếu thì dùng mặc định; khóa **sai kiểu thì báo lỗi rõ tên khóa**.
-File cấu hình không tồn tại cũng là lỗi rõ ràng, không lặng lẽ dùng mặc định.
-
----
-
-## Đấu dây phần cứng (M3)
+## Đấu dây phần cứng
 
 Số chân là BCM, đổi được trong `config.yaml` → `hardware.pins`.
 
@@ -293,46 +289,31 @@ Số chân là BCM, đổi được trong `config.yaml` → `hardware.pins`.
 | HC-SR04 ECHO | GPIO6 | **bắt buộc chia áp 5V → 3.3V** |
 | OLED SSD1306 | SDA GPIO2, SCL GPIO3 | I2C, địa chỉ 0x3C |
 
-> ⚠️ **Chân ECHO của HC-SR04 là 5V.** Nối thẳng vào GPIO 3.3V sẽ làm hỏng
-> chân. Dùng cầu chia áp (ví dụ 1 kΩ và 2 kΩ) trước khi nối.
+> ⚠️ **Chân ECHO của HC-SR04 là 5V.** Nối thẳng vào GPIO 3.3V sẽ làm hỏng chân.
+> Dùng cầu chia áp (ví dụ 1 kΩ và 2 kΩ).
 
-### Nhắc nhiệt độ
+`alerts.gpio_alert_enabled` mặc định **false**: đề tài không chấm điểm tư thế
+nên GPIO chỉ cập nhật trạng thái, không kêu/rung. Bật lên nếu thực sự cần.
 
-Ngưỡng mục tiêu là dưới 80 °C. Theo tài liệu chính thức Raspberry Pi, core
-bắt đầu bị throttle từ 80 °C và throttle mạnh ở 85 °C. **Tản nhiệt hoặc quạt
-là bắt buộc, không phải tùy chọn** nếu muốn số đo FPS hợp lệ.
-
----
-
-## Kiểm thử
-
-```bash
-python -m pytest tests/ -v
-```
-
-Đo trên PC (Python 3.13): **544 passed, 4 skipped**.
-
-Test chạy được trên PC, không cần camera thật: video giả được tạo bằng
-`cv2.VideoWriter` trong thư mục tạm.
-
-Bài tích hợp `test_bus_image_has_three_persons` cần trọng số thật và ảnh mẫu.
-Đặt chúng trong `tests/data/` (`yolo11n-pose.pt`, `bus.jpg`) hoặc trỏ ra bản
-cục bộ bằng `POSTURE_TEST_WEIGHTS` và `POSTURE_TEST_IMAGE`; thiếu file thì test
-tự bỏ qua (skip), không làm đỏ bộ test.
+Nhiệt độ mục tiêu dưới 80 °C. Pi 4 bắt đầu throttle từ 80 °C — **tản nhiệt hoặc
+quạt là bắt buộc** nếu muốn số đo FPS hợp lệ.
 
 ---
 
-## Kiểm tra nhanh sau khi cài trên Pi
+## Dò camera
 
 ```bash
-uname -m                                  # phải in aarch64
-cat /etc/os-release | grep VERSION_CODENAME
-python -V
-python -c "import torch; print(torch.__version__)"   # phải 2.7.1, không Illegal instruction
 python scripts/camera_probe.py
-python -m posture_monitor run --no-gpio
-python -m posture_monitor run
 ```
+
+Chạy được trên cả PC và Pi. In bảng mọi node `/dev/video*` kèm driver, trạng
+thái Pi Camera, danh sách camera USB, và gợi ý giá trị `camera.source`. Mã thoát
+`0` nếu có ít nhất một nguồn ảnh, `1` nếu không.
+
+Trên Pi 4, `/dev/video10..31` là **codec/ISP của SoC, không phải camera** — và
+chúng vẫn mở được bằng `isOpened()`. Vì vậy script lọc theo tên driver trong
+`/sys/class/video4linux/videoN/name` trước, rồi mới thử mở (đã loại đúng
+14/14 node trên máy thật).
 
 ---
 
@@ -340,31 +321,16 @@ python -m posture_monitor run
 
 | Triệu chứng | Nguyên nhân thường gặp | Cách xử lý |
 | --- | --- | --- |
-| `No cameras available!` | Chưa cắm camera, hoặc camera CSI chưa bật | Kiểm tra cáp; `camera_auto_detect=1` trong `/boot/firmware/config.txt`; `rpicam-hello --list-cameras` |
+| **Sửa CSS xong vẫn thấy giao diện cũ** | Cache trình duyệt | Tải lại cứng `Ctrl+Shift+R`. Hệ thống đã gắn `?v=<mốc sửa đổi>` vào URL CSS/JS nên các lần sau tự hết |
+| Trang đứng ở "Đang kết nối tới camera…" | Luồng MJPEG chưa có khung | Kiểm tra log `run`; xem `/stream` có trả ảnh không |
+| Khung hình có dải đen hai bên | Tỉ lệ nguồn khác tỉ lệ khung | Hệ thống tự đọc tỉ lệ thật từ khung đầu tiên; nếu vẫn lệch thì báo lỗi kèm kích thước |
+| `No cameras available!` | Chưa cắm camera, hoặc CSI chưa bật | `rpicam-hello --list-cameras`; `camera_auto_detect=1` trong `/boot/firmware/config.txt` |
 | `ModuleNotFoundError: picamera2` | Venv thiếu `--system-site-packages` | Tạo lại venv đúng cờ, hoặc `sudo apt install python3-picamera2` |
 | `ModuleNotFoundError: lgpio` | Chưa cài `python3-lgpio` | `sudo apt install -y python3-lgpio` |
-| `Illegal instruction` khi import torch | Dính `torch==2.6.0` | Cài lại đúng `torch==2.7.1` |
+| `Illegal instruction` khi import torch | Dính `torch==2.6.0` | Cài lại `torch==2.7.1` |
 | `NCNN inference is not supported on ARM64` | `ultralytics` 8.4.0–8.4.3 | Nâng lên `==8.4.191` |
-| Không mở được camera USB | Chỉ số sai, hoặc không có quyền | Chạy `python scripts/camera_probe.py`; kiểm tra `id` có nhóm `video` |
-| `Camera: KHÔNG MỞ ĐƯỢC` nhưng vẫn chạy | Đúng thiết kế — thiếu camera không làm chết chương trình | Đọc log WARNING phía trên để biết lý do |
-| Chân GPIO không bật được | Chạy nhầm trên PC, hoặc dùng `--no-gpio` | Trên Pi bỏ `--no-gpio`; trên PC luôn dùng `--no-gpio` |
-| Màu bị đảo đỏ/xanh khi dùng Pi Camera | Chọn nhầm `BGR888` (byte là `[R,G,B]`) | Phải dùng `RGB888` (byte `[B,G,R]`) — xem [`docs/SPEC_V2.md` §5.1](docs/SPEC_V2.md) |
-
-### Ghi chú về môi trường có sẵn
-
-Trạng thái phần cứng đã kiểm chứng trực tiếp trên Pi đích khi viết mã này:
-
-- `rpicam-hello --list-cameras` → `No cameras available!`
-- `Picamera2.global_camera_info()` → `[]`
-- `cv2.VideoCapture(0, cv2.CAP_V4L2).isOpened()` → `False`
-- Kernel không nạp `uvcvideo`
-
-Nghĩa là **chưa có camera nào được gắn**. Logic lọc node codec/ISP đã được
-kiểm chứng trên máy thật (loại đúng 14/14 node — xem mục "Trạng thái camera
-trên Pi" phía trên). Phần **mở** camera thật (Pi Camera và USB) thì **chưa
-được nghiệm thu trên phần cứng**, vì chưa có thiết bị để cắm; mới chỉ kiểm
-chứng được đường xử lý khi thiếu camera (trả `None` + log rõ, không crash).
-Khi có camera, chạy lại `python scripts/camera_probe.py` để xác nhận.
+| Nút xoay camera báo lỗi tiếng Việt | PTZ chưa cấu hình / thiếu mật khẩu | Đặt `POSTURE_CAMERA_SOURCE` dạng `rtsp://`, hoặc `POSTURE_ONVIF_PASSWORD` |
+| Màu bị đảo đỏ/xanh (Pi Camera) | Chọn nhầm `BGR888` | Phải dùng `RGB888` — xem [`docs/SPEC_V2.md` §5.1](docs/SPEC_V2.md) |
 
 ---
 
@@ -376,42 +342,52 @@ Khi có camera, chạy lại `python scripts/camera_probe.py` để xác nhận.
 ├── requirements.txt
 ├── config.yaml
 ├── docs/
-│   ├── SPEC_V2.md
-│   └── WEB_DASHBOARD.md
+│   ├── SPEC_V2.md            # đặc tả nền (tư thế, phần cứng)
+│   ├── SPEC_V3.md            # đặc tả hiện hành (người học, phiên học)
+│   ├── WEB_DASHBOARD.md      # dashboard: giao diện, API, PTZ
+│   ├── MODELS.md             # nguồn tải và cách kiểm chứng mô hình
+│   └── REUSE_AUDIT.md        # đánh giá tài nguyên tái sử dụng
 ├── scripts/
-│   ├── camera_probe.py        # dò và in bảng thiết bị quay hình
-│   └── hw_selftest.py         # tự kiểm tra LED/buzzer/rung/siêu âm
+│   ├── camera_probe.py       # dò và in bảng thiết bị quay hình
+│   └── hw_selftest.py        # tự kiểm tra LED/buzzer/rung/siêu âm
 ├── src/posture_monitor/
-│   ├── __main__.py            # CLI: run | calibrate | replay | benchmark
-│   ├── config.py              # đọc + kiểm tra config.yaml
-│   ├── logging_setup.py       # logging dùng chung
-│   ├── capture.py             # OpenCVSource, PiCameraSource, FileSource, probe
-│   ├── pose.py                # nạp model + detect() → PoseResult
-│   ├── overlay.py             # vẽ 17 keypoint + xương theo kp_conf_min
-│   ├── features.py            # trích đặc trưng tư thế
-│   ├── calibration.py         # baseline tư thế chuẩn ⇄ calibration.json
-│   ├── classifier.py          # gán nhãn tư thế
-│   ├── state.py               # máy trạng thái GOOD/WARN/BAD/ABSENT
-│   ├── alerts.py              # quyết định cảnh báo
-│   ├── sensors.py             # HC-SR04, cảm biến phụ
-│   ├── storage.py             # SQLite: phiên, sự kiện, lịch sử
-│   ├── benchmark.py           # đo FPS/độ trễ/nhiệt/RAM/throttle
+│   ├── __main__.py           # CLI: run | calibrate | replay | benchmark | speak-test
+│   ├── config.py             # đọc + kiểm tra config.yaml
+│   ├── logging_setup.py      # logging dùng chung
+│   ├── capture.py            # OpenCVSource, PiCameraSource, FileSource, probe
+│   ├── pose.py               # nạp model + detect() → PoseResult
+│   ├── overlay.py            # vẽ 17 keypoint + xương
+│   ├── phone.py              # tín hiệu "đang dùng điện thoại"
+│   ├── phone_detector.py     # model detect COCO + bộ lọc báo nhầm
+│   ├── presence.py           # tín hiệu "có mặt / vắng mặt"
+│   ├── faces.py              # YuNet + SFace, kho vector, cosine
+│   ├── face_worker.py        # luồng nhận diện riêng
+│   ├── people_service.py     # phiên đăng ký, tín hiệu có tuổi
+│   ├── schedule.py           # khung giờ học, nhịp cảnh báo
+│   ├── study_session.py      # phiên học bấm tay (công tắc model AI)
+│   ├── camera_audio.py       # loa camera qua RTSP backchannel
+│   ├── speaker_alert.py      # chọn giọng, phát câu cảnh báo
+│   ├── voice_library.py      # quản lý bản thu giọng nam/nữ
+│   ├── camera_control.py     # PTZ qua ONVIF
+│   ├── features.py           # trích đặc trưng tư thế
+│   ├── calibration.py        # baseline ⇄ calibration.json
+│   ├── classifier.py         # gán nhãn tư thế
+│   ├── state.py              # máy trạng thái GOOD/WARN/BAD/ABSENT
+│   ├── alerts.py             # quyết định cảnh báo
+│   ├── sensors.py            # HC-SR04, cảm biến phụ
+│   ├── storage.py            # SQLite: phiên, sự kiện, thống kê phút
+│   ├── benchmark.py          # đo FPS/độ trễ/nhiệt/RAM/throttle
 │   ├── hardware/
-│   │   ├── base.py            # giao diện Hardware
-│   │   ├── gpio_mock.py       # MockFactory của gpiozero (chỉ log)
-│   │   └── gpio_real.py       # LED/buzzer/rung thật
-│   └── web/                   # dashboard Flask (CHƯA nối vào lệnh run)
-│       ├── app.py             # DashboardState, create_app, run_server
-│       ├── templates/
-│       └── static/
-└── tests/
+│   │   ├── base.py           # giao diện Hardware
+│   │   ├── gpio_mock.py      # MockFactory của gpiozero (chỉ log)
+│   │   └── gpio_real.py      # LED/buzzer/rung thật
+│   └── web/                  # dashboard Flask
+│       ├── app.py            # DashboardState, create_app, run_server
+│       ├── people_service.py # hợp đồng dịch vụ người học cho tầng web
+│       ├── templates/index.html
+│       └── static/           # style.css, app.js, font Geist nội bộ
+└── tests/                    # 53 tệp test
 ```
-
-Các module của M2 trở đi (`features.py`, `calibration.py`, `classifier.py`,
-`state.py`, `alerts.py`, `sensors.py`, `storage.py`, `benchmark.py`, `web/`)
-đều đã có mã và test. Phần còn thiếu là **dây nối** giữa vòng lặp của `run`
-với `web/` và `storage.py`; cho tới khi nối xong, `run` chỉ suy luận pose và
-vẽ khung hình, không mở dashboard và không ghi SQLite.
 
 ---
 
@@ -421,7 +397,29 @@ vẽ khung hình, không mở dashboard và không ghi SQLite.
   Bookworm/Trixie.
 - **Không import `picamera2` và `lgpio` ở cấp module.** Chúng chỉ được import
   bên trong hàm, để trên PC mọi thứ vẫn import được.
-- **`gpio_mock` dùng `gpiozero.pins.mock.MockFactory`** có sẵn, thay vì tự
-  viết mock pin. Nhờ vậy không thể vô tình bật chân thật khi đang ở `--no-gpio`.
+- **`gpio_mock` dùng `gpiozero.pins.mock.MockFactory`** có sẵn, thay vì tự viết
+  mock pin. Nhờ vậy không thể vô tình bật chân thật khi đang ở `--no-gpio`.
 - **Nguồn ảnh giữ khung mới nhất, không xếp hàng** — độ trễ không tăng dần.
-- **Không lưu, không truyền ảnh.** Chỉ lưu số liệu; stream mặc định tắt.
+- **Không lưu, không truyền ảnh.** Chỉ lưu số liệu.
+- **Nhận diện khuôn mặt không chặn vòng lặp.** `PeopleService.observe()` chỉ cất
+  tham chiếu khung rồi trả về ngay; phần nặng (YuNet + SFace, 86,1 ms/lượt) chạy
+  trên một luồng riêng. Chặn ở đó là vi phạm ngân sách khung.
+- **`UNKNOWN` không bao giờ bị suy thành "người lạ".** Che mặt, ngược sáng,
+  gallery rỗng hay chưa có ngưỡng đều là `UNKNOWN`. Chỉ khi so được với gallery
+  và mọi người đều dưới ngưỡng mới là `MISMATCH` — báo nhầm vì không nhận ra là
+  lỗi nghiêm trọng hơn bỏ sót.
+- **Tín hiệu cũ phải nói "chưa có dữ liệu mới".** Không được lặp lại kết luận cũ
+  như vừa đo được.
+- **Dashboard chỉ dùng trong LAN.** Không NAT, không forward cổng ra Internet,
+  không đặt sau proxy công khai. Giao diện không có đăng nhập.
+- **CSS/JS có `?v=<mốc sửa đổi>`** để trình duyệt tải bản mới sau mỗi lần sửa.
+
+---
+
+## Giấy phép và lưu ý
+
+`ultralytics` là **AGPL-3.0**. Đồ án chỉ dùng nội bộ và nộp báo cáo thì bình
+thường; nếu sau này phát hành sản phẩm thì AGPL bắt buộc mở mã nguồn.
+
+Chart.js (MIT) nằm cục bộ trong `web/static/` nhưng trang hiện không dùng. Chi
+tiết giấy phép từng tài nguyên: [`docs/REUSE_AUDIT.md`](docs/REUSE_AUDIT.md).
