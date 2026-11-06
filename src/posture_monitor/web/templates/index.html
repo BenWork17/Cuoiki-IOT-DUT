@@ -3,230 +3,160 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f2f4f7">
+  <meta name="theme-color" content="#f0f2f5">
   <title>Giám sát học tập</title>
   <!-- Biểu tượng nhúng thẳng dạng data: URI, vì Pi có thể không có Internet và
        trình duyệt tự xin /favicon.ico nếu thiếu nên sẽ rác log 404. -->
   <link rel="icon" type="image/png" sizes="32x32"
         href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAeUlEQVR42u3XQQrAIAwEQN/TF/al/YxCPRdBjJvFtUbI1Z1DCElKu73rft5eLQmlYmbDYQQaDEG8w00IVvgwYinA8lEp+VMwAgl3QZwNmGkmJLxBsDv/fwCPHghAAKBZEKOYArAgUEBsRNpLqcRaLnGYyJxmEscp81V7I1uuByPDxQAAAABJRU5ErkJggg==">
-  <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}?v={{ asset_version }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v={{ asset_version }}">
   <!-- Không nạp Chart.js: đề tài đã bỏ nhận diện tư thế nên không còn biểu
        đồ. File static/chart.umd.min.js vẫn để nguyên trong repo (tham chiếu
-       cục bộ, không kéo từ Internet), chỉ là trang này không dùng. -->
-  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+       cục bộ), chỉ là trang này không dùng. -->
+  <!-- `?v=<mốc sửa đổi>` để trình duyệt tải lại CSS/JS sau mỗi lần sửa. Không
+       có nó thì chạy lại code vẫn thấy giao diện cũ do cache. -->
+  <script src="{{ url_for('static', filename='app.js') }}?v={{ asset_version }}" defer></script>
 </head>
 <body data-stream-enabled="{{ '1' if stream_enabled else '0' }}"
       data-people-enabled="{{ '1' if people_enabled else '0' }}"
       data-min-distance="{{ min_distance_cm }}">
-  <main class="page">
 
-    <!-- Thanh tiêu đề: dấu của sản phẩm, tên, dòng "đang cập nhật" (chỗ đọc
-         kết luận mới nhất), phạm vi thiết bị, và hai lệnh chung. Không có
-         sidebar vì màn hình này chỉ có một đích đến: một sidebar năm mục ở
-         đây sẽ là điều hướng giả. -->
-    <header class="topbar">
-      <div class="topbar__id">
-        <span class="mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="none"
-               stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
-            <path d="M3 8.5V6a3 3 0 0 1 3-3h2.5"/>
-            <path d="M15.5 3H18a3 3 0 0 1 3 3v2.5"/>
-            <path d="M21 15.5V18a3 3 0 0 1-3 3h-2.5"/>
-            <path d="M8.5 21H6a3 3 0 0 1-3-3v-2.5"/>
-            <circle class="mark__lens" cx="12" cy="12" r="2.6"/>
+<!-- Bố cục bảng điều khiển: dùng hết bề ngang màn hình, chia thành ba dải.
+
+     1. Thanh trên cùng — nhận diện sản phẩm + hai lệnh chung (tiếng, hiệu
+        chỉnh). Dính trên đỉnh khi cuộn.
+     2. Dải điều khiển — ba tín hiệu trạng thái và phiên học nằm NGAY TRÊN
+        CÙNG, ngang tầm mắt. Đây là những thứ phải liếc thấy liên tục và là
+        những nút phải bấm được ngay, nên chúng không bị đẩy xuống dưới camera.
+     3. Khu chính — camera chiếm phần lớn, cột phải giữ người học + giọng đọc.
+        Cột phải có nội dung thật nên không để lại mảng trống bên cạnh hình.
+
+     Trên điện thoại cả ba dải xếp dọc theo đúng thứ tự đọc đó. -->
+<div class="dash">
+
+  <header class="bar">
+    <div class="bar__brand">
+      <span class="mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+             stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+          <path d="M3 8.5V6a3 3 0 0 1 3-3h2.5"/>
+          <path d="M15.5 3H18a3 3 0 0 1 3 3v2.5"/>
+          <path d="M21 15.5V18a3 3 0 0 1-3 3h-2.5"/>
+          <path d="M8.5 21H6a3 3 0 0 1-3-3v-2.5"/>
+          <circle class="mark__lens" cx="12" cy="12" r="2.6"/>
+        </svg>
+      </span>
+      <div class="bar__titles">
+        <h1>Giám sát học tập</h1>
+        <p class="bar__meta">
+          <span class="dot" id="live-dot" aria-hidden="true"></span>
+          <span id="updated">Đang tải trạng thái…</span>
+          <span class="bar__device">Raspberry Pi 4 · mạng LAN</span>
+        </p>
+      </div>
+    </div>
+
+    <div class="bar__actions">
+      <button id="mute-btn" type="button" class="btn btn--quiet" data-muted="0">
+        <span id="mute-icon" class="btn__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+               stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 9.5h3L11 6.5v11L7 14.5H4z"/>
+            <path class="mute__wave" d="M14.5 9.2a4 4 0 0 1 0 5.6"/>
+            <path class="mute__wave" d="M17.2 6.6a7.6 7.6 0 0 1 0 10.8"/>
+            <path class="mute__slash" d="M4.5 4.5l15 15"/>
           </svg>
         </span>
-        <div class="topbar__text">
-          <h1>Giám sát học tập</h1>
-          <p class="topbar__meta">
-            <span id="updated">Đang tải trạng thái…</span>
-            <span class="topbar__sep" aria-hidden="true">·</span>
-            <span>Raspberry Pi 4, mạng LAN</span>
-          </p>
+        <span id="mute-text">Tắt tiếng cảnh báo</span>
+      </button>
+      <button id="calibrate-btn" type="button" class="btn btn--quiet">
+        Hiệu chỉnh lại
+      </button>
+    </div>
+  </header>
+
+  <p id="action-message" class="toast" role="status" hidden></p>
+
+  <p id="stale-warning" class="stale" hidden>
+    Không nhận được dữ liệu mới. Kiểm tra chương trình giám sát còn chạy không.
+  </p>
+
+  <p id="signals-disabled" class="card__disabled"{% if people_enabled %} hidden{% endif %}>
+    {{ people_disabled_message }}
+  </p>
+
+  <!-- Khu chính: camera chiếm cột trái và là thứ ĐẦU TIÊN mắt gặp — mở trang
+       là thấy trọn khung hình, không có dải thẻ nào chen ở trên. Mọi thứ phải
+       liếc thấy liên tục (ba tín hiệu, phiên học và các nút) nằm ở cột phải,
+       ngay cạnh hình, nên vẫn quan sát được mà không chiếm chỗ của camera. -->
+  <div class="main">
+    <section id="camera-card" class="live">
+      <div class="live__head">
+        <span class="live__tag">
+          <span class="live__pulse" aria-hidden="true"></span>
+          Trực tiếp
+        </span>
+        <h2 class="live__title">Camera phòng học</h2>
+        <span class="chip">LAN · không lưu ảnh</span>
+      </div>
+
+      <div class="live__frame">
+        {% if stream_enabled %}
+        <img id="camera-stream" class="live__img"
+             src="{{ url_for('stream') }}"
+             alt="Luồng camera trực tiếp" hidden>
+        <div id="camera-note" class="live__note" role="status">
+          <span>Đang kết nối tới camera…</span>
+        </div>
+        {% else %}
+        <div id="camera-note" class="live__note">
+          <span>
+            Xem trực tiếp đang tắt. Bật <code>web.stream_enabled: true</code>
+            trong <code>config.yaml</code> rồi khởi động lại để xem camera.
+          </span>
+        </div>
+        {% endif %}
+
+        <div class="ptz" role="group" aria-label="Điều khiển xoay camera">
+          <button id="ptz-up" type="button" class="ptz__btn"
+                  data-ptz-direction="up" aria-label="Xoay camera lên">↑</button>
+          <button id="ptz-left" type="button" class="ptz__btn"
+                  data-ptz-direction="left" aria-label="Xoay camera sang trái">←</button>
+          <button id="ptz-down" type="button" class="ptz__btn"
+                  data-ptz-direction="down" aria-label="Xoay camera xuống">↓</button>
+          <button id="ptz-right" type="button" class="ptz__btn"
+                  data-ptz-direction="right" aria-label="Xoay camera sang phải">→</button>
         </div>
       </div>
-      <div class="topbar__actions">
-        <button id="mute-btn" type="button" class="btn btn--quiet"
-                data-muted="0">
-          <span id="mute-icon" class="btn__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
-                 stroke="currentColor" stroke-width="1.6"
-                 stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 9.5h3L11 6.5v11L7 14.5H4z"/>
-              <path class="mute__wave" d="M14.5 9.2a4 4 0 0 1 0 5.6"/>
-              <path class="mute__wave" d="M17.2 6.6a7.6 7.6 0 0 1 0 10.8"/>
-              <path class="mute__slash" d="M4.5 4.5l15 15"/>
-            </svg>
-          </span>
-          <span id="mute-text">Tắt tiếng cảnh báo</span>
-        </button>
-        <button id="calibrate-btn" type="button" class="btn btn--quiet">
-          Hiệu chỉnh lại
-        </button>
-      </div>
-    </header>
+    </section>
 
-    <p id="action-message" class="notice" role="status" hidden></p>
+    <aside class="rail">
+      <!-- Ba tín hiệu của phiên học, xếp dọc trong cột phải.
 
-    <!-- Lưới hai cột. Số học ở 1440px: vùng dùng được 1440 - 2x24 = 1392;
-         1392 - 12 (một khe) = 1380, chia 2,18 phần: cột trái 747, cột phải
-         633. 747 + 12 + 633 = 1392, đóng đúng cả hai mép.
+           Chúng là ba câu hỏi ngang hàng ("có ai ngồi", "có dùng điện thoại",
+           "có đúng người"), nên là ba ô cùng cỡ, cùng một nhãn nhóm.
 
-         Cột trái là thứ camera nhìn thấy và người nó nhìn: khung hình, rồi
-         danh sách người học. Cột phải là những gì người dùng bấm theo dõi:
-         ba tín hiệu, phiên học, giọng đọc. Hai cột kết thúc cùng một đường;
-         mỗi thẻ giữ đúng chiều cao nội dung nên không có dải trống bên
-         trong. Trên điện thoại hai cột bung ra và thứ tự đọc là: khung hình,
-         tín hiệu, phiên học, người học, giọng đọc. -->
-    <div class="board">
-      <div class="col col--view">
+           Chống hiểu nhầm (spec §5.16): khi tín hiệu không mới (fresh = false),
+           dòng đó phải nói "chưa có dữ liệu mới" thay vì lặp lại kết luận cũ
+           như vừa đo được. app.js lo phần đổi chữ. -->
+      <section class="rail__group" aria-labelledby="status-title">
+        <div class="rail__head">
+          <h2 id="status-title" class="rail__title">Trạng thái học</h2>
+          <span class="rail__meta">tín hiệu mới nhất</span>
+        </div>
 
-        <!-- Xem trực tiếp: khung hình chỉ đi qua bộ nhớ (DashboardState) rồi
-             tới trình duyệt, không ghi ra đĩa, không lưu lịch sử ảnh (spec
-             v2 §11.5). Khi stream tắt hoặc camera hỏng, app.js thay ảnh bằng
-             thông báo tiếng Việt và tự thử lại.
-
-             Bốn nút xoay camera nằm ngay dưới khung hình, trong cùng thẻ, vì
-             chúng điều khiển đúng thứ đang nhìn thấy. Khung giữ đúng tỉ lệ
-             4:3 của camera (640 x 480) để không sinh dải đen trên dưới. -->
-        <section id="camera-card" class="card camera">
-          <div class="card__head">
-            <h2>Xem trực tiếp</h2>
-            <p class="card__meta">LAN · không lưu ảnh</p>
-          </div>
-          {% if stream_enabled %}
-          <div class="camera__frame">
-            <img id="camera-stream" class="camera__img"
-                 src="{{ url_for('stream') }}"
-                 alt="Luồng camera trực tiếp" hidden>
-            <p id="camera-note" class="camera__note" role="status">
-              Đang kết nối tới camera…
-            </p>
-          </div>
-          {% else %}
-          <div class="camera__frame">
-            <p id="camera-note" class="camera__note">
-              Xem trực tiếp đang tắt. Bật <code>web.stream_enabled: true</code>
-              trong <code>config.yaml</code> rồi khởi động lại để xem camera.
-            </p>
-          </div>
-          {% endif %}
-
-          <div class="camera__foot">
-            <span class="camera__label">Xoay camera</span>
-            <div class="ptz" role="group" aria-label="Điều khiển xoay camera">
-              <button id="ptz-up" type="button" class="btn ptz__btn"
-                      data-ptz-direction="up" aria-label="Xoay camera lên">↑</button>
-              <button id="ptz-left" type="button" class="btn ptz__btn"
-                      data-ptz-direction="left" aria-label="Xoay camera sang trái">←</button>
-              <button id="ptz-down" type="button" class="btn ptz__btn"
-                      data-ptz-direction="down" aria-label="Xoay camera xuống">↓</button>
-              <button id="ptz-right" type="button" class="btn ptz__btn"
-                      data-ptz-direction="right" aria-label="Xoay camera sang phải">→</button>
-            </div>
-            <p class="camera__hint">Bấm giữ để xoay liên tục.</p>
-          </div>
-        </section>
-
-        <!-- Người học (spec v3 §5.16): thêm người, chọn người đang học, xoá.
-             Không có thẻ ảnh nào ở đây: Pi tự thu mẫu, trang chỉ hiện tiến độ
-             và hướng dẫn bằng chữ (spec §5.13.1, không lưu ảnh). Đặt ngay
-             dưới khung hình vì đây là danh sách người mà camera đang nhìn. -->
-        <section id="people-card" class="card people"
-                 aria-labelledby="people-title"
-                 data-people-enabled="{{ '1' if people_enabled else '0' }}">
-          <div class="card__head">
-            <h2 id="people-title">Người học</h2>
-            {% if people_enabled %}
-            <div class="people__actions">
-              <button id="add-person-btn" type="button" class="btn btn--quiet">
-                Thêm người
-              </button>
-              <button id="pick-person-btn" type="button" class="btn btn--quiet">
-                Chọn người đang học
-              </button>
-            </div>
-            {% endif %}
-          </div>
-
-          {% if people_enabled %}
-          <dl class="facts">
-            <div class="facts__row">
-              <dt>Đang chọn</dt>
-              <dd id="selected-person" role="status">Chưa chọn người đang học.</dd>
-            </div>
-            <div class="facts__row">
-              <dt>Giờ học</dt>
-              <dd id="schedule-summary">–</dd>
-            </div>
-          </dl>
-
-          <!-- Form nhập tên; chỉ hiện khi người dùng bấm "Thêm người". -->
-          <form id="add-person-form" class="people__form" hidden>
-            <label for="new-person-name" class="field__label">Tên người học</label>
-            <div class="people__form-row">
-              <input id="new-person-name" name="name" type="text"
-                     class="field" autocomplete="off" maxlength="60"
-                     placeholder="Ví dụ: Minh">
-              <button id="add-person-submit" type="submit" class="btn">
-                Bắt đầu đăng ký
-              </button>
-              <button id="add-person-cancel" type="button" class="btn btn--quiet">
-                Đóng
-              </button>
-            </div>
-          </form>
-
-          <!-- Tiến độ đăng ký: hiện từng bước hướng dẫn và số mẫu đã thu. -->
-          <div id="enroll-panel" class="enroll" hidden>
-            <p class="enroll__who">Đang đăng ký: <span id="enroll-name">–</span></p>
-            <p id="enroll-step" class="enroll__step" role="status">–</p>
-            <p id="enroll-samples" class="enroll__samples">–</p>
-            <button id="enroll-cancel-btn" type="button" class="btn btn--quiet">
-              Huỷ
-            </button>
-          </div>
-
-          <!-- Danh sách người đã đăng ký; hiện khi bấm "Chọn người đang học". -->
-          <div id="people-list-wrap" class="people__list-wrap" hidden>
-            <p id="people-list-empty" class="people__empty" hidden>
-              Chưa có người học nào. Bấm “Thêm người” để đăng ký.
-            </p>
-            <ul id="people-list" class="people__list"></ul>
-          </div>
-          {% else %}
-          <p id="people-disabled" class="card__disabled">
-            {{ people_disabled_message }}
-          </p>
-          {% endif %}
-        </section>
-      </div>
-
-      <div class="col col--run">
-
-        <!-- Thẻ "Trạng thái học" (spec v3 §5.16): ba dòng tín hiệu: Có mặt,
-             Điện thoại, Danh tính. Mỗi dòng có dấu hiệu, nhãn chữ và tuổi tín
-             hiệu, nên màu không bao giờ là kênh truyền đạt duy nhất.
-
-             Chống hiểu nhầm (spec §5.16): khi tín hiệu không mới (fresh =
-             false), dòng đó phải nói "chưa có dữ liệu mới" thay vì lặp lại
-             kết luận cũ như vừa đo được. app.js lo phần đổi chữ; khung ở đây
-             có sẵn chỗ và nhãn id cho từng mẩu. -->
-        <section id="status-card" class="card signs" aria-live="polite"
-                 data-people-enabled="{{ '1' if people_enabled else '0' }}">
-          <div class="card__head">
-            <h2>Trạng thái học</h2>
-            <p class="card__meta">tín hiệu mới nhất</p>
-          </div>
-
+        <div id="status-card" class="signs"
+             aria-live="polite"
+             data-people-enabled="{{ '1' if people_enabled else '0' }}">
           <div class="sign" id="sign-presence" data-sign="presence" data-fresh="unknown">
             <span id="sign-presence-icon" class="sign__icon" aria-hidden="true">•</span>
             <div class="sign__body">
               <p class="sign__label">Có mặt</p>
               <p id="sign-presence-text" class="sign__value">Chưa có dữ liệu mới</p>
+              <p id="sign-presence-age" class="sign__age">–</p>
             </div>
-            <span id="sign-presence-age" class="sign__age">–</span>
           </div>
 
           <div class="sign" id="sign-phone" data-sign="phone" data-fresh="unknown">
@@ -234,8 +164,8 @@
             <div class="sign__body">
               <p class="sign__label">Điện thoại</p>
               <p id="sign-phone-text" class="sign__value">Chưa có dữ liệu mới</p>
+              <p id="sign-phone-age" class="sign__age">–</p>
             </div>
-            <span id="sign-phone-age" class="sign__age">–</span>
           </div>
 
           <div class="sign" id="sign-identity" data-sign="identity" data-fresh="unknown">
@@ -243,56 +173,40 @@
             <div class="sign__body">
               <p class="sign__label">Danh tính</p>
               <p id="sign-identity-text" class="sign__value">Chưa có dữ liệu mới</p>
+              <p id="sign-identity-age" class="sign__age">–</p>
             </div>
-            <span id="sign-identity-age" class="sign__age">–</span>
           </div>
+        </div>
+      </section>
 
-          {% if not people_enabled %}
-          <p id="signals-disabled" class="card__disabled">
-            {{ people_disabled_message }}
-          </p>
-          {% endif %}
+      <!-- Phiên học: công tắc DUY NHẤT bật model AI. Chưa bấm Bắt đầu thì vòng
+           lặp chỉ đọc camera (vẫn nhận diện khuôn mặt để biết ai đang ngồi),
+           không chạy pose, không dò điện thoại, không phát cảnh báo. -->
+      <section class="rail__group" aria-labelledby="session-title">
+        <div class="rail__head">
+          <h2 id="session-title" class="rail__title">Phiên học</h2>
+          <span class="chip chip--quiet" id="session-badge" hidden></span>
+        </div>
 
-          <p id="stale-warning" class="stale" hidden>
-            Không nhận được dữ liệu mới. Kiểm tra chương trình giám sát còn chạy
-            không.
-          </p>
-        </section>
-
-        <!-- Phiên học: công tắc DUY NHẤT bật model AI. Chưa bấm Bắt đầu thì
-             vòng lặp chỉ đọc camera (vẫn nhận diện khuôn mặt để biết ai đang
-             ngồi), không chạy pose, không dò điện thoại, không phát cảnh báo.
-             Đếm ngược theo thời lượng đặt trước; hết giờ thì tự dừng và báo
-             một câu. -->
-        <section id="session-card" class="card session"
-                 aria-labelledby="session-title"
-                 data-session-enabled="{{ '1' if session_enabled else '0' }}">
-          <div class="card__head">
-            <h2 id="session-title">Phiên học</h2>
-          </div>
-
+        <div id="session-card" class="card session"
+             data-session-enabled="{{ '1' if session_enabled else '0' }}">
           {% if session_enabled %}
-          <p id="session-state" class="session__state" role="status">
-            Chưa bắt đầu. Bấm “Bắt đầu học” để hệ thống theo dõi.
-          </p>
-
-          <p class="clock" aria-live="polite">
-            <span id="session-countdown" class="clock__figure">–</span>
-            <span id="session-countdown-label" class="clock__unit"></span>
-          </p>
-
-          <div class="clock__track" id="session-track" role="progressbar"
-               aria-labelledby="session-title"
-               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <span id="session-fill" class="clock__fill"></span>
+          <div class="session__left">
+            <p class="clock" aria-live="polite">
+              <span id="session-countdown" class="clock__figure">–</span>
+              <span id="session-countdown-label" class="clock__unit"></span>
+            </p>
+            <div class="clock__track" id="session-track" role="progressbar"
+                 aria-labelledby="session-title"
+                 aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span id="session-fill" class="clock__fill"></span>
+            </div>
           </div>
-          <div class="clock__ends" aria-hidden="true">
-            <span>Bắt đầu</span>
-            <span>Hết giờ</span>
-          </div>
-
-          <div class="session__controls">
-            <div class="field-block">
+          <div class="session__right">
+            <p id="session-state" class="session__state" role="status">
+              Chưa bắt đầu. Bấm “Bắt đầu học” để hệ thống theo dõi.
+            </p>
+            <div class="session__controls">
               <label for="session-minutes" class="field__label">
                 Thời lượng (phút)
               </label>
@@ -300,10 +214,7 @@
                      class="field field--num" inputmode="numeric"
                      min="{{ session_min_minutes }}" max="{{ session_max_minutes }}"
                      step="1" value="{{ session_default_minutes }}">
-            </div>
-            <div class="session__buttons">
-              <button id="session-start-btn" type="button"
-                      class="btn btn--primary">
+              <button id="session-start-btn" type="button" class="btn btn--primary">
                 Bắt đầu học
               </button>
               <button id="session-stop-btn" type="button" class="btn btn--quiet"
@@ -312,58 +223,234 @@
               </button>
             </div>
           </div>
-          <p id="session-hint" class="session__hint">
-            Hết giờ hệ thống tự dừng và báo một câu. Bấm Dừng để nghỉ giữa chừng.
-          </p>
           {% else %}
-          <p id="session-disabled" class="card__disabled">
-            Phiên học chưa được bật trong lần chạy này.
-          </p>
-          {% endif %}
-        </section>
-
-        <!-- Giọng đọc cảnh báo: chọn bản thu giọng nam/nữ thay cho giọng máy.
-             Ba câu cố định nên chỉ có ba lựa chọn; chọn xong là lần cảnh báo kế
-             tiếp đã dùng giọng mới (không cần khởi động lại). -->
-        <section id="voice-card" class="card voice"
-                 aria-labelledby="voice-title"
-                 data-speaker-enabled="{{ '1' if speaker_enabled else '0' }}">
-          <div class="card__head">
-            <h2 id="voice-title">Giọng đọc cảnh báo</h2>
+          <div class="session__right">
+            <p id="session-disabled" class="card__disabled">
+              Phiên học chưa được bật trong lần chạy này.
+            </p>
           </div>
-
-          {% if speaker_enabled %}
-          <div id="voice-options" class="voice__options" role="radiogroup"
-               aria-labelledby="voice-title">
-            <!-- Nút được app.js dựng từ /api/voice để nhãn và tình trạng luôn
-                 khớp dữ liệu thật (thiếu bản thu cho câu nào thì nói rõ). -->
-          </div>
-          <p id="voice-status" class="voice__status" role="status">Đang tải…</p>
-          {% else %}
-          <p id="voice-disabled" class="card__disabled">
-            Loa cảnh báo chưa được bật trong phiên chạy này nên chưa đổi được
-            giọng đọc. Kiểm tra mục 'speaker_alert' trong config.yaml.
-          </p>
           {% endif %}
-        </section>
+        </div>
+      </section>
+      <!-- Người học (spec v3 §5.16): thêm người, chọn người đang học, xoá.
+           Không có thẻ ảnh nào ở đây: Pi tự thu mẫu, trang chỉ hiện tiến độ
+           và hướng dẫn bằng chữ (spec §5.13.1, không lưu ảnh).
+
+           "Thêm người" mở hộp quét khuôn mặt kiểu Face ID: chỉ khi quét đủ
+           mẫu thì danh tính mới được ghi. Quét không đạt thì mời quét lại. -->
+      <section id="people-card" class="card people"
+               aria-labelledby="people-title"
+               data-people-enabled="{{ '1' if people_enabled else '0' }}">
+        <div class="card__head">
+          <h2 id="people-title">Người học</h2>
+        </div>
+
+        {% if people_enabled %}
+        <div class="people__actions">
+          <button id="add-person-btn" type="button" class="btn btn--primary">
+            Thêm người
+          </button>
+          <button id="pick-person-btn" type="button" class="btn btn--quiet">
+            Chọn người đang học
+          </button>
+        </div>
+
+        <div class="who">
+          <span class="who__avatar" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
+                 stroke="currentColor" stroke-width="1.7" stroke-linecap="round">
+              <circle cx="12" cy="8.5" r="3.6"/>
+              <path d="M4.5 20c1.3-3.6 4.2-5.4 7.5-5.4s6.2 1.8 7.5 5.4"/>
+            </svg>
+          </span>
+          <div class="who__body">
+            <p class="who__label">Đang chọn</p>
+            <p id="selected-person" class="who__name" role="status">
+              Chưa chọn người đang học.
+            </p>
+          </div>
+        </div>
+
+        <p class="people__schedule">
+          <span class="people__schedule-label">Giờ học</span>
+          <span id="schedule-summary">–</span>
+        </p>
+        {% else %}
+        <p id="people-disabled" class="card__disabled">
+          {{ people_disabled_message }}
+        </p>
+        {% endif %}
+      </section>
+
+      <!-- Giọng đọc cảnh báo: chọn bản thu giọng nam/nữ thay cho giọng máy.
+           Ba câu cố định nên chỉ có ba lựa chọn; chọn xong là lần cảnh báo kế
+           tiếp đã dùng giọng mới (không cần khởi động lại). -->
+      <section id="voice-card" class="card voice"
+               aria-labelledby="voice-title"
+               data-speaker-enabled="{{ '1' if speaker_enabled else '0' }}">
+        <div class="card__head">
+          <h2 id="voice-title">Giọng đọc cảnh báo</h2>
+        </div>
+
+        {% if speaker_enabled %}
+        <div id="voice-options" class="voice__options" role="radiogroup"
+             aria-labelledby="voice-title">
+          <!-- Nút được app.js dựng từ /api/voice để nhãn và tình trạng luôn
+               khớp dữ liệu thật (thiếu bản thu cho câu nào thì nói rõ). -->
+        </div>
+        <p id="voice-status" class="voice__status" role="status">Đang tải…</p>
+        {% else %}
+        <p id="voice-disabled" class="card__disabled">
+          Loa cảnh báo chưa được bật trong phiên chạy này nên chưa đổi được
+          giọng đọc. Kiểm tra mục 'speaker_alert' trong config.yaml.
+        </p>
+        {% endif %}
+      </section>
+
+      <!-- Thẻ "An toàn dữ liệu": ba câu ngắn về đúng thứ người dùng hay hỏi
+           khi thấy một camera trong phòng học. Đặt ở cột phải để cột này có
+           nội dung thật tới đáy thay vì một mảng trống, và vì đây là chỗ mắt
+           tới sau khi đã đọc các nút điều khiển. -->
+      <section class="card privacy" aria-labelledby="privacy-title">
+        <div class="card__head">
+          <h2 id="privacy-title">An toàn dữ liệu</h2>
+        </div>
+        <ul class="privacy__list">
+          <li>
+            <span class="privacy__mark" aria-hidden="true">○</span>
+            <span>Chỉ lưu <strong>số liệu</strong>, không lưu ảnh hay video.</span>
+          </li>
+          <li>
+            <span class="privacy__mark" aria-hidden="true">○</span>
+            <span>Khuôn mặt giữ lại <strong>đặc trưng</strong>, không giữ ảnh.</span>
+          </li>
+          <li>
+            <span class="privacy__mark" aria-hidden="true">○</span>
+            <span>Chỉ chạy trong <strong>mạng LAN</strong>, không mở ra Internet.</span>
+          </li>
+        </ul>
+      </section>
+    </aside>
+  </div>
+
+  <footer class="foot">
+    Raspberry Pi 4 · chạy trong mạng LAN · không lưu ảnh
+  </footer>
+</div>
+
+{% if people_enabled %}
+<!-- Hộp nhập tên. Một bước duy nhất, rồi chuyển thẳng sang hộp quét: nhập tên
+     xong mới quét để tên và khuôn mặt luôn đi cùng một lần đăng ký. -->
+<div id="sheet-add" class="sheet" hidden>
+  <div class="sheet__panel" role="dialog" aria-modal="true"
+       aria-labelledby="sheet-add-title">
+    <div class="sheet__head">
+      <h2 id="sheet-add-title" class="sheet__title">Thêm người học</h2>
+      <button id="add-sheet-close" type="button" class="sheet__x"
+              aria-label="Đóng">×</button>
+    </div>
+    <p class="sheet__lead">
+      Nhập tên, sau đó quét khuôn mặt. Hệ thống chỉ lưu đặc trưng khuôn mặt,
+      không lưu ảnh.
+    </p>
+    <form id="add-person-form" class="sheet__form">
+      <label for="new-person-name" class="field__label">Tên người học</label>
+      <input id="new-person-name" name="name" type="text"
+             class="field" autocomplete="off" maxlength="60"
+             placeholder="Ví dụ: Minh">
+      <div class="sheet__actions">
+        <button id="add-person-submit" type="submit" class="btn btn--primary">
+          Tiếp tục: quét khuôn mặt
+        </button>
+        <button id="add-person-cancel" type="button" class="btn btn--quiet">
+          Đóng
+        </button>
       </div>
+    </form>
+  </div>
+</div>
+
+<!-- Hộp chọn người đang học. Danh sách thật do app.js dựng từ /api/people. -->
+<div id="sheet-pick" class="sheet" hidden>
+  <div class="sheet__panel" role="dialog" aria-modal="true"
+       aria-labelledby="sheet-pick-title">
+    <div class="sheet__head">
+      <h2 id="sheet-pick-title" class="sheet__title">Chọn người đang học</h2>
+      <button id="pick-sheet-close" type="button" class="sheet__x"
+              aria-label="Đóng">×</button>
+    </div>
+    <div id="pick-list" class="pick"></div>
+    <p id="pick-empty" class="sheet__lead" hidden>
+      Chưa có người học nào. Đóng hộp này rồi bấm “Thêm người”.
+    </p>
+  </div>
+</div>
+
+<!-- Hộp quét khuôn mặt kiểu Face ID.
+
+     Cùng một hộp cho cả ba trạng thái: đang quét, quét xong, quét không đạt.
+     Trạng thái nằm ở `data-state` của #scan-viewport để CSS đổi màu vòng quét,
+     còn mọi câu chữ do app.js đặt vào ĐÚNG một vùng thông báo (#enroll-step +
+     #scan-hint) để trình đọc màn hình không đọc hai lần.
+
+     Vòng tròn là nơi mặt phải nằm trong đó. Khi bật stream, khung hình thật
+     được cắt tròn bên trong (app.js gắn src lúc mở hộp, gỡ lúc đóng, nên
+     không có kết nối MJPEG thứ hai chạy thường trực). -->
+<div id="scan" class="scan" hidden>
+  <div class="scan__panel" role="dialog" aria-modal="true"
+       aria-labelledby="scan-title">
+    <p class="scan__kicker">Đăng ký khuôn mặt</p>
+    <h2 id="scan-title" class="scan__title">Quét khuôn mặt</h2>
+
+    <div id="scan-viewport" class="scan__viewport" data-state="scanning">
+      <div class="scan__halo" aria-hidden="true"></div>
+      <div class="scan__window">
+        {% if stream_enabled %}
+        <img id="scan-camera" class="scan__video" alt="" hidden>
+        {% endif %}
+        <svg class="scan__face" viewBox="0 0 120 120" aria-hidden="true"
+             fill="none" stroke="currentColor" stroke-width="1.6"
+             stroke-linecap="round">
+          <path d="M45 40c3-6 8.5-9 15-9s12 3 15 9"/>
+          <path d="M46 52c1.2 1.6 2.6 2.4 4 2.4s2.8-.8 4-2.4"/>
+          <path d="M66 52c1.2 1.6 2.6 2.4 4 2.4s2.8-.8 4-2.4"/>
+          <path d="M49 68c3.4 2.2 7 3.3 11 3.3s7.6-1.1 11-3.3"/>
+        </svg>
+        <span class="scan__sweep" aria-hidden="true"></span>
+        <svg class="scan__ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle class="scan__track" cx="60" cy="60" r="56"/>
+          <circle id="scan-progress" class="scan__bar" cx="60" cy="60" r="56"/>
+        </svg>
+        <span class="scan__corners" aria-hidden="true"></span>
+      </div>
+      <span id="scan-badge" class="scan__badge">Đang quét</span>
     </div>
 
-    <!-- Ghi chú gập lại: nội dung vẫn còn trong HTML (đọc được, tìm được
-         bằng Ctrl+F sau khi mở) nhưng không chiếm chỗ trên màn hình. -->
-    <details class="card notes">
-      <summary>Ghi chú</summary>
-      <ul>
-        <li>Hệ thống chỉ lưu <strong>số liệu</strong>; không lưu ảnh, không lưu video.</li>
-        <li>Xem trực tiếp chỉ hiển thị trong LAN và <strong>không lưu</strong>
-          ảnh/video: khung hình đi qua bộ nhớ rồi hết, không ghi ra đĩa.</li>
-        <li>Dashboard chỉ dùng trong mạng LAN, <strong>không mở ra Internet</strong>.</li>
-      </ul>
-    </details>
+    <p class="scan__who">Đang đăng ký <strong id="enroll-name">–</strong></p>
 
-    <footer class="foot">
-      Raspberry Pi 4 · chạy trong mạng LAN · không lưu ảnh
-    </footer>
-  </main>
+    <div id="enroll-panel" class="scan__panel-body">
+      <p id="enroll-step" class="scan__step" role="status">Nhìn thẳng</p>
+      <div id="scan-steps" class="scan__steps" aria-hidden="true"></div>
+      <p id="enroll-samples" class="scan__samples">Mẫu hợp lệ: 0 / 3</p>
+    </div>
+
+    <p id="scan-hint" class="scan__hint">
+      Giữ mặt trong vòng tròn, nhìn thẳng vào camera và đủ sáng.
+    </p>
+
+    <div class="scan__actions">
+      <button id="enroll-cancel-btn" type="button" class="btn btn--quiet">
+        Huỷ
+      </button>
+      <button id="scan-retry-btn" type="button" class="btn btn--primary" hidden>
+        Quét lại
+      </button>
+      <button id="scan-close-btn" type="button" class="btn btn--primary" hidden>
+        Đóng
+      </button>
+    </div>
+  </div>
+</div>
+{% endif %}
 </body>
 </html>

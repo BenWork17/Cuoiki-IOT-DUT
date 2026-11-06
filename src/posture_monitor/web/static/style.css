@@ -1,54 +1,73 @@
-/* Dashboard "Giám sát học tập" - bảng điều khiển cho Raspberry Pi 4.
+/* Dashboard "Giám sát học tập" — bảng điều khiển cho Raspberry Pi 4.
  *
- * Hướng thiết kế: "Achromatic ledger" (sổ cái không màu), phiếu do
- * `draw.mjs --app` phát với seed 551234115. Ba nguyên tắc của hướng này:
+ * Hướng thiết kế: "bảng tin sáng". Nền xám lạnh rất nhạt, thẻ trắng, một sắc
+ * xanh duy nhất làm nhấn, chữ gần đen. Phân cấp bằng khoảng trắng và bóng đổ
+ * nhẹ, không bằng đường kẻ dày.
  *
- *   1. Phần khung (tiêu đề, thẻ, nút, nhãn) không có màu: chỉ mực và các
- *      bậc xám. Màu không bao giờ là kênh truyền đạt duy nhất.
- *   2. Đúng MỘT sắc xanh #1d5fbf, và nó chỉ nằm trên phần dữ liệu chính của
- *      màn hình: thanh tiến độ của phiên học (phần đã trôi qua trên tổng
- *      thời lượng). Không tô màu nút, không tô nền thẻ.
- *   3. Màu trạng thái (đỏ/vàng/xanh) chỉ dùng cho trạng thái, không dùng cho
- *      nhấn mạnh.
+ * Bố cục dùng HẾT bề ngang màn hình, chia ba dải:
  *
- * Nền #f2f4f7 là bậc xám hơi lạnh, lấy từ vật thể của sản phẩm (màn hình
- * camera ban đêm) thay cho #f8f8f8 mặc định - xem mục "Its face" của phiếu.
+ *   1. Thanh trên cùng — nhận diện + hai lệnh chung, dính khi cuộn.
+ *   2. Dải điều khiển — ba tín hiệu trạng thái và phiên học nằm ngay trên
+ *      cùng, ngang tầm mắt: đây là thứ phải liếc thấy liên tục và những nút
+ *      phải bấm được ngay, nên chúng không bị đẩy xuống dưới camera.
+ *   3. Khu chính — camera chiếm phần lớn, cột phải chứa người học + giọng
+ *      đọc. Cột phải có hai thẻ thật nên không để lại mảng trống bên cạnh.
  *
- * Toàn bộ chữ là Geist tự lưu trong `fonts/` (không gọi Google Fonts): máy
- * Pi chạy trong LAN, thường không có Internet.
+ * Bản trước dùng một cột hẹp 808px canh giữa, nên trên màn 1440 có hai dải
+ * trống lớn hai bên và phần dưới thưa thớt. Bản này bỏ giới hạn bề rộng đó.
+ *
+ * Bốn quyết định giữ nguyên:
+ *
+ *   1. Sắc xanh #1877f2 chỉ nằm trên hành động chính và dữ liệu đang sống.
+ *   2. Trạng thái luôn truyền đạt bằng ba kênh — màu, hình, chữ.
+ *   3. Chỉ chế độ sáng (`color-scheme: light`).
+ *   4. Toàn bộ chữ là Geist tự lưu trong `fonts/`, không gọi Google Fonts.
  */
 
 :root {
-  /* Màu */
-  --ground: #f2f4f7;
+  color-scheme: light;
+
+  --ground: #f0f2f5;
   --surface: #ffffff;
-  --raised: #eef0f3;
-  --border: #e3e6ea;
-  --rule: #eef0f3;
-  --control: #d3d8de;
-  --text: #0a0a0a;
-  --muted: #5f6672;
-  --accent: #1d5fbf;          /* sắc xanh duy nhất, chỉ trên dữ liệu */
-  --positive: #247b50;
-  --negative: #b3261e;
-  --warning: #7a4a04;
-  --screen: #101418;          /* nền khung hình camera */
+  --raise: #f5f6f8;
+  --sunken: #e9ebee;
+  --line: #dfe3e8;
+  --text: #050505;
+  --text-soft: #3c4043;
+  --muted: #65676b;
+  --muted-strong: #4b4f54;
 
-  /* Hình khối */
-  --radius-card: 8px;
-  --radius-control: 6px;
+  --brand: #1877f2;
+  --brand-strong: #0f63d0;
+  --brand-wash: #e7f0fe;
 
-  /* Nhịp */
+  --positive: #15803d;
+  --positive-wash: #e7f6ec;
+  --negative: #c81e1e;
+  --negative-wash: #fdeaea;
+  --warning: #8a5a00;
+  --warning-wash: #fdf4e3;
+
+  --screen: #0d1116;
+
+  --radius-card: 16px;
+  --radius-panel: 20px;
+  --radius-control: 10px;
+  --radius-pill: 999px;
+
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.06), 0 1px 8px rgba(0, 0, 0, 0.04);
+  --shadow-lift: 0 4px 16px rgba(0, 0, 0, 0.1);
+  --shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.28);
+
   --gap: 12px;
-  --pad: 20px;
+  --pad: 16px;
 
-  /* Chữ */
   --font: "Geist", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --fs-title: 22px;
-  --fs-figure: 40px;
+  --fs-figure: 36px;
+  --fs-title: 20px;
   --fs-section: 15px;
-  --fs-body: 14px;
-  --fs-small: 12px;
+  --fs-body: 15px;
+  --fs-small: 13px;
 }
 
 *,
@@ -67,16 +86,15 @@ body {
   color: var(--text);
   font-family: var(--font);
   font-size: var(--fs-body);
-  line-height: 20px;
+  line-height: 22px;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Mọi con số đều dùng chữ số đều nhau: số đếm ngược và tuổi tín hiệu đổi
-   mỗi giây, chữ số nhảy bề rộng sẽ làm cả dòng rung. */
 .clock__figure,
 .sign__age,
-.facts dd,
-.field--num {
+.field--num,
+.scan__samples {
   font-variant-numeric: tabular-nums;
 }
 
@@ -89,39 +107,54 @@ ul {
   margin: 0;
 }
 
+h1,
+h2 {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
 code {
   font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
   font-size: 0.92em;
-  background: var(--raised);
+  background: var(--sunken);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: 5px;
 }
 
 /* --------------------------------------------------------------------------
  * Khung trang
  * ----------------------------------------------------------------------- */
 
-.page {
+/* Dùng hết bề ngang: chỉ có lề hai bên, không có `max-width` cắt ngang. */
+.dash {
   display: flex;
   flex-direction: column;
   gap: var(--gap);
-  /* Fluid: một cặp lề bằng nhau, không có max-width cắt ngang. Giới hạn bề
-     rộng sẽ để lại một dải trống bên phải trên màn hình lớn - đúng lỗi mà
-     bản trước mắc phải. */
-  padding: 20px 24px 24px;
+  min-height: 100svh;
+  padding: 0 0 24px;
 }
 
-.topbar {
+/* --------------------------------------------------------------------------
+ * Thanh trên cùng
+ * ----------------------------------------------------------------------- */
+
+.bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--gap);
   flex-wrap: wrap;
-  padding-bottom: 14px;
-  border-bottom: 1px solid var(--border);
+  min-height: 60px;
+  padding: 8px clamp(14px, 2vw, 24px);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: saturate(1.4) blur(12px);
+  border-bottom: 1px solid var(--line);
 }
 
-.topbar__id {
+.bar__brand {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -132,139 +165,69 @@ code {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   flex: none;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  background: var(--surface);
-  color: var(--text);
+  border-radius: 50%;
+  background: var(--brand);
+  color: #ffffff;
 }
 
 .mark__lens {
-  /* Cùng màu mực với nét vẽ: màn hình chỉ có MỘT chỗ mang sắc xanh (thanh
-     tiến độ phiên học), nên dấu hiệu nhận biết cũng phải ở lại trong hệ mực. */
   fill: currentColor;
   stroke: none;
 }
 
-.topbar__text {
+.bar__titles {
   min-width: 0;
 }
 
 h1 {
   font-size: var(--fs-title);
-  line-height: 28px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+  line-height: 25px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.topbar__meta {
+.bar__meta {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   gap: 6px;
-  font-size: var(--fs-small);
-  line-height: 16px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  line-height: 17px;
   color: var(--muted);
 }
 
+.dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--positive);
+  box-shadow: 0 0 0 3px var(--positive-wash);
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+
+.dot[data-stale="1"] {
+  background: var(--warning);
+  box-shadow: 0 0 0 3px var(--warning-wash);
+}
+
 #updated {
-  color: var(--text);
+  color: var(--text-soft);
 }
 
-.topbar__sep {
-  color: var(--control);
+.bar__sep {
+  color: #b9bfc7;
 }
 
-.topbar__actions {
+.bar__actions {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-/* --------------------------------------------------------------------------
- * Lưới chính
- * ----------------------------------------------------------------------- */
-
-.board {
-  display: grid;
-  /* Hai cột bằng nhau: khung hình camera và bảng điều khiển có cùng trọng
-     lượng. Tỉ lệ 1,18 : 1 làm cột trái cao hơn cột phải 43px, để lại một
-     bậc thang ở đáy; chia đôi thì hai cột kết thúc gần như cùng một đường. */
-  grid-template-columns: 1fr 1fr;
-  gap: var(--gap);
-  align-items: start;
-}
-
-/* Hai cột là hai khối nội dung độc lập, mỗi khối xếp thẻ theo chiều cao thật
-   của nó. Không kéo giãn thẻ để hai cột bằng đáy: kéo giãn là cách sinh ra
-   dải trống bên trong thẻ, đúng thứ bản trước mắc phải. */
-.col {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap);
-  min-width: 0;
-}
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-card);
-  padding: 16px var(--pad) 18px;
-  min-width: 0;
-}
-
-.card__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 12px;
-}
-
-.card__head h2 {
-  font-size: var(--fs-section);
-  line-height: 20px;
-  font-weight: 600;
-  letter-spacing: 0;
-}
-
-.card__meta {
-  font-size: var(--fs-small);
-  line-height: 16px;
-  color: var(--muted);
-  flex: none;
-  font-variant-numeric: tabular-nums;
-}
-
-.card__disabled,
-.stale,
-.notice {
-  font-size: 13px;
-  line-height: 19px;
-  color: var(--muted);
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--raised);
-}
-
-.card__disabled {
-  color: var(--text);
-}
-
-.stale {
-  margin-top: 10px;
-  color: var(--warning);
-  border-color: #e8d9bd;
-  background: #fffdf7;
-}
-
-.notice {
-  color: var(--text);
-  border-color: var(--control);
 }
 
 /* --------------------------------------------------------------------------
@@ -276,59 +239,58 @@ h1 {
   align-items: center;
   justify-content: center;
   gap: 7px;
-  height: 36px;
-  padding: 0 12px;
-  border: 1px solid var(--control);
+  height: 38px;
+  padding: 0 14px;
+  border: 0;
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--raise);
   color: var(--text);
   font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 1;
   white-space: nowrap;
   cursor: pointer;
-  transition: background-color 120ms ease, border-color 120ms ease;
+  transition: background-color 140ms ease, color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .btn:hover:not(:disabled) {
-  background: #f7f8fa;
-  border-color: #bfc6cf;
+  background: var(--sunken);
 }
 
 .btn:active:not(:disabled) {
-  background: #eceff3;
+  background: #dde1e6;
 }
 
 .btn--primary {
-  background: #141414;
-  border-color: #141414;
+  background: var(--brand);
   color: #ffffff;
+  box-shadow: 0 1px 2px rgba(24, 119, 242, 0.35);
 }
 
 .btn--primary:hover:not(:disabled) {
-  background: #000000;
-  border-color: #000000;
+  background: var(--brand-strong);
+}
+
+.btn--primary:active:not(:disabled) {
+  background: #0b57b8;
 }
 
 .btn--quiet {
-  background: var(--raised);
-  border-color: var(--raised);
+  background: var(--raise);
+  color: var(--text-soft);
 }
 
 .btn--quiet:hover:not(:disabled) {
-  background: #e4e8ed;
-  border-color: #e4e8ed;
+  background: var(--sunken);
 }
 
 .btn:disabled {
   cursor: not-allowed;
-  /* #666c76 đạt 4,8:1 trên nền #f2f4f7. Nút mờ vẫn phải đọc được: người dùng
-     cần biết nút đó là "Dừng học" dù chưa bấm được, và bản mờ chỉ khác bằng
-     nền xám + con trỏ, không bằng chữ quá nhạt. */
-  color: #666c76;
-  background: #f2f4f7;
-  border-color: #e3e6ea;
+  color: #666d77;
+  background: var(--raise);
+  box-shadow: none;
 }
 
 .btn__icon {
@@ -340,7 +302,7 @@ h1 {
 
 .mute__slash {
   opacity: 0;
-  transition: opacity 120ms ease;
+  transition: opacity 140ms ease;
 }
 
 #mute-btn[data-muted="1"] .mute__slash {
@@ -352,138 +314,522 @@ h1 {
 }
 
 .btn--busy {
-  border-color: var(--accent);
+  box-shadow: inset 0 0 0 2px rgba(24, 119, 242, 0.55);
 }
 
 .field__label {
   display: block;
-  font-size: 13px;
-  line-height: 18px;
-  font-weight: 500;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-
-.field-block {
-  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--muted-strong);
 }
 
 .field {
-  height: 36px;
-  padding: 0 10px;
-  border: 1px solid var(--control);
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--raise);
   color: var(--text);
   font-family: inherit;
   font-size: var(--fs-body);
   width: 100%;
+  transition: border-color 140ms ease, background-color 140ms ease;
 }
 
 .field--num {
-  width: 84px;
-  text-align: right;
+  width: 78px;
+  text-align: center;
 }
 
 .field::placeholder {
-  color: #7a828d;
+  color: #8b8f95;
+}
+
+.field:hover:not(:disabled) {
+  border-color: #ccd2d9;
 }
 
 .field:focus-visible {
-  outline: 2px solid var(--text);
-  outline-offset: 1px;
-  border-color: var(--text);
+  outline: none;
+  border-color: var(--brand);
+  background: var(--surface);
+  box-shadow: 0 0 0 3px var(--brand-wash);
 }
 
 .field:disabled {
-  color: #666c76;
-  background: #f2f4f7;
+  color: #666d77;
+  background: var(--raise);
 }
 
 :focus-visible {
-  outline: 2px solid var(--text);
+  outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
 /* --------------------------------------------------------------------------
- * Xem trực tiếp
+ * Thẻ và khối dùng chung
  * ----------------------------------------------------------------------- */
 
-.camera {
-  display: flex;
-  flex-direction: column;
-  padding: 0;
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+  padding: 14px var(--pad) 16px;
+  min-width: 0;
 }
 
-.camera .card__head {
-  padding: 16px var(--pad) 0;
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
-.camera__frame {
-  position: relative;
-  /* Không ép tỉ lệ khung: camera thật 640 x 480 (4:3), nhưng nếu nguồn khác
-     tỉ lệ thì ép khung sẽ sinh dải đen hai bên. Khung cao đúng bằng hình nên
-     không có dải nào cả. Khi chưa có hình, phần thông báo tự dựng chiều cao. */
-  margin: 0 12px;
-  border-radius: var(--radius-control);
-  background: var(--screen);
-  overflow: hidden;
+.card__head h2 {
+  font-size: var(--fs-section);
+  line-height: 22px;
 }
 
-.camera__img {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.camera__note {
-  max-width: 46ch;
-  margin: 0 auto;
-  padding: 56px 24px;
-  font-size: 13px;
-  line-height: 20px;
-  color: #cfd5dd;
-}
-
-.camera__note code {
-  background: #1d232b;
-  color: #e8ebef;
-}
-
-.camera__foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding: 12px var(--pad) 16px;
-}
-
-.camera__label {
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.camera__hint {
+.card__disabled,
+.stale {
   font-size: var(--fs-small);
+  line-height: 20px;
+  color: var(--text-soft);
+  padding: 12px 14px;
+  border-radius: var(--radius-control);
+  background: var(--raise);
+}
+
+.stale {
+  margin: 0 clamp(14px, 2vw, 24px);
+  color: var(--warning);
+  background: var(--warning-wash);
+}
+
+#signals-disabled {
+  margin: 0 clamp(14px, 2vw, 24px);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  background: var(--raise);
+  color: var(--muted-strong);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.chip--quiet {
+  background: var(--brand-wash);
+  color: var(--brand-strong);
+}
+
+/* --------------------------------------------------------------------------
+ * Nhãn nhóm trong cột phải
+ * ----------------------------------------------------------------------- */
+
+.rail__group {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.rail__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 3px;
+}
+
+.rail__title {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
+}
+
+.rail__meta {
+  font-size: 11px;
   line-height: 16px;
   color: var(--muted);
 }
 
-.ptz {
+/* Ba tín hiệu xếp dọc trong cột phải, mỗi cái một hàng ngang gọn. */
+.signs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Ba tín hiệu xếp dọc: mỗi tín hiệu một hàng ngang, gọn hơn một tấm thẻ cao,
+   và cả ba vừa một lượt mắt trong cột hẹp. */
+.sign {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 13px;
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.sign__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--raise);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.sign__body {
+  min-width: 0;
+}
+
+.sign__label {
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sign__value {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.sign__age {
+  margin-top: 1px;
+  font-size: 11px;
+  line-height: 15px;
+  color: var(--muted);
+}
+
+/* Tín hiệu cũ: lùi về xám để mắt không đọc thành kết luận vừa đo. */
+.sign[data-fresh="false"] .sign__value,
+.sign[data-fresh="unknown"] .sign__value {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.sign[data-state="present"] .sign__icon,
+.sign[data-state="match"] .sign__icon {
+  background: var(--positive-wash);
+  color: var(--positive);
+}
+
+.sign[data-state="use"] .sign__icon,
+.sign[data-state="mismatch"] .sign__icon {
+  background: var(--negative-wash);
+  color: var(--negative);
+}
+
+/* --- Phiên học ---------------------------------------------------------- */
+
+.session {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 13px var(--pad) 15px;
+}
+
+.session__eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.session__eyebrow-text {
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.session__left {
+  min-width: 0;
+  /* Ngoài phiên, số đếm ngược chỉ là "–": ẩn cả nhóm cho tới khi có số thật,
+     để tấm thẻ không mang một dòng 40px trống. app.js bật lại bằng cách đặt
+     `data-live` khi phiên chạy. */
+  display: none;
+}
+
+.session__left[data-live="1"] {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.clock {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.clock__figure {
+  font-size: var(--fs-figure);
+  line-height: 40px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  color: var(--text);
+}
+
+.clock__unit {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--muted);
+}
+
+.clock__track {
+  position: relative;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  overflow: hidden;
+}
+
+.clock__fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: var(--radius-pill);
+  background: var(--brand);
+  transition: width 400ms linear;
+}
+
+.session__right {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.session__state {
+  font-size: var(--fs-small);
+  line-height: 19px;
+  color: var(--text-soft);
+}
+
+.session__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.session__controls .field__label {
+  flex: none;
+}
+
+.session__controls .btn {
+  flex: 1 1 auto;
+}
+
+/* --------------------------------------------------------------------------
+ * Khu chính: camera + cột phải
+ * ----------------------------------------------------------------------- */
+
+.main {
   display: grid;
-  grid-template-columns: repeat(3, 34px);
-  grid-template-rows: repeat(2, 34px);
+  /* Camera là nhân vật chính: cột trái rộng gấp ~1,8 lần cột phải. Cột phải
+     đủ rộng cho ba ô tín hiệu và các nút, nhưng không giành chỗ của hình. */
+  grid-template-columns: minmax(0, 1.8fr) minmax(330px, 1fr);
+  gap: var(--gap);
+  align-items: start;
+  padding: 0 clamp(14px, 2vw, 24px);
+  flex: 1;
+}
+
+.rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap);
+  min-width: 0;
+  height: 100%;
+}
+
+.rail > .card {
+  flex: 0 0 auto;
+}
+
+/* --------------------------------------------------------------------------
+ * Khung camera
+ * ----------------------------------------------------------------------- */
+
+.live {
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  min-width: 0;
+}
+
+.live__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 0 2px 10px;
+}
+
+.live__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  background: var(--negative-wash);
+  color: var(--negative);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.live__pulse {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.live__title {
+  font-size: var(--fs-section);
+  line-height: 22px;
+  margin-right: auto;
+}
+
+.live__frame {
+  position: relative;
+  /* Camera LẤP ĐẦY bề rộng cột, và chiều cao suy ra từ chính tỉ lệ nguồn thật
+     (app.js đặt `--frame-ratio` bằng naturalWidth/naturalHeight của khung đầu
+     tiên). Nhờ vậy không có dải đen hai bên.
+
+     KHÔNG đặt `max-height` ở đây: đo thật cho thấy bóp chiều cao trong khi giữ
+     bề rộng làm khung thành 962x665 trong khi ảnh 11:9 cần 962x787, và
+     `object-fit: contain` bù lại bằng hai dải đen ~74px mỗi bên. Thà trang
+     cuộn một chút còn hơn hình bị viền đen. */
+  width: 100%;
+  aspect-ratio: var(--frame-ratio, 4 / 3);
+  border-radius: 12px;
+  background: var(--screen);
+  overflow: hidden;
+}
+
+.live__img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Lời nhắn nằm trong khung hình khi chưa có ảnh. `position: absolute` phủ kín
+   khung để nó không đẩy khung cao lên; bề rộng do lớp bọc bên trong quyết
+   định (`max-width` đặt trên chính khối flex sẽ chia chữ thành nhiều cột). */
+.live__note {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+  font-size: var(--fs-small);
+  line-height: 21px;
+  color: #cdd4dd;
+}
+
+.live__note > * {
+  max-width: 42ch;
+}
+
+.live__note code {
+  background: #1d2430;
+  color: #e8ecf1;
+}
+
+/* Bảng xoay đè lên góc dưới phải khung hình. */
+.ptz {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: grid;
+  grid-template-columns: repeat(3, 36px);
+  grid-template-rows: repeat(2, 36px);
   gap: 4px;
+  padding: 5px;
+  border-radius: 13px;
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(8px);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.22);
 }
 
 .ptz__btn {
-  width: 34px;
-  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
   padding: 0;
-  font-size: 15px;
-  font-weight: 400;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
   color: var(--text);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.ptz__btn:hover:not(:disabled) {
+  background: var(--sunken);
+}
+
+.ptz__btn:active:not(:disabled) {
+  background: #d9dde2;
 }
 
 .ptz__btn[data-ptz-direction="up"] {
@@ -507,274 +853,87 @@ h1 {
 }
 
 /* --------------------------------------------------------------------------
- * Phiên học - khối lớn nhất của cột phải
- * ----------------------------------------------------------------------- */
-
-.session__state {
-  font-size: var(--fs-body);
-  line-height: 20px;
-  color: var(--text);
-}
-
-.session__state[data-running="1"] {
-  color: var(--text);
-}
-
-.clock {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 10px 0 12px;
-}
-
-.clock__figure {
-  font-size: var(--fs-figure);
-  line-height: 44px;
-  font-weight: 500;
-  letter-spacing: -0.02em;
-  color: var(--text);
-}
-
-.clock__unit {
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--muted);
-}
-
-/* Thanh tiến độ: đây là phần DUY NHẤT trên màn hình mang sắc xanh. Phần đã
-   trôi qua tô đặc; phần còn lại là rãnh xám. */
-.clock__track {
-  position: relative;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--raised);
-  overflow: hidden;
-}
-
-.clock__fill {
-  display: block;
-  height: 100%;
-  width: 0;
-  border-radius: 999px;
-  background: var(--accent);
-  transition: width 400ms linear;
-}
-
-.clock__ends {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 6px;
-  font-size: var(--fs-small);
-  line-height: 16px;
-  color: var(--muted);
-}
-
-.session__controls {
-  display: flex;
-  align-items: flex-end;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--rule);
-}
-
-.session__buttons {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.session__hint {
-  margin-top: 12px;
-  font-size: var(--fs-small);
-  line-height: 17px;
-  color: var(--muted);
-  max-width: 54ch;
-}
-
-/* --------------------------------------------------------------------------
- * Ba tín hiệu trạng thái học
- * ----------------------------------------------------------------------- */
-
-.signs {
-  padding-bottom: 10px;
-}
-
-.sign {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 10px;
-  padding: 11px 0;
-  border-top: 1px solid var(--rule);
-}
-
-.signs .card__head + .sign {
-  border-top: 0;
-  padding-top: 2px;
-}
-
-.sign__icon {
-  font-size: 12px;
-  line-height: 18px;
-  color: #7a8089;
-  text-align: center;
-}
-
-/* Cột giữa của một dòng tín hiệu: nhãn nhỏ ở trên, kết luận ở dưới. Cần
-   `min-width: 0` để chuỗi dài (tên người) cắt được thay vì đẩy tuổi tín hiệu
-   ra ngoài khung. */
-.sign__body {
-  min-width: 0;
-}
-
-.sign__label {
-  font-size: var(--fs-small);
-  line-height: 16px;
-  color: var(--muted);
-}
-
-.sign__value {
-  font-size: var(--fs-body);
-  line-height: 20px;
-  font-weight: 500;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-
-.sign__age {
-  font-size: var(--fs-small);
-  line-height: 16px;
-  color: var(--muted);
-  text-align: right;
-  white-space: nowrap;
-}
-
-/* Tín hiệu cũ: xám hết, để mắt không đọc thành kết luận vừa đo. */
-.sign[data-fresh="false"] .sign__value,
-.sign[data-fresh="unknown"] .sign__value {
-  color: var(--muted);
-  font-weight: 400;
-}
-
-/* Màu trạng thái chỉ đặt lên đúng dấu hiệu, và luôn có nhãn chữ đi kèm. */
-.sign[data-state="present"] .sign__icon {
-  color: var(--positive);
-}
-
-.sign[data-state="use"] .sign__icon {
-  color: var(--negative);
-}
-
-.sign[data-state="mismatch"] .sign__icon {
-  color: var(--negative);
-}
-
-.sign[data-state="match"] .sign__icon {
-  color: var(--positive);
-}
-
-/* --------------------------------------------------------------------------
  * Người học
  * ----------------------------------------------------------------------- */
 
 .people__actions {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  margin-bottom: 12px;
 }
 
-.card__head .people__actions {
+.people__actions .btn {
+  flex: 1 1 auto;
+}
+
+.who {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--raise);
+}
+
+.who__avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
   flex: none;
+  border-radius: 50%;
+  background: var(--brand-wash);
+  color: var(--brand-strong);
 }
 
-.facts {
-  border-top: 1px solid var(--rule);
+.who__body {
+  min-width: 0;
 }
 
-.facts__row {
-  display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 12px;
-  padding: 9px 0;
-  border-bottom: 1px solid var(--rule);
-}
-
-.facts dt {
-  font-size: var(--fs-small);
-  line-height: 18px;
+.who__label {
+  font-size: 11px;
+  line-height: 15px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   color: var(--muted);
 }
 
-.facts dd {
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--text);
-  text-align: right;
+.who__name {
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
-.people__form {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--rule);
-}
-
-.people__form-row {
+.people__schedule {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
-  flex-wrap: wrap;
-}
-
-.people__form-row .field {
-  flex: 1 1 140px;
-  width: auto;
-}
-
-.enroll {
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: #fbfcfd;
-}
-
-.enroll__who {
-  font-size: 13px;
-  line-height: 18px;
-  color: var(--muted);
-}
-
-.enroll__step {
-  margin-top: 4px;
-  font-size: var(--fs-body);
-  font-weight: 500;
-}
-
-.enroll__samples {
-  margin-top: 2px;
-  font-size: 13px;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.enroll .btn {
   margin-top: 10px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-soft);
+}
+
+.people__schedule-label {
+  flex: none;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.people__empty {
+  font-size: var(--fs-small);
+  line-height: 20px;
+  color: var(--muted);
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--raise);
 }
 
 .people__list-wrap {
   margin-top: 10px;
-}
-
-.people__empty {
-  font-size: 13px;
-  line-height: 19px;
-  color: var(--muted);
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
 }
 
 .people__list {
@@ -787,59 +946,73 @@ h1 {
   align-items: center;
   gap: 8px;
   padding: 8px 0;
-  border-top: 1px solid var(--rule);
+}
+
+.people__item + .people__item {
+  box-shadow: 0 -1px 0 var(--sunken);
 }
 
 .people__name {
   flex: 1;
   min-width: 0;
-  font-size: var(--fs-body);
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
 .people__item .btn {
   height: 30px;
-  font-size: 13px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .people__delete {
   color: var(--negative);
 }
 
+.people__delete:hover:not(:disabled) {
+  background: var(--negative-wash);
+}
+
 /* --------------------------------------------------------------------------
  * Giọng đọc cảnh báo
  * ----------------------------------------------------------------------- */
 
+/* Ba lựa chọn giọng xếp NGANG trong cột phải.
+
+   Xếp dọc thì thẻ này cao 269px cho ba dòng ngắn, và cả cột phải cao hơn khung
+   camera gần 200px — khoảng trống dưới hình đúng là thứ cần tránh. Ba lựa chọn
+   là ba câu ngắn ngang hàng, nên xếp ngang vừa đúng nghĩa vừa tiết kiệm chiều
+   cao. Hẹp quá thì tự xuống dòng (`auto-fit`). */
 .voice__options {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
   gap: 8px;
 }
 
 .voice__choice {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
+  padding: 9px 10px;
+  border: 1px solid transparent;
   border-radius: var(--radius-control);
-  background: var(--surface);
+  background: var(--raise);
   color: var(--text);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
+  transition: background-color 140ms ease, border-color 140ms ease;
 }
 
 .voice__choice:hover:not(:disabled) {
-  border-color: var(--control);
-  background: #fafbfc;
+  background: var(--sunken);
 }
 
 .voice__choice[aria-checked="true"] {
-  border-color: var(--text);
-  background: #fafbfc;
+  border-color: var(--brand);
+  background: var(--brand-wash);
 }
 
 .voice__choice:disabled {
@@ -849,35 +1022,67 @@ h1 {
 
 .voice__mark {
   flex: none;
-  font-size: 11px;
+  font-size: 10px;
   line-height: 20px;
   color: var(--muted);
 }
 
 .voice__choice[aria-checked="true"] .voice__mark {
-  color: var(--text);
+  color: var(--brand-strong);
 }
 
 .voice__label {
   display: block;
-  font-size: var(--fs-body);
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   line-height: 20px;
 }
 
 .voice__note {
   display: block;
-  font-size: var(--fs-small);
-  line-height: 17px;
+  font-size: 11px;
+  line-height: 16px;
   color: var(--muted);
 }
 
 .voice__status {
-  margin-top: 12px;
-  font-size: var(--fs-small);
-  line-height: 17px;
+  margin-top: 9px;
+  font-size: 11px;
+  line-height: 16px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* --------------------------------------------------------------------------
+ * An toàn dữ liệu
+ * ----------------------------------------------------------------------- */
+
+.privacy__list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.privacy__list li {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--muted);
+}
+
+.privacy__mark {
+  flex: none;
+  font-size: 9px;
+  color: var(--positive);
+}
+
+.privacy__list strong {
+  color: var(--text-soft);
+  font-weight: 600;
 }
 
 /* --------------------------------------------------------------------------
@@ -890,7 +1095,7 @@ h1 {
 
 .notes summary {
   padding: 13px var(--pad);
-  font-size: var(--fs-section);
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   list-style-position: inside;
@@ -901,44 +1106,558 @@ h1 {
 }
 
 .notes ul {
-  padding: 0 var(--pad) 16px 34px;
+  padding: 0 var(--pad) 15px 34px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
 }
 
 .notes li {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 19px;
   color: var(--muted);
 }
 
 .notes strong {
-  color: var(--text);
-  font-weight: 500;
+  color: var(--text-soft);
+  font-weight: 600;
 }
 
 .foot {
-  font-size: var(--fs-small);
-  line-height: 16px;
+  padding: 2px;
+  text-align: center;
+  font-size: 11px;
+  line-height: 17px;
   color: var(--muted);
-  padding: 2px 2px 0;
+}
+
+/* --------------------------------------------------------------------------
+ * Thông báo nổi
+ * ----------------------------------------------------------------------- */
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 60;
+  transform: translateX(-50%);
+  max-width: min(92vw, 460px);
+  padding: 13px 18px;
+  border-radius: var(--radius-control);
+  background: #1f2329;
+  color: #ffffff;
+  font-size: 14px;
+  line-height: 20px;
+  box-shadow: var(--shadow-lift);
+  animation: toast-in 180ms ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+/* --------------------------------------------------------------------------
+ * Hộp nổi (thêm người, chọn người)
+ * ----------------------------------------------------------------------- */
+
+.sheet,
+.scan {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(20, 24, 30, 0.55);
+  backdrop-filter: blur(3px);
+  animation: veil-in 180ms ease-out;
+}
+
+@keyframes veil-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.sheet__panel {
+  width: min(100%, 440px);
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 22px;
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+  animation: panel-in 200ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sheet__title {
+  font-size: 19px;
+  line-height: 26px;
+}
+
+.sheet__x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  border: 0;
+  border-radius: 50%;
+  background: var(--raise);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sheet__x:hover {
+  background: var(--sunken);
+}
+
+.sheet__lead {
+  font-size: var(--fs-small);
+  line-height: 20px;
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+.sheet__form .field {
+  margin-bottom: 16px;
+}
+
+.sheet__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sheet__actions .btn--primary {
+  flex: 1 1 auto;
+}
+
+.pick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.pick__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-control);
+  background: var(--raise);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--fs-body);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 140ms ease;
+}
+
+.pick__row:hover {
+  background: var(--sunken);
+}
+
+.pick__row[data-selected="1"] {
+  background: var(--brand-wash);
+}
+
+.pick__avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--brand-strong);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.pick__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.pick__state {
+  flex: none;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-strong);
+}
+
+.pick__remove {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pick__remove:hover {
+  background: var(--negative-wash);
+  color: var(--negative);
+}
+
+/* --------------------------------------------------------------------------
+ * Hộp quét khuôn mặt kiểu Face ID
+ * ----------------------------------------------------------------------- */
+
+.scan {
+  z-index: 50;
+  background: rgba(10, 14, 20, 0.72);
+}
+
+.scan__panel {
+  width: min(100%, 420px);
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  padding: 26px 24px 22px;
+  border-radius: 24px;
+  background: var(--surface);
+  box-shadow: var(--shadow-modal);
+  text-align: center;
+  animation: panel-in 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+.scan__kicker {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--brand-strong);
+}
+
+.scan__title {
+  margin-top: 4px;
+  font-size: 22px;
+  line-height: 30px;
+}
+
+.scan__viewport {
+  --scan-tone: var(--brand);
+  --scan-wash: var(--brand-wash);
+  --scan-progress: 0;
+
+  position: relative;
+  width: 240px;
+  height: 240px;
+  margin: 20px auto 0;
+  padding: 14px;
+}
+
+.scan__viewport[data-state="done"] {
+  --scan-tone: var(--positive);
+  --scan-wash: var(--positive-wash);
+}
+
+.scan__viewport[data-state="failed"] {
+  --scan-tone: var(--negative);
+  --scan-wash: var(--negative-wash);
+}
+
+.scan__halo {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 50% 45%,
+    var(--scan-wash) 0%,
+    rgba(255, 255, 255, 0) 68%
+  );
+}
+
+.scan__window {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 38%, #232a34 0%, #12171e 72%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.scan__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+
+.scan__face {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 58%;
+  height: 58%;
+  transform: translate(-50%, -50%);
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.scan__viewport[data-has-video="1"] .scan__face {
+  display: none;
+}
+
+/* Vệt sáng quét dọc: chuyển động DUY NHẤT của màn hình này, và nó nói đúng
+   một điều — hệ thống đang đọc. Một đường sáng mảnh, sắc, đi cùng một vệt mờ
+   ngay phía sau nó; đó là cách máy quét thật hiện ra, và nó không biến khung
+   hình camera thành một mảng xanh. Khi quét xong hoặc lỗi thì nó dừng. */
+.scan__sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--scan-tone);
+  box-shadow: 0 0 12px 2px var(--scan-tone);
+  animation: sweep 2.2s cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* Vệt mờ đi sau đường sáng. `::before` để đường sáng luôn nằm trên vệt mờ, và
+   cả hai cùng một phần tử nên chỉ một lần khai báo animation là đủ. */
+.scan__sweep::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 2px;
+  height: 72px;
+  background: linear-gradient(
+    to top,
+    rgba(24, 119, 242, 0.3) 0%,
+    rgba(24, 119, 242, 0) 100%
+  );
+}
+
+.scan__viewport[data-state="done"] .scan__sweep::before {
+  background: linear-gradient(
+    to top,
+    rgba(21, 128, 61, 0.3) 0%,
+    rgba(21, 128, 61, 0) 100%
+  );
+}
+
+@keyframes sweep {
+  0% {
+    transform: translateY(18%);
+    opacity: 0;
+  }
+  14% {
+    opacity: 1;
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(228px);
+    opacity: 0;
+  }
+}
+
+.scan__viewport[data-state="done"] .scan__sweep,
+.scan__viewport[data-state="failed"] .scan__sweep,
+.scan__viewport[data-state="starting"] .scan__sweep {
+  animation: none;
+  opacity: 0;
+}
+
+/* Vòng tiến độ: rãnh mảnh + cung đậm chạy theo số mẫu đã thu. */
+.scan__ring {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+  pointer-events: none;
+}
+
+.scan__track,
+.scan__bar {
+  fill: none;
+  stroke-width: 5;
+}
+
+.scan__track {
+  stroke: rgba(255, 255, 255, 0.22);
+}
+
+.scan__bar {
+  stroke: var(--scan-tone);
+  stroke-linecap: round;
+  /* Chu vi vòng r = 56 là 2πr ≈ 351,86. */
+  stroke-dasharray: 351.86;
+  stroke-dashoffset: 351.86;
+  transition: stroke-dashoffset 420ms ease, stroke 220ms ease;
+}
+
+.scan__corners {
+  position: absolute;
+  inset: 8px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  pointer-events: none;
+}
+
+.scan__badge {
+  position: absolute;
+  left: 50%;
+  bottom: -14px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  background: var(--scan-tone);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.16);
+  transition: background-color 220ms ease;
+}
+
+.scan__who {
+  margin-top: 30px;
+  font-size: var(--fs-small);
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.scan__who strong {
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.scan__step {
+  margin-top: 6px;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 600;
+  color: var(--text);
+  min-height: 26px;
+}
+
+.scan__steps {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.scan__step-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sunken);
+  transition: background-color 200ms ease, box-shadow 200ms ease;
+}
+
+.scan__step-dot[data-done="1"] {
+  background: var(--positive);
+}
+
+.scan__step-dot[data-current="1"] {
+  background: var(--brand);
+  box-shadow: 0 0 0 4px var(--brand-wash);
+}
+
+.scan__samples {
+  margin-top: 12px;
+  font-size: var(--fs-small);
+  line-height: 20px;
+  color: var(--muted);
+}
+
+.scan__hint {
+  margin-top: 10px;
+  font-size: var(--fs-small);
+  line-height: 20px;
+  color: var(--muted);
+  min-height: 40px;
+}
+
+.scan__actions {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.scan__actions .btn {
+  min-width: 128px;
+}
+
+/* Trạng thái lỗi: câu hướng dẫn chuyển sang màu đỏ để khớp vòng tròn, nhưng
+   chữ vẫn nói rõ phải làm gì (không chỉ "thất bại"). */
+.scan__viewport[data-state="failed"] ~ .scan__hint {
+  color: var(--negative);
 }
 
 /* --------------------------------------------------------------------------
  * Trạng thái ẩn
  * ----------------------------------------------------------------------- */
 
-/* Giữ lại từ thời trang còn biểu đồ tư thế: `.chart-empty` đặt display riêng
-   nên đè `[hidden]` của trình duyệt, và dòng "Chưa có số liệu." vẽ đè lên
-   khung. Trang hiện không còn biểu đồ, nhưng quy tắc dưới đây vẫn là quy tắc
-   đúng cho mọi khối "rỗng" sau này. */
 .chart-empty[hidden] {
   display: none;
 }
 
-/* `hidden` phải thắng mọi display khai báo sau nó (ảnh camera, form, danh
-   sách đều bật/tắt bằng thuộc tính này từ app.js). */
+/* `hidden` phải thắng mọi display khai báo sau nó. */
 [hidden] {
   display: none !important;
 }
@@ -947,52 +1666,57 @@ h1 {
  * Màn hẹp
  * ----------------------------------------------------------------------- */
 
-/* Dưới 1320px thì hai cột không còn cân: cột trái (khung hình co theo bề
-   rộng) ngắn hơn cột phải cả trăm pixel, để lộ một bậc thang ở đáy. Ở đó bung
-   thành một cột, đúng thứ tự đọc như trên điện thoại. */
-@media (max-width: 1320px) {
-  .board {
-    grid-template-columns: 1fr;
+/* Dưới 1180px: cột phải xuống dưới camera, và các thẻ của nó xếp hai cột. */
+@media (max-width: 1180px) {
+  .main {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  /* Trên một cột, thứ tự đọc phải là: khung hình, tín hiệu, phiên học, người
-     học, giọng đọc. Hai cột gốc đang là (hình + người học) | (tín hiệu +
-     phiên học + giọng), nên khi bung ra phải đặt lại thứ tự cho từng thẻ. */
-  .col {
-    display: contents;
+  .rail {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--gap);
+    height: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  .rail {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .col--view,
-  .col--run {
-    display: contents;
+  .sign {
+    align-items: center;
+    padding: 10px 12px;
   }
-
-  #camera-card { order: 1; }
-  #status-card { order: 2; }
-  #session-card { order: 3; }
-  #people-card { order: 4; }
-  #voice-card { order: 5; }
 }
 
 @media (max-width: 620px) {
-  .page {
-    padding: 16px 16px 20px;
+  :root {
+    --fs-figure: 32px;
+    --gap: 10px;
+    --pad: 14px;
+  }
+
+  .bar {
+    padding: 8px 12px;
+    min-height: 56px;
   }
 
   h1 {
-    font-size: 20px;
-    line-height: 26px;
+    font-size: 17px;
+    line-height: 22px;
   }
 
-  .topbar {
-    align-items: flex-start;
+  .bar__device {
+    display: none;
   }
 
-  .topbar__actions {
+  .bar__actions {
     width: 100%;
   }
 
-  .topbar__actions .btn {
+  .bar__actions .btn {
     flex: 1 1 auto;
   }
 
@@ -1002,11 +1726,36 @@ h1 {
     height: 44px;
   }
 
-  .field--num {
-    width: 96px;
+  .main {
+    padding-left: 12px;
+    padding-right: 12px;
   }
 
+  .stale,
+  #signals-disabled {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
+  .live {
+    padding: 10px;
+    border-radius: 18px;
+  }
+
+  .live__title {
+    font-size: 14px;
+  }
+
+  /* Khung hình không còn chỗ đặt bảng xoay đè lên: đưa bảng ra dưới hình,
+     canh phải, để không che mất người ngồi trong khung. */
   .ptz {
+    position: static;
+    justify-content: flex-end;
+    margin: 10px 0 0 auto;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    padding: 0;
     grid-template-columns: repeat(3, 44px);
     grid-template-rows: repeat(2, 44px);
   }
@@ -1014,45 +1763,39 @@ h1 {
   .ptz__btn {
     width: 44px;
     height: 44px;
+    background: var(--raise);
     font-size: 17px;
   }
 
-  .camera__frame {
-    margin: 0 8px;
-  }
-
-  .clock__figure {
-    font-size: 34px;
-    line-height: 38px;
-  }
-
-  .session__controls {
-    align-items: stretch;
-  }
-
-  .session__buttons {
+  .session__controls .btn {
     flex: 1 1 100%;
   }
 
-  .session__buttons .btn {
-    flex: 1 1 auto;
+  .scan__panel {
+    padding: 22px 18px 18px;
   }
 
-  .facts__row {
-    grid-template-columns: 1fr;
-    gap: 2px;
+  .scan__viewport {
+    width: 208px;
+    height: 208px;
+  }
+}
+
+/* Màn hình rất thấp (điện thoại nằm ngang): thu vòng quét lại để nút Huỷ /
+   Quét lại vẫn nằm trong tầm mắt, không phải cuộn. */
+@media (max-height: 640px) and (max-width: 900px) {
+  .scan__viewport {
+    width: 168px;
+    height: 168px;
+    margin-top: 12px;
   }
 
-  .facts dd {
-    text-align: left;
+  .scan__who {
+    margin-top: 22px;
   }
 
-  .card__head {
-    flex-wrap: wrap;
-  }
-
-  .people__item .btn {
-    height: 36px;
+  .scan__hint {
+    min-height: 0;
   }
 }
 
@@ -1062,5 +1805,10 @@ h1 {
   *::after {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .scan__sweep {
+    display: none;
   }
 }

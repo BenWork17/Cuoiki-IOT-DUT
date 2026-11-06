@@ -40,6 +40,7 @@ _TEMPLATE = (
     _REPO_ROOT / "src" / "posture_monitor" / "web" / "templates" / "index.html"
 )
 _APP_JS = _REPO_ROOT / "src" / "posture_monitor" / "web" / "static" / "app.js"
+_CSS = _REPO_ROOT / "src" / "posture_monitor" / "web" / "static" / "style.css"
 
 
 # ---------------------------------------------------------------------------
@@ -630,6 +631,186 @@ def test_template_co_cho_hien_tuoi_tin_hieu(client):
     for kind in ("presence", "phone", "identity"):
         assert f'data-sign="{kind}"' in html
         assert f'id="sign-{kind}-age"' in html
+
+
+# ---------------------------------------------------------------------------
+# Hộp quét khuôn mặt kiểu Face ID (yêu cầu: thêm người phải quét mặt, sai thì
+# quét lại)
+# ---------------------------------------------------------------------------
+def test_trang_chu_co_hop_quet_khuon_mat_day_du(client):
+    """Hộp quét phải có đủ mọi mẩu mà app.js bám vào để vẽ tiến độ."""
+    html = client.get("/").get_data(as_text=True)
+    for element_id in (
+        "scan",
+        "scan-viewport",
+        "scan-progress",
+        "scan-badge",
+        "scan-steps",
+        "scan-hint",
+        "enroll-step",
+        "enroll-samples",
+        "enroll-name",
+        "enroll-panel",
+        "enroll-cancel-btn",
+        "scan-retry-btn",
+        "scan-close-btn",
+    ):
+        assert f'id="{element_id}"' in html, f"hộp quét thiếu #{element_id}"
+
+
+def test_hop_quet_can_giua_bang_lop_phu_kin_man_hinh(client):
+    """Hộp quét phải là lớp phủ toàn màn hình, không phải một thẻ trong trang.
+
+    Một hộp nằm trong luồng tài liệu sẽ bị đẩy xuống dưới các thẻ khác, và
+    người dùng phải cuộn mới thấy — trong khi nó đang chờ họ đưa mặt vào.
+    """
+    html = client.get("/").get_data(as_text=True)
+    assert 'class="scan"' in html
+    css = client.get("/static/style.css").get_data(as_text=True)
+    rule = css.split(".sheet,\n.scan {", 1)
+    assert len(rule) == 2, "không tìm thấy luật bố cục chung của hộp nổi"
+    block = rule[1].split("}", 1)[0]
+    assert "position: fixed" in block, "hộp nổi không cố định trên khung nhìn"
+    assert "inset: 0" in block, "hộp nổi không phủ kín khung nhìn"
+
+
+def test_nut_quet_lai_an_cho_toi_khi_quet_that_bai(client):
+    """Nút "Quét lại" phải có sẵn trong HTML nhưng ẩn: nó là lối thoát khi
+    quét sai, và không được hiện khi chưa có gì để quét lại."""
+    html = client.get("/").get_data(as_text=True)
+    start = html.index('id="scan-retry-btn"')
+    tag = html[start : html.index(">", start)]
+    assert "hidden" in tag, f"nút Quét lại phải ẩn sẵn; thẻ thật: {tag!r}"
+
+
+def test_app_js_quet_lai_tao_phien_dang_ky_moi():
+    """§5.13 + yêu cầu "quét sai thì quét lại": bấm Quét lại phải mở một phiên
+    MỚI ở máy chủ.
+
+    Chỉ gọi lại ``pollEnroll`` sẽ hỏi mãi một phiên đã ``failed``: máy chủ không
+    bao giờ chuyển nó về ``running``, nên hộp quét đứng im ở "quét không đạt"
+    dù người dùng đã làm đúng. Test soát đúng nhánh đó.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    anchor = script.index('els.scanRetry.addEventListener("click"')
+    # Cắt tới cuối khối đăng ký listener (dấu ``});`` đầu tiên ở cùng mức).
+    body = script[anchor : anchor + 400]
+    assert "startEnroll(" in body, (
+        "Quét lại không mở phiên mới; phiên cũ đã failed nên sẽ không bao giờ "
+        f"chạy lại. Thân thật: {body[:200]!r}"
+    )
+
+
+def test_app_js_bao_ket_qua_quet_xong_va_quet_khong_dat():
+    """Ba trạng thái của hộp quét phải có chữ riêng, không dùng chung một câu.
+
+    "Đã quét xong" và "Quét không đạt" là hai kết luận trái ngược; dùng một
+    nhãn cho cả hai thì người dùng không biết đã đăng ký được chưa.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+    assert 'data-state' in script or "dataset.state" in script
+    assert "Đã quét xong" in script
+    assert "Quét không đạt" in script
+
+    # Hàm đổi trạng thái phải đặt cả ``data-state`` cho CSS và nhãn chữ, để
+    # màu và chữ luôn khớp nhau.
+    start = script.index("function setScanState(")
+    body = script[start : script.index("\n  }", start)]
+    assert "dataset.state" in body, "setScanState không đặt data-state"
+    assert "scanBadge" in body, "setScanState không đổi nhãn chữ"
+
+
+def test_app_js_khong_dong_hop_quet_khi_bam_ra_ngoai():
+    """Bấm trượt ra ngoài không được huỷ phiên đang quét.
+
+    Trên điện thoại, một cú chạm trượt là chuyện thường; nếu nó đóng hộp thì
+    người dùng mất luôn lần đăng ký đang chạy giữa chừng. Hai hộp kia (nhập
+    tên, chọn người) thì đóng được vì không giữ trạng thái gì.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+    start = script.index("[els.addSheet, els.pickSheet].forEach")
+    body = script[start : script.index("});", start)]
+    assert "els.scan" not in body, (
+        "hộp quét bị đưa vào danh sách đóng-khi-bấm-ra-ngoài"
+    )
+
+
+def test_app_js_khong_con_cham_dang_quet_khi_phien_dung():
+    """Xong hoặc hỏng thì không chấm nào còn là "bước đang làm".
+
+    Chấm xanh của bước hiện tại chỉ có nghĩa khi hệ thống còn quét. Để nó lại
+    trên màn hình "Quét không đạt" là câu trả lời sai: mắt đọc thành "vẫn đang
+    chạy" trong khi máy chủ đã dừng phiên.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+    assert "function markStepsStopped()" in script, (
+        "thiếu hàm bỏ dấu bước-đang-làm khi phiên dừng"
+    )
+    start = script.index("function markStepsStopped()")
+    body = script[start : script.index("\n  }", start)]
+    assert 'dataset.current = "0"' in body, (
+        "markStepsStopped không xoá dấu bước đang làm"
+    )
+
+    # Nhánh thất bại phải gọi nó, nếu không hàm này chỉ là mã chết.
+    fail_start = script.index('if (state === "failed") {')
+    fail_body = script[fail_start : fail_start + 700]
+    assert "markStepsStopped()" in fail_body, (
+        "nhánh quét không đạt không bỏ dấu bước đang làm"
+    )
+
+
+def test_app_js_khong_cho_man_hinh_khung_dau_tien():
+    """Luồng MJPEG không bao giờ kết thúc nên ``load`` có thể không bắn.
+
+    Đã gặp thật khi chạy trên laptop: server trả khung 704x576 đúng, ảnh đã
+    tải xong (``naturalWidth = 704``), nhưng trang vẫn đứng ở "Đang kết nối
+    tới camera…" vì ``hidden`` chỉ được bỏ trong handler ``load`` — mà Chromium
+    không bắn ``load`` cho một response không bao giờ đóng. Phải có đường kiểm
+    tra theo nhịp dựa trên ``naturalWidth``.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    start = script.index("function setupCamera()")
+    body = script[start : script.index("\n  }\n", start)]
+
+    # Phải có một bộ đếm thật sự chạy (không bị vô hiệu hoá) và nó phải được
+    # gán cho một biến để còn xoá được khi khung tới.
+    assert "window.setInterval(" in body, (
+        "setupCamera không có đường chờ khung đầu tiên; trang sẽ đứng ở "
+        "'Đang kết nối tới camera…' khi MJPEG không bắn load"
+    )
+    assert "0 &&" not in body, "bộ đếm chờ khung bị vô hiệu hoá"
+    assert "clearInterval(" in body, (
+        "bộ đếm chờ khung không được xoá sau khi khung tới; nó sẽ chạy suốt "
+        "thời gian trang mở"
+    )
+    assert "naturalWidth" in body, (
+        "đường chờ không dựa trên naturalWidth nên không biết khung đã tới"
+    )
+
+
+def test_app_js_dat_ti_le_khung_theo_nguon_that():
+    """Khung hình không được ép cứng 4:3.
+
+    Camera thật đang chạy là 704x576 (11:9). Ép khung 4:3 rồi đặt ảnh 11:9
+    vào trong (``object-fit: contain``) sinh ra hai dải đen hai bên — đã thấy
+    đúng như vậy trên ảnh chụp màn hình thật. Tỉ lệ khung phải lấy từ
+    ``naturalWidth/naturalHeight`` của khung đầu tiên.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+    assert "function matchFrameRatio()" in script, "thiếu hàm đặt tỉ lệ khung"
+    body = script[script.index("function matchFrameRatio()") :][:500]
+    assert "naturalWidth" in body and "naturalHeight" in body
+    assert "--frame-ratio" in body, "không đặt biến CSS tỉ lệ khung"
+
+    css = _CSS.read_text(encoding="utf-8")
+    start = css.index(".live__frame {")
+    block = css[start : css.index("}", start)]
+    assert "var(--frame-ratio" in block, (
+        ".live__frame vẫn ép một tỉ lệ cứng thay vì đọc --frame-ratio"
+    )
 
 
 def _stream_config():

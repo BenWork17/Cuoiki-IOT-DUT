@@ -27,6 +27,7 @@ from __future__ import annotations
 import functools
 import threading
 import time
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from flask import Flask, Response, jsonify, render_template, request
@@ -412,6 +413,11 @@ def create_app(
             ),
             session_min_minutes=SESSION_MIN_MINUTES,
             session_max_minutes=SESSION_MAX_MINUTES,
+            #: Phiên bản tài nguyên tĩnh, gắn vào URL của CSS/JS (xem
+            #: ``_static_version``). Không có nó, người dùng sửa CSS xong chạy
+            #: lại vẫn thấy giao diện cũ vì trình duyệt dùng bản trong cache —
+            #: đúng hiện tượng "chạy code mà vẫn ra giao diện cũ".
+            asset_version=_static_version(),
         )
 
     @app.get("/api/status")
@@ -1047,6 +1053,33 @@ def _json_error(message: str, status: int) -> Response:
     response = jsonify({"ok": False, "message": message})
     response.status_code = status
     return response
+
+
+def _static_version() -> str:
+    """Dấu phiên bản của CSS/JS, gắn vào URL để trình duyệt tải bản mới.
+
+    Một lỗi thật đã gặp: sửa ``style.css`` rồi chạy lại, trang vẫn hiện giao
+    diện cũ. Nguyên nhân là trình duyệt dùng bản trong cache — rất khó đoán
+    với người đang phát triển, vì mã nguồn trên đĩa và HTML đều đã đúng.
+
+    Dấu này là mốc sửa đổi mới nhất của các tệp tĩnh, nên mỗi lần sửa CSS/JS
+    là URL đổi theo và trình duyệt buộc phải tải lại. Không đọc nội dung tệp
+    (không cần băm): mốc thời gian là đủ, và rẻ hơn nhiều cho Pi.
+
+    Không bao giờ ném: thiếu tệp (ví dụ khi đóng gói thiếu static) thì trả
+    ``"0"`` — trang vẫn chạy, chỉ là mất tác dụng chống cache.
+    """
+    static_dir = Path(__file__).resolve().parent / "static"
+    newest = 0.0
+    try:
+        for name in ("style.css", "app.js", "fonts.css"):
+            try:
+                newest = max(newest, (static_dir / name).stat().st_mtime)
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001 - không được làm sập trang chủ
+        return "0"
+    return str(int(newest)) if newest else "0"
 
 
 def run_server(app: Flask, config=None, **kwargs) -> None:

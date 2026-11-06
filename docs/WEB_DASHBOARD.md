@@ -149,6 +149,28 @@ Dữ liệu cũ hơn `retention_days` bị xoá bởi `cleanup_retention()`.
 | `POST /api/mute` | JSON | Đảo tiếng; hoặc `{"muted": true\|false}` để đặt thẳng |
 | `GET /stream` | MJPEG | Chỉ khi `web.stream_enabled: true`, ngược lại 403 |
 
+Người học và phiên học (spec v3 §5.16). Mọi route người học trả **503** kèm câu
+tiếng Việt khi phiên chạy không được tiêm dịch vụ người học:
+
+| Route | Kiểu | Mô tả |
+|---|---|---|
+| `GET /api/people` | JSON | Danh sách `{id, name, created_ts}` + người đang chọn. **Không có vector** |
+| `POST /api/people` | JSON | `{"name": "..."}` → 201 + `enroll_id` + năm bước hướng dẫn |
+| `DELETE /api/people/<id>` | JSON | Xoá người học (bản ghi + vector); 404 nếu không có |
+| `GET /api/enroll/<id>` | JSON | Tiến độ quét: `state`, `step_index`, `step_name`, `samples`, `samples_needed`, `error` |
+| `POST /api/enroll/<id>/cancel` | JSON | Huỷ phiên quét; không ghi gì thêm |
+| `POST /api/select` | JSON | `{"person_id": "..."}` hoặc `null` để bỏ chọn |
+| `GET /api/signals` | JSON | Ba tín hiệu presence/phone/identity kèm `age_s` và `fresh` |
+| `GET /api/schedule` | JSON | Khung giờ học hiện tại |
+| `PUT /api/schedule` | JSON | Ghi khung giờ học; payload sai → 400 kèm câu tiếng Việt |
+| `GET /api/session` | JSON | Trạng thái phiên học + thời lượng mặc định |
+| `POST /api/session/start` | JSON | Bắt đầu phiên; thân tuỳ chọn `{"minutes": 60}` |
+| `POST /api/session/stop` | JSON | Dừng phiên và tắt model AI |
+
+`state` của một phiên quét là `running` / `done` / `cancelled` / `failed` — chỉ
+máy chủ quyết định, giao diện không tự suy. **Không route nào trả embedding hay
+vector** (spec §5.13.1, §8.3), kể cả khi dịch vụ lỡ trả kèm.
+
 `/api/history` trả `has_data` và `message` tiếng Việt khi chưa có số liệu, nên
 UI không phải tự đoán.
 
@@ -176,19 +198,64 @@ web:
 
 ## 6. Giao diện
 
-- Bố cục một cột, `viewport` cho điện thoại, nút cao ≥ 52 px để bấm bằng ngón
-  tay, chữ lớn đọc được khi ngồi cách máy.
+Hướng thiết kế: **bảng tin sáng** — nền xám lạnh rất nhạt (`#f0f2f5`), thẻ trắng
+bo góc lớn, một sắc xanh duy nhất (`#1877f2`) làm nhấn. Phân cấp bằng khoảng
+trắng và bóng đổ nhẹ, không bằng đường kẻ dày.
+
+- **Khung camera nằm chính giữa màn hình đầu tiên** và là phần tử lớn nhất của
+  trang. Một cột nội dung hẹp (tối đa 808 px) canh giữa, nên camera, ba tín
+  hiệu và mọi thẻ phụ nằm trên cùng một trục dọc. Khung giữ tỉ lệ 4:3 và có
+  `object-fit: contain`, nên nguồn ảnh tỉ lệ khác không bị cắt mất người.
+  Trên màn hình thấp, bề rộng khung còn bị chặn theo chiều cao để camera vẫn
+  nằm trong khung nhìn thay vì cao hơn màn hình.
+- Bốn nút xoay camera đè lên góc dưới khung hình; trên điện thoại chúng rời
+  xuống dưới hình để không che người ngồi trong khung.
+- Ba tín hiệu "Trạng thái học" là ba tấm thẻ ngang hàng trên màn rộng, xếp dọc
+  trên điện thoại.
 - Trạng thái truyền đạt bằng **màu + biểu tượng + chữ**, không chỉ bằng màu.
-- Biểu đồ cột tỉ lệ tư thế đúng; có tab "Hôm nay" / "7 ngày", bảng số liệu thay
-  thế (`<details>`) cho trình đọc màn hình và khi cần số chính xác.
-- Sáng/tối theo `prefers-color-scheme`, mỗi chế độ có bảng màu riêng.
+  Tín hiệu cũ luôn nói "chưa có dữ liệu mới" thay vì lặp lại kết luận cũ.
+- Chỉ có **chế độ sáng** (`color-scheme: light`): trình duyệt điện thoại không
+  tự đảo nền trắng thành đen sau lưng bảng màu này.
+- Nút cao ≥ 44 px trên điện thoại; `prefers-reduced-motion` được tôn trọng
+  (vệt quét và mọi chuyển động bị tắt).
 - **Chart.js 4.4.7 nằm cục bộ** trong `web/static/chart.umd.min.js` (spec
-  §5.10): Pi có thể không có Internet. Không có tham chiếu CDN nào trong HTML.
-  Nếu vì lý do nào đó `window.Chart` không có, `app.js` tự vẽ biểu đồ bằng SVG
-  thuần để trang vẫn dùng được.
+  §5.10): Pi có thể không có Internet. Trang hiện không dùng biểu đồ (đề tài đã
+  bỏ nhận diện tư thế) nhưng tệp vẫn để nguyên, không có tham chiếu CDN nào.
 - Favicon là `data:` URI nhúng trong HTML nên không phát sinh request mạng.
 
-Cập nhật: trạng thái mỗi 1 giây, số liệu biểu đồ mỗi 30 giây.
+Cập nhật: trạng thái mỗi 1 giây, phiên học mỗi 1 giây.
+
+### 6.1 Thêm người bằng quét khuôn mặt (kiểu Face ID)
+
+Bấm **Thêm người** → nhập tên → bấm **Tiếp tục: quét khuôn mặt**. Hệ thống mở
+một hộp quét phủ kín màn hình với vòng tròn ở giữa; năm bước hướng dẫn
+(nhìn thẳng → quay phải → quay trái → ngẩng → cúi) hiện lần lượt, mỗi bước một
+chấm dưới vòng tròn.
+
+Hộp quét có đúng ba trạng thái, mỗi trạng thái một màu và một câu chữ riêng:
+
+| Trạng thái | Vòng quét | Nhãn | Làm được gì |
+|---|---|---|---|
+| Đang quét | xanh dương, có vệt quét | "Đang quét" | Huỷ |
+| Xong | xanh lá, đầy vòng | "Đã quét xong" | Đóng (tự đóng sau ~2 giây) |
+| Không đạt | đỏ | "Quét không đạt" | **Quét lại** hoặc Đóng |
+
+Khi camera đang bật stream, khung hình thật được cắt tròn bên trong vòng quét
+để người dùng thấy đúng chỗ đặt mặt. Kết nối MJPEG đó chỉ mở trong lúc hộp quét
+hiện, và đóng lại khi hộp đóng — không giữ một luồng sống thường trực.
+
+**Quét không đạt thì quét lại.** Bấm "Quét lại" mở **một phiên đăng ký mới** ở
+máy chủ (không hỏi lại phiên đã `failed`, vì máy chủ không bao giờ chuyển một
+phiên đã hỏng về `running`). Câu lỗi của máy chủ được hiện nguyên văn và nói rõ
+đã thu được bao nhiêu mẫu trên bao nhiêu.
+
+Máy chủ là bên duy nhất quyết định phiên đã xong hay hỏng; giao diện chỉ đọc
+`GET /api/enroll/<id>` rồi vẽ lại. Nhờ vậy không có chuyện giao diện báo "đã
+đăng ký" trong khi kho khuôn mặt chưa ghi gì.
+
+Kho khuôn mặt chỉ giữ **vector đặc trưng**, tên và thời điểm — không lưu ảnh
+khuôn mặt, và khung hình trong hộp quét không bao giờ được ghi ra đĩa
+(spec §5.13.1, §11.5).
 
 ---
 

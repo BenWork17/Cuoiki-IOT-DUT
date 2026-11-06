@@ -60,6 +60,17 @@ desktop.ini
 .idea/
 .vscode/
 
+# Thư mục nháp của công cụ/phiên làm việc. Phải chặn trước phần "Lưới an toàn"
+# bên dưới, và phải chặn vì đã có thư mục chứa BÍ MẬT thật trong đó:
+#   .deploy/pi.py   chứa mật khẩu SSH của Raspberry Pi
+#   test.py         chứa mật khẩu tài khoản camera IP
+# Commit chúng là đẩy mật khẩu lên remote, và xoá khỏi lịch sử sau đó rất phiền.
+/.deploy/
+/.live-shot/
+/.scratch/
+/.preserved-worktrees/
+/test.py
+
 # Lưới an toàn (phải nằm CUỐI file, sau mọi mẫu loại trừ): spec §9 và §13
 # bắt buộc commit video mẫu + expected.json. Negation chỉ hiệu lực vì thư mục
 # cha tests/ không bị loại trừ — "/data/" không khớp "tests/data/".
