@@ -152,6 +152,89 @@ code {
   background: rgba(255, 255, 255, 0.94);
   backdrop-filter: saturate(1.4) blur(12px);
   border-bottom: 1px solid var(--line);
+  /* Hai trạng thái của thanh: "cuộn xuống" thì trượt lên khỏi màn hình (vẫn
+     chiếm chỗ trong luồng nên không có dải trống nào lộ ra — trang đã cuộn,
+     nội dung đang nằm ngay dưới nó), còn "ẩn hẳn" theo yêu cầu thì bỏ khỏi
+     luồng để nội dung lên sát đỉnh. */
+  transition: transform 220ms cubic-bezier(0.2, 0.9, 0.3, 1);
+  will-change: transform;
+}
+
+/* Cuộn xuống: thanh trượt lên khỏi màn hình; cuộn lên lại là hiện ra — như
+ * thanh địa chỉ của trình duyệt di động. Chỉ trượt khi trang đã cuộn quá
+ * ngưỡng (app.js), nên phần nội dung bị lộ ra luôn là nội dung thật.
+ *
+ * `data-bar` do app.js đặt trên <body>; không có JS (hoặc lỗi) thì thuộc tính
+ * vắng mặt và thanh đứng yên — giao diện vẫn dùng được, chỉ là không có hiệu
+ * ứng ẩn. */
+body[data-bar="scrolled"] .bar {
+  transform: translateY(-100%);
+}
+
+/* Ẩn hẳn theo yêu cầu: bỏ khỏi luồng, nội dung lên sát đỉnh ngay. Cố ý không
+ * làm mượt bằng chiều cao: đó là kiểu "đo chiều cao thật rồi bù margin" rất dễ
+ * lệch khi thanh xuống dòng trên màn hẹp, mà lợi ích thị giác thì không đáng.
+ * Việc bấm nút là một hành động dứt khoát, nên phản hồi dứt khoát là đúng. */
+body[data-bar="hidden"] .bar {
+  display: none;
+}
+
+/* Chú ý: KHÔNG chừa thêm `padding-top` cho `.dash` ở trạng thái ẩn. Dải mở
+ * lại là phần tử trong luồng (xem `.bar-peek`), nó đã tự chiếm đúng 30px của
+ * mình. Chừa thêm padding là cộng hai lần và để lại một mảng trống 30px ngay
+ * dưới dải — đã đo thấy đúng như vậy (dải nằm ở top 30px thay vì 0). */
+
+/* Nút chỉ có biểu tượng: vuông, giữ vùng chạm 38px như các nút khác. */
+.btn--icon {
+  width: 38px;
+  padding: 0;
+  flex: none;
+}
+
+/* Dải mở lại thanh: một dải mỏng nằm ĐÚNG chỗ đầu trang, không phải nút nổi.
+ *
+ * Bản đầu dùng `position: fixed` canh giữa đỉnh khung nhìn — nhìn ảnh chụp thì
+ * thấy ngay cái sai: cuộn sâu là nó đè lên chữ của thẻ bên dưới, và trên điện
+ * thoại nó che cả nhãn tín hiệu. `sticky` cũng không cứu được: nó vẫn là một
+ * khối nằm trên nội dung.
+ *
+ * Cách đúng là để nó ở đầu luồng như một dải: nó chiếm đúng 30px của chính nó,
+ * không cần chừa padding nào thêm, và không có gì bị che. Đổi lại phải cuộn
+ * lên đầu mới bấm được — nhưng đó chính là lúc người dùng cần thanh trở lại
+ * (các lệnh trên thanh là lệnh toàn cục, không phải lệnh phải bấm liên tục khi
+ * đang xem camera). */
+.bar-peek {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  height: 30px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.94);
+  backdrop-filter: saturate(1.4) blur(12px);
+  color: var(--text-soft);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+
+.bar-peek:hover {
+  background: var(--sunken);
+  color: var(--text);
+}
+
+.bar-peek__grip {
+  width: 16px;
+  height: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.45;
 }
 
 .bar__brand {
@@ -1718,6 +1801,15 @@ h1 {
 
   .bar__actions .btn {
     flex: 1 1 auto;
+  }
+
+  /* Nút ẩn thanh là nút biểu tượng: kéo giãn nó bằng hai nút chữ bên cạnh sẽ
+     ra một ô vuông rỗng rất to. Giữ đúng bề rộng vuông của nó. */
+  .bar__actions .btn--icon {
+    flex: none;
+    /* Vùng chạm tối thiểu 44px ở đây cũng áp dụng: bề rộng theo quy tắc chung
+       của .btn phía dưới, chỉ cần không bị kéo giãn. */
+    width: 44px;
   }
 
   /* Vùng chạm tối thiểu 44px trên điện thoại. */

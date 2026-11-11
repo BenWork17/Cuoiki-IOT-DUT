@@ -819,3 +819,171 @@ def _stream_config():
     config = Config()
     config.web = WebConfig(host="127.0.0.1", port=8000, stream_enabled=True)
     return config
+
+
+# ---------------------------------------------------------------------------
+# Thanh trên cùng: tự ẩn khi cuộn, và nút ẩn hẳn
+# ---------------------------------------------------------------------------
+#
+# Hai cơ chế khác nhau nên có hai nhóm khẳng định khác nhau. Như trên, đây là
+# kiểm tra TĨNH: bộ test này không chạy JS. Hành vi thật (thanh trượt khỏi màn
+# hình khi cuộn xuống, hiện lại khi cuộn lên, ẩn hẳn khi bấm nút và KHÔNG hiện
+# lại khi cuộn) đã được kiểm bằng trình duyệt thật, ảnh chụp ghi trong báo cáo.
+
+
+def test_template_co_nut_an_thanh_va_cach_mo_lai(client):
+    html = client.get("/").get_data(as_text=True)
+
+    # Nút ẩn nằm trên chính thanh, và khai báo quan hệ với thanh để trình đọc
+    # màn hình hiểu nó điều khiển cái gì.
+    assert 'id="bar-hide-btn"' in html, "thiếu nút ẩn thanh trên"
+    assert 'aria-controls="topbar"' in html
+
+    # Thanh phải có id để `aria-controls` trỏ tới một phần tử CÓ THẬT.
+    assert 'id="topbar"' in html, "thanh trên cùng thiếu id để aria-controls trỏ tới"
+
+    # Đường mở lại: mất nó là ẩn thanh xong không có cách quay về.
+    assert 'id="bar-peek"' in html, "thiếu đường mở lại thanh đã ẩn"
+    assert "Hiện thanh trên" in html
+
+
+def test_thanh_an_ban_dau_de_trang_van_dung_duoc_khi_khong_co_js(client):
+    """Tab mở lại phải `hidden` lúc tải trang.
+
+    Nếu template để nó hiện sẵn, người chưa ẩn thanh sẽ thấy một dải "Hiện
+    thanh trên" vô nghĩa ở đầu trang. Và khi JS hỏng, trang vẫn phải giữ thanh
+    hiện — không được để trạng thái ẩn là mặc định trong HTML.
+    """
+    import re
+
+    html = client.get("/").get_data(as_text=True)
+    tag = re.search(r"<button[^>]*id=\"bar-peek\"[^>]*>", html)
+    assert tag is not None, "không tìm thấy thẻ của tab mở lại"
+    assert "hidden" in tag.group(0), "tab mở lại phải ẩn sẵn trong HTML"
+
+    # Thanh thì ngược lại: không được mang sẵn dấu hiệu ẩn.
+    assert 'data-bar="hidden"' not in html
+    assert 'data-bar="scrolled"' not in html
+
+
+def test_app_js_phan_biet_an_vi_cuon_va_an_vi_bam_nut():
+    """Hai lý do ẩn thanh phải là hai trạng thái riêng.
+
+    Gộp chúng vào một cờ là lỗi quen thuộc: người dùng bấm ẩn thanh, rồi cuộn
+    lên một chút là thanh hiện lại — trái đúng điều họ vừa yêu cầu. Test soát
+    rằng mã có hai trường riêng và rằng đường cuộn KHÔNG ghi đè khi đã ẩn.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    state = script[script.index("var barState = {") :][:400]
+    assert "hidden:" in state, "thiếu trạng thái 'đã bấm ẩn'"
+    assert "scrolled:" in state, "thiếu trạng thái 'đang cuộn xuống'"
+
+    # Đường cuộn phải thoát sớm khi thanh đã bị ẩn hẳn.
+    apply_start = script.index("function applyScrollBar()")
+    apply_body = script[apply_start : script.index("\n  }", apply_start)]
+    guard = apply_body.index("if (barState.hidden) return;")
+    write = apply_body.index("dataset.bar")
+    assert guard < write, "cuộn còn ghi đè trạng thái ẩn do người dùng đặt"
+
+
+def test_app_js_co_nguong_cuon_va_chi_phan_ung_theo_huong():
+    """Thanh không được nhấp nháy vì dao động vài pixel.
+
+    Có ngưỡng tối thiểu (ở đầu trang thì luôn hiện) và dung sai riêng cho
+    chiều cuộn lên, nếu không một cú lăn ngược vài pixel cũng đủ bật thanh ra
+    rồi tắt lại liên tục.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+    assert "BAR_SCROLL_MIN" in script, "thiếu ngưỡng cuộn tối thiểu"
+    assert "BAR_UP_TOLERANCE" in script, "thiếu dung sai cho chiều cuộn lên"
+
+    body = script[script.index("function onScrollFrame()") :][:1200]
+    assert "atTop" in body, "không xét trường hợp đã về đầu trang"
+
+
+def test_css_an_thanh_theo_hai_trang_thai():
+    """CSS phải có cả hai trạng thái, và mỗi trạng thái một cách ẩn.
+
+    Trượt đi (`transform`) khi cuộn, bỏ khỏi luồng (`display: none`) khi người
+    dùng bấm ẩn — bỏ khỏi luồng là thứ duy nhất thật sự trả lại chỗ cho nội
+    dung; chỉ trượt thì thanh vẫn chiếm chỗ như cũ.
+    """
+    css = _CSS.read_text(encoding="utf-8")
+
+    scrolled = css[css.index('body[data-bar="scrolled"] .bar {') :]
+    scrolled = scrolled[: scrolled.index("}")]
+    assert "translateY(-100%)" in scrolled, (
+        "trạng thái cuộn không trượt thanh khỏi màn hình"
+    )
+
+    hidden = css[css.index('body[data-bar="hidden"] .bar {') :]
+    hidden = hidden[: hidden.index("}")]
+    assert "display: none" in hidden, (
+        "ẩn hẳn theo yêu cầu phải bỏ thanh khỏi luồng, không chỉ trượt đi"
+    )
+
+    # Và không được chừa thêm padding cho `.dash`: dải mở lại đã tự chiếm chỗ
+    # trong luồng, chừa thêm là cộng hai lần và để lại một mảng trống dưới dải.
+    assert 'body[data-bar="hidden"] .dash' not in css, (
+        "chừa thêm padding cho .dash ở trạng thái ẩn: dải mở lại đã chiếm chỗ rồi"
+    )
+
+
+def test_dai_mo_lai_khong_phai_phan_tu_noi():
+    """Dải mở lại thanh không được `position: fixed/sticky`.
+
+    Bản đầu dùng `fixed` canh giữa đỉnh: cuộn sâu là nó đè lên chữ của thẻ bên
+    dưới (ảnh chụp cho thấy nó che cả nhãn tín hiệu trên điện thoại). Đã thử
+    `sticky` và cũng vậy — nó vẫn là khối nằm trên nội dung. Cách đúng là để
+    nó ở đầu luồng như một dải mỏng.
+    """
+    css = _CSS.read_text(encoding="utf-8")
+    start = css.index(".bar-peek {")
+    block = css[start : css.index("}", start)]
+
+    assert "position: fixed" not in block, (
+        "dải mở lại dùng position:fixed → đè lên nội dung khi cuộn"
+    )
+    assert "position: sticky" not in block, (
+        "dải mở lại dùng position:sticky → vẫn nằm trên nội dung khi cuộn"
+    )
+    assert "width: 100%" in block, "dải mở lại phải là dải ngang, không phải nút nổi"
+
+
+def test_an_thanh_giu_duong_thoat_cho_ban_phim():
+    """Ẩn thanh không được nhốt người dùng bàn phím.
+
+    Nút ���n biến mất khỏi luồng, nên focus phải được chuyển sang dải mở lại;
+    và Esc phải mở thanh — đó là lối thoát quen thuộc của mọi lớp phủ.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+
+    setter = script[script.index("function setBarHidden(") :][:900]
+    assert ".focus()" in setter, "ẩn thanh không chuyển focus khỏi nút đã biến mất"
+
+    keydown = script[script.index('document.addEventListener("keydown"') :][:1200]
+    assert "barState.hidden" in keydown and "setBarHidden(false)" in keydown, (
+        "Esc không mở lại được thanh đã ẩn"
+    )
+
+
+def test_thanh_hien_lai_khi_ban_phim_tab_vao_no():
+    """Tab tới một nút trên thanh đang trượt đi thì thanh phải hiện lại.
+
+    Không có nhánh này, focus đặt vào một nút không nhìn thấy và Enter kích
+    hoạt một lệnh mà người dùng không biết mình vừa chọn. Chỉ áp dụng cho
+    trạng thái ``scrolled``: thanh ẩn hẳn đã `display: none` nên các nút không
+    nằm trong luồng tab nữa.
+    """
+    script = _APP_JS.read_text(encoding="utf-8")
+    assert '"focusin"' in script, "không bắt sự kiện focus để hiện lại thanh"
+
+    start = script.index('els.topbar.addEventListener("focusin"')
+    body = script[start : start + 260]
+    assert "barState.scrolled" in body, (
+        "nhánh focusin không kiểm tra trạng thái cuộn"
+    )
+    assert "applyScrollBar()" in body, "nhánh focusin không vẽ lại thanh"
+
+

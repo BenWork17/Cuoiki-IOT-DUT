@@ -33,6 +33,9 @@
     muteBtn: el("mute-btn"),
     muteText: el("mute-text"),
     calibrateBtn: el("calibrate-btn"),
+    topbar: el("topbar"),
+    barHide: el("bar-hide-btn"),
+    barPeek: el("bar-peek"),
     message: el("action-message"),
     ptzButtons: Array.prototype.slice.call(
       document.querySelectorAll("[data-ptz-direction]")
@@ -371,6 +374,157 @@
       setCameraNote("");
     }
   }
+
+  /* ---- Thanh trên cùng: tự ẩn khi cuộn, và nút ẩn hẳn ----------------
+   *
+   * Hai cơ chế độc lập, cố ý không gộp làm một:
+   *
+   *   1. CUỘN xuống thì thanh trượt lên khỏi màn hình, cuộn lên thì hiện lại.
+   *      Đây chỉ là phản ứng theo hướng cuộn, không phải một lựa chọn — nó
+   *      không ghi nhớ gì và không cần người dùng làm gì.
+   *   2. NÚT "ẩn thanh" là một lựa chọn rõ ràng của người dùng: thanh biến mất
+   *      hẳn và KHÔNG hiện lại khi cuộn. Chỉ tab "Hiện thanh trên" mới mở lại.
+   *
+   * Trộn hai thứ này vào một cờ là nguồn lỗi quen thuộc (ẩn rồi mà cuộn lên
+   * lại thấy thanh hiện về). Vì vậy chúng là hai giá trị riêng trong
+   * ``barState``, và ``data-bar`` trên <body> chỉ mang một giá trị đã hợp
+   * nhất, để CSS không phải đoán.
+   *
+   * Thanh vốn `position: sticky` nên việc trượt nó đi không làm nội dung bên
+   * dưới nhảy — chỉ có hình được lộ thêm phần trên.
+   */
+
+  /* Ngưỡng cuộn (px). Dưới ngưỡng này thanh luôn hiện: ở đầu trang, người
+   * dùng cần thấy tên hệ thống và trạng thái sống, và những dao động vài ba
+   * pixel (thanh địa chỉ di động co giãn) không được làm thanh nhấp nháy. */
+  var BAR_SCROLL_MIN = 64;
+
+  /* Cuộn lên phải dứt khoát hơn cuộn xuống một chút mới hiện lại thanh: nếu
+   * hai ngưỡng bằng nhau, một cú lăn chuột ngược chiều vài pixel cũng đủ làm
+   * thanh bật ra rồi biến mất liên tục. */
+  var BAR_UP_TOLERANCE = 8;
+
+  var barState = {
+    hidden: false, // người dùng đã bấm "ẩn thanh"
+    scrolled: false, // thanh đang trượt đi vì cuộn xuống
+    lastY: window.pageYOffset || 0
+  };
+
+  /* Vẽ trạng thái đã hợp nhất lên <body> và cập nhật hai nút cho khớp.
+   *
+   * `aria-expanded` phải phản ánh đúng thanh đang hiện hay không, kể cả khi
+   * nó bị cuộn che: người dùng trình đọc màn hình nghe "đã thu gọn" trong khi
+   * thanh vẫn còn trên màn hình còn khó hiểu hơn là không có thuộc tính. */
+  function paintBar() {
+    document.body.dataset.bar = barState.hidden ? "hidden" : "shown";
+
+    if (els.barPeek) {
+      // Tab mở lại chỉ hiện khi thanh đã ẩn HẲN: lúc chỉ trượt đi vì cuộn,
+      // cuộn lên là thanh tự về, không cần thêm một nút nữa trên màn hình.
+      els.barPeek.hidden = !barState.hidden;
+    }
+    if (els.barHide) {
+      els.barHide.setAttribute("aria-expanded", barState.hidden ? "false" : "true");
+    }
+  }
+
+  function setBarHidden(hidden) {
+    barState.hidden = !!hidden;
+    /* Mở lại thì xem như đang ở đầu trang: thanh vừa hiện ra không được trượt
+     * đi ngay vì vị trí cuộn cũ vẫn còn lớn. Đặt lại mốc cuộn là đủ, lần cuộn
+     * kế tiếp sẽ tự tính lại. */
+    barState.lastY = window.pageYOffset || 0;
+    paintBar();
+    /* Ẩn thanh thì đưa focus sang tab mở lại, nếu không focus đang nằm trên
+     * một nút vừa bị `display: none` và bàn phím mất chỗ đứng. */
+    if (barState.hidden) {
+      if (els.barPeek) els.barPeek.focus();
+    } else if (els.barHide) {
+      els.barHide.focus();
+    }
+  }
+
+  if (els.barHide) {
+    els.barHide.addEventListener("click", function () {
+      setBarHidden(true);
+    });
+  }
+  if (els.barPeek) {
+    els.barPeek.addEventListener("click", function () {
+      setBarHidden(false);
+    });
+  }
+
+  /* Cuộn xuống thì thanh trượt đi, cuộn lên thì hiện lại.
+   *
+   * Chỉ phản ứng khi đã cuộn qua ngưỡng, và so với vị trí trước đó chứ không
+   * so với hướng của sự kiện: trình duyệt có thể bắn nhiều sự kiện cuộn trong
+   * một khung hình (bánh xe quán tính, chạm kéo), nên chỉ đọc vị trí hiện tại
+   * mới biết thật sự đang đi đâu. */
+  var scrollQueued = false;
+
+  function onScrollFrame() {
+    scrollQueued = false;
+    var y = window.pageYOffset || 0;
+    var atTop = y <= BAR_SCROLL_MIN;
+    var goingDown = y > barState.lastY + 1;
+    var goingUp = y < barState.lastY - BAR_UP_TOLERANCE;
+
+    if (atTop) {
+      // Về đầu trang thì luôn hiện, kể cả khi vừa cuộn lên rất nhanh.
+      barState.scrolled = false;
+    } else if (goingDown) {
+      barState.scrolled = true;
+    } else if (goingUp) {
+      barState.scrolled = false;
+    }
+    barState.lastY = y;
+    applyScrollBar();
+  }
+
+  function applyScrollBar() {
+    /* Chỉ đụng tới `data-bar` khi CHƯA ẩn hẳn: nếu người dùng đã bấm ẩn thì
+     * cuộn lên không được phép làm thanh hiện lại — đó là điều họ vừa yêu
+     * cầu ngược lại. */
+    if (barState.hidden) return;
+    document.body.dataset.bar = barState.scrolled ? "scrolled" : "shown";
+  }
+
+  window.addEventListener(
+    "scroll",
+    function () {
+      if (scrollQueued) return;
+      scrollQueued = true;
+      window.requestAnimationFrame(onScrollFrame);
+    },
+    { passive: true }
+  );
+
+  /* Đổi kích thước/khổ giấy có thể làm vị trí cuộn cũ không còn nghĩa (xoay
+   * điện thoại, kéo cửa sổ). Đo lại ngay thay vì đợi lần cuộn sau: nếu không,
+   * thanh có thể kẹt ở trạng thái ẩn trên một trang đã về đầu. */
+  window.addEventListener("resize", function () {
+    barState.lastY = window.pageYOffset || 0;
+    if (barState.lastY <= BAR_SCROLL_MIN) {
+      barState.scrolled = false;
+      applyScrollBar();
+    }
+  });
+
+  /* Bàn phím: Tab tới một nút trên thanh trong lúc thanh đang trượt khỏi màn
+   * hình thì thanh phải hiện lại. Không có nhánh này, người chỉ dùng bàn phím
+   * sẽ đặt focus vào một nút không nhìn thấy và Enter kích hoạt một lệnh mà họ
+   * không biết mình vừa chọn. Chỉ xét `scrolled`: thanh ẩn HẲN thì các nút
+   * không nằm trong luồng tab nữa (display: none), nên không lọt vào được. */
+  if (els.topbar) {
+    els.topbar.addEventListener("focusin", function () {
+      if (!barState.scrolled) return;
+      barState.scrolled = false;
+      applyScrollBar();
+    });
+  }
+
+  paintBar();
 
   /* ---- Lệnh ------------------------------------------------------- */
 
@@ -966,7 +1120,12 @@
       } else {
         closeOverlay(openSheet);
       }
+      return;
     }
+    /* Không có hộp nổi nào đang mở: Esc là lối thoát cho thanh đã bị ẩn.
+     * Không có nó, người chỉ dùng bàn phím ẩn thanh xong thì mất luôn đường
+     * tới ba lệnh chung (tiếng, hiệu chỉnh) ngoài việc Tab tới tab mở lại. */
+    if (barState.hidden) setBarHidden(false);
   });
 
   /* ---- Hộp quét khuôn mặt ----------------------------------------- */

@@ -218,6 +218,16 @@ trắng và bóng đổ nhẹ, không bằng đường kẻ dày.
   tự đảo nền trắng thành đen sau lưng bảng màu này.
 - Nút cao ≥ 44 px trên điện thoại; `prefers-reduced-motion` được tôn trọng
   (vệt quét và mọi chuyển động bị tắt).
+- **Thanh trên cùng tự ẩn khi cuộn xuống** và hiện lại khi cuộn lên, như thanh
+  địa chỉ của trình duyệt di động: cuộn xuống quá 64 px thì thanh trượt lên
+  khỏi màn hình, cuộn ngược lên (dung sai 8 px) hoặc về đầu trang thì hiện lại.
+  Hai ngưỡng khác nhau là cố ý — nếu bằng nhau, một cú lăn ngược vài pixel cũng
+  đủ làm thanh nhấp nháy.
+- **Nút "Ẩn thanh trên"** (biểu tượng hai mũi tên, cuối dải nút) ẩn hẳn thanh:
+  nó rời khỏi luồng (`display: none`) nên nội dung lên sát đỉnh. Trạng thái này
+  **không** bị cuộn lên ghi đè — chỉ dải "Hiện thanh trên" (30 px, ở đầu trang)
+  hoặc phím `Esc` mới mở lại. Trên điện thoại việc này tiết kiệm ~80 px chiều
+  cao vì thanh ở đó cao ~110 px (hai nút đã xuống dòng).
 - **Chart.js 4.4.7 nằm cục bộ** trong `web/static/chart.umd.min.js` (spec
   §5.10): Pi có thể không có Internet. Trang hiện không dùng biểu đồ (đề tài đã
   bỏ nhận diện tư thế) nhưng tệp vẫn để nguyên, không có tham chiếu CDN nào.

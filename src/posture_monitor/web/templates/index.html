@@ -24,8 +24,11 @@
 
 <!-- Bố cục bảng điều khiển: dùng hết bề ngang màn hình, chia thành ba dải.
 
-     1. Thanh trên cùng — nhận diện sản phẩm + hai lệnh chung (tiếng, hiệu
-        chỉnh). Dính trên đỉnh khi cuộn.
+     1. Thanh trên cùng — nhận diện sản phẩm + ba lệnh chung (tiếng, hiệu
+        chỉnh, ẩn thanh). Dính trên đỉnh, nhưng tự trượt lên khi cuộn xuống
+        để nhường chỗ cho hình: đây là thứ phải nhìn thường xuyên chứ không
+        phải thứ phải luôn chiếm một dải ngang. Cuộn lên là thanh hiện lại;
+        nút "Ẩn thanh trên" ẩn hẳn, và dải mỏng ở đầu trang mở lại.
      2. Dải điều khiển — ba tín hiệu trạng thái và phiên học nằm NGAY TRÊN
         CÙNG, ngang tầm mắt. Đây là những thứ phải liếc thấy liên tục và là
         những nút phải bấm được ngay, nên chúng không bị đẩy xuống dưới camera.
@@ -35,7 +38,7 @@
      Trên điện thoại cả ba dải xếp dọc theo đúng thứ tự đọc đó. -->
 <div class="dash">
 
-  <header class="bar">
+  <header id="topbar" class="bar">
     <div class="bar__brand">
       <span class="mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none"
@@ -74,8 +77,35 @@
       <button id="calibrate-btn" type="button" class="btn btn--quiet">
         Hiệu chỉnh lại
       </button>
+      <!-- Ẩn thanh để camera lấy trọn màn hình. Nút này nằm ngay trên thanh
+           nên khi thanh đã ẩn thì không còn ở đây nữa: việc mở lại do dải
+           #bar-peek đảm nhiệm, và nó chỉ hiện đúng lúc thanh đang ẩn. -->
+      <button id="bar-hide-btn" type="button" class="btn btn--icon"
+              aria-controls="topbar" aria-expanded="true"
+              aria-label="Ẩn thanh trên" title="Ẩn thanh trên">
+        <span class="btn__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+               stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M5 9l7-5 7 5"/>
+            <path d="M5 15l7 5 7-5"/>
+          </svg>
+        </span>
+      </button>
     </div>
   </header>
+
+  <!-- Dải mở lại thanh khi nó đang ẩn. Không phải một nút nổi: nó là một dải
+       mỏng 30px chiếm đúng chỗ đầu trang, nên không bao giờ đè lên chữ khi
+       cuộn và vẫn luôn bấm được. Nhờ vậy ẩn thanh tiết kiệm được 30px (máy
+       tính) tới 80px (điện thoại, khi hai nút đã xuống dòng) mà vẫn còn đường
+       quay lại rõ ràng — không có nó, người dùng ẩn thanh xong sẽ không biết
+       lấy lại bằng cách nào. -->
+  <button id="bar-peek" type="button" class="bar-peek"
+          aria-controls="topbar" aria-expanded="false" hidden>
+    <span class="bar-peek__grip" aria-hidden="true"></span>
+    Hiện thanh trên
+  </button>
 
   <p id="action-message" class="toast" role="status" hidden></p>
 
