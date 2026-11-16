@@ -77,6 +77,26 @@
       <button id="calibrate-btn" type="button" class="btn btn--quiet">
         Hiệu chỉnh lại
       </button>
+      <!-- MỘT nút duy nhất mở nhật ký vi phạm. Người dùng yêu cầu đúng như
+           vậy: một nút rồi hiện danh sách theo popup — không có bảng hay dải
+           nào chiếm chỗ thường trực trên trang. Nút đứng SAU "Hiệu chỉnh lại"
+           và TRƯỚC nút ẩn thanh nên thứ tự các nút đang có không đổi.
+           Lớp `btn--logs` giữ chiều cao 52px (chuẩn cảm ứng) mà không làm đổi
+           chiều cao của mọi `.btn` khác. -->
+      <button id="violations-btn" type="button" class="btn btn--quiet btn--logs"
+              aria-haspopup="dialog" aria-controls="sheet-violations">
+        <span class="btn__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
+               stroke="currentColor" stroke-width="1.7"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M6 3.5h8L18.5 8v12.5H6z"/>
+            <path d="M13.5 3.5V8H18"/>
+            <path d="M9 12.5h6"/>
+            <path d="M9 16h4"/>
+          </svg>
+        </span>
+        <span>Nhật ký vi phạm</span>
+      </button>
       <!-- Ẩn thanh để camera lấy trọn màn hình. Nút này nằm ngay trên thanh
            nên khi thanh đã ẩn thì không còn ở đây nữa: việc mở lại do dải
            #bar-peek đảm nhiệm, và nó chỉ hiện đúng lúc thanh đang ẩn. -->
@@ -482,5 +502,64 @@
   </div>
 </div>
 {% endif %}
+
+<!-- Nhật ký vi phạm — MỘT popup, không phải khu vực thường trực.
+
+     Tái dùng đúng khuôn hộp nổi đã có trong dự án (`.sheet` + `.sheet__panel`
+     với role="dialog"/aria-modal, mở/đóng bằng `openOverlay`/`closeOverlay`
+     trong app.js) — nhờ vậy ESC và bấm-ra-ngoài hoạt động sẵn, không phải
+     dựng cơ chế popup thứ hai.
+
+     Dữ liệu do GET /api/violations trả về. Nhãn tiếng Việt của từng loại
+     (`kind_text`) là của MÁY CHỦ: web dùng thẳng, không tự viết nhãn mới, để
+     không lệch với nhãn đang hiện trên dashboard và trong app.
+
+     Toàn bộ nội dung (tổng, bộ lọc, danh sách, câu lỗi) do app.js dựng lại
+     mỗi lần tải; ở đây chỉ có khung rỗng. -->
+<div id="sheet-violations" class="sheet" hidden>
+  <div class="sheet__panel" role="dialog" aria-modal="true"
+       aria-labelledby="violations-title">
+    <div class="sheet__head">
+      <h2 id="violations-title" class="sheet__title">Nhật ký vi phạm</h2>
+      <button id="violations-close" type="button" class="sheet__x"
+              aria-label="Đóng">×</button>
+    </div>
+
+    <!-- Dòng tổng. `aria-live="polite"`: mỗi nhịp 5 giây nội dung đổi, trình
+         đọc màn hình chỉ đọc khi người dùng đang ở trong hộp, không chen
+         ngang việc khác. -->
+    <p id="violations-summary" class="viol__summary" aria-live="polite">
+      Đang tải…
+    </p>
+    <div id="violations-counts" class="viol__counts" hidden></div>
+
+    <!-- Ba nút lọc gửi đúng mã loại lên máy chủ (`?kinds=ABSENT` v.v.).
+         "Tất cả" là trạng thái mặc định. -->
+    <div class="viol__filters" role="group" aria-label="Lọc theo loại vi phạm">
+      <button type="button" class="btn btn--quiet btn--logs viol__filter"
+              data-violation-filter="" aria-pressed="true">Tất cả</button>
+      <button type="button" class="btn btn--quiet btn--logs viol__filter"
+              data-violation-filter="ABSENT" aria-pressed="false">Rời bàn</button>
+      <button type="button" class="btn btn--quiet btn--logs viol__filter"
+              data-violation-filter="PHONE_USE" aria-pressed="false">Điện thoại</button>
+      <button type="button" class="btn btn--quiet btn--logs viol__filter"
+              data-violation-filter="IMPOSTOR" aria-pressed="false">Sai người</button>
+    </div>
+
+    <!-- Danh sách: cuộn được, chiều cao giới hạn để không tràn màn hình
+         điện thoại (khung `.sheet__panel` đã tự giới hạn theo 100vh). -->
+    <ul id="violations-list" class="viol__list"></ul>
+
+    <p id="violations-empty" class="sheet__lead viol__empty" hidden>
+      Chưa có vi phạm nào được ghi. Cứ ngồi học bình thường nhé.
+    </p>
+
+    <p id="violations-error" class="viol__error" role="alert" hidden></p>
+    <button id="violations-retry" type="button"
+            class="btn btn--quiet btn--logs viol__retry" hidden>
+      Thử lại
+    </button>
+  </div>
+</div>
 </body>
 </html>

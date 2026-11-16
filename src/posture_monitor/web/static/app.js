@@ -83,7 +83,20 @@
     sessionStop: el("session-stop-btn"),
     voiceCard: el("voice-card"),
     voiceOptions: el("voice-options"),
-    voiceStatus: el("voice-status")
+    voiceStatus: el("voice-status"),
+    /* Nhật ký vi phạm: một nút ở header + một hộp nổi. */
+    violationsBtn: el("violations-btn"),
+    violationsSheet: el("sheet-violations"),
+    violationsClose: el("violations-close"),
+    violationsSummary: el("violations-summary"),
+    violationsCounts: el("violations-counts"),
+    violationsList: el("violations-list"),
+    violationsEmpty: el("violations-empty"),
+    violationsError: el("violations-error"),
+    violationsRetry: el("violations-retry"),
+    violationFilters: Array.prototype.slice.call(
+      document.querySelectorAll("[data-violation-filter]")
+    )
   };
 
   var peopleEnabled =
@@ -1102,9 +1115,11 @@
   }
 
   function closeAllOverlays() {
-    [els.addSheet, els.pickSheet, els.scan].forEach(function (node) {
-      if (node) node.hidden = true;
-    });
+    [els.addSheet, els.pickSheet, els.scan, els.violationsSheet].forEach(
+      function (node) {
+        if (node) node.hidden = true;
+      }
+    );
     openSheet = null;
     lockScroll(false);
   }
@@ -1114,9 +1129,13 @@
     if (openSheet) {
       /* Esc đóng đúng hộp đang mở. Đóng hộp quét khi đang quét phải huỷ phiên
        * ở máy chủ, nếu không kho khuôn mặt vẫn nhận mẫu của một phiên người
-       * dùng đã bỏ đi. */
+       * dùng đã bỏ đi. Hộp nhật ký vi phạm phải đi qua `closeViolations` (không
+       * phải `closeOverlay` trần) để nhịp 5 giây được xoá — nếu không, ESC
+       * đóng hộp mà nhịp vẫn chạy ngầm và trang tiếp tục gọi /api/violations. */
       if (openSheet === els.scan) {
         cancelEnroll();
+      } else if (openSheet === els.violationsSheet) {
+        closeViolations();
       } else {
         closeOverlay(openSheet);
       }
@@ -1696,6 +1715,328 @@
 
   if (voiceEnabled) {
     fetchVoice();
+  }
+
+  /* ---- Nhật ký vi phạm (một nút + một hộp nổi) ----------------------
+   *
+   * Người dùng yêu cầu: "chỉ cần 1 nút rồi hiển thị danh sách log theo popup".
+   * Nên ở đây KHÔNG có bảng thường trực, KHÔNG có dòng trạng thái nào trên
+   * trang: mọi thứ nằm trong `#sheet-violations` và chỉ sống khi hộp đang mở.
+   *
+   * Ba quy tắc bắt buộc:
+   *
+   * 1. **Chỉ hỏi máy chủ khi hộp đang mở.** `startViolationPolling()` đặt nhịp
+   *    5 giây; `stopViolationPolling()` xoá nhịp VÀ huỷ request đang bay. Cả
+   *    hai đều đi qua `openOverlay`/`closeOverlay`, nên mọi đường đóng (nút X,
+   *    ESC, bấm ra ngoài) đều dừng nhịp — không có nhịp nào chạy ngầm sau khi
+   *    hộp đã đóng, đúng lỗi hay gặp mà hợp đồng cảnh báo.
+   * 2. **Nhãn tiếng Việt là của máy chủ.** `kind_text` hiện nguyên văn; web
+   *    không tự đặt câu thứ hai cho cùng một loại vi phạm.
+   * 3. **Không đoán trạng thái.** 404 (máy chủ chưa có route), 503 (máy chủ
+   *    thiếu kho dữ liệu), lỗi mạng là ba câu khác nhau; không câu nào là
+   *    "Lỗi" trần.
+   */
+  var VIOLATION_POLL_MS = 5000;
+
+  var violationState = {
+    /** Nhịp tự làm mới; `null` khi hộp đang đóng. */
+    timer: null,
+    /** Request đang bay, để huỷ khi đóng hộp. */
+    controller: null,
+    /** Loại đang lọc: "" = tất cả; hoặc "ABSENT"/"PHONE_USE"/"IMPOSTOR". */
+    filter: "",
+    /**
+     * Số lần đã gọi `/api/violations`. Đây là **bằng chứng** cho yêu cầu
+     * "đóng popup là không còn request nào": test mở hộp, đóng, đợi quá một
+     * nhịp rồi so con số này. Không có nó thì chỉ có lời hứa.
+     */
+    fetches: 0
+  };
+
+  function violationKindLabel(kind) {
+    /* Chỉ dùng khi máy chủ KHÔNG gửi `kind_text` (bản cũ hơn). Nhãn chính
+     * luôn là của máy chủ; bảng này là lưới an toàn, không phải nguồn sự thật
+     * thứ hai — ba mã dưới đây là hằng số của `state.py`. */
+    var fallback = {
+      ABSENT: "Rời bàn học",
+      PHONE_USE: "Dùng điện thoại",
+      IMPOSTOR: "Sai người học"
+    };
+    return fallback[kind] || String(kind || "Vi phạm");
+  }
+
+  function formatViolationTime(ts) {
+    /* `ts` là epoch giây (như mọi mốc thời gian khác trong repo). Sai kiểu thì
+     * hiện "--:--:--" chứ không ném: một dòng hỏng không được làm mất cả danh
+     * sách. */
+    var value = Number(ts);
+    if (!isFinite(value) || value <= 0) return "--:--:--";
+    var date = new Date(value * 1000);
+    if (isNaN(date.getTime())) return "--:--:--";
+    return date.toLocaleTimeString("vi-VN", { hour12: false });
+  }
+
+  function formatViolationDuration(seconds) {
+    var value = Number(seconds);
+    if (!isFinite(value) || value <= 0) return "";
+    /* Dưới 1 giây vẫn nói "1 giây": "kéo dài 0 giây" là câu vô nghĩa. */
+    var rounded = Math.max(1, Math.round(value));
+    return "kéo dài " + rounded + " giây";
+  }
+
+  function renderViolations(data) {
+    if (!els.violationsList) return;
+    var rows = (data && data.violations) || [];
+    var counts = (data && data.counts) || {};
+    var total = data && typeof data.total === "number" ? data.total : rows.length;
+
+    /* Máy chủ có thể trả 200 kèm danh sách RỖNG và một trường `error` (ví dụ
+     * truy vấn DB hỏng). Hiện "Chưa có vi phạm nào" lúc đó là nói dối người
+     * dùng: họ vừa rời bàn 5 lần mà popup bảo sạch. Vì vậy `error` trong thân
+     * 200 phải thắng câu rỗng, và phải hiện kèm nút thử lại. */
+    var serverError =
+      data && typeof data.error === "string" ? data.error.trim() : "";
+    if (serverError) {
+      showViolationError(
+        serverError + " Chưa đọc được lịch sử vi phạm từ máy chủ."
+      );
+    } else {
+      showViolationError("");
+    }
+
+    /* Tổng + phân loại. Chỉ hiện chip cho loại có số > 0; chip 0 chỉ làm rối. */
+    if (els.violationsSummary) {
+      els.violationsSummary.textContent = serverError
+        ? "Chưa đọc được lịch sử vi phạm"
+        : total > 0
+          ? "Tổng " + total + " vi phạm"
+          : "Chưa có vi phạm nào";
+    }
+    if (els.violationsCounts) {
+      els.violationsCounts.textContent = "";
+      var order = ["ABSENT", "PHONE_USE", "IMPOSTOR"];
+      var shown = 0;
+      order.forEach(function (kind) {
+        var count = Number(counts[kind]);
+        if (!isFinite(count) || count <= 0) return;
+        shown += 1;
+        var chip = document.createElement("span");
+        chip.className = "viol__count";
+        chip.dataset.kind = kind;
+        chip.textContent = violationKindLabel(kind) + ": " + count;
+        els.violationsCounts.appendChild(chip);
+      });
+      els.violationsCounts.hidden = shown === 0;
+    }
+
+    els.violationsList.textContent = "";
+    rows.forEach(function (row) {
+      var item = document.createElement("li");
+      item.className = "viol__row";
+      var kind = String((row && row.kind) || "");
+      item.dataset.kind = kind;
+
+      var time = document.createElement("span");
+      time.className = "viol__time";
+      time.textContent = formatViolationTime(row && row.ts);
+
+      var kindNode = document.createElement("span");
+      kindNode.className = "viol__kind";
+      /* Ưu tiên nhãn của máy chủ; chỉ rơi về bảng nội bộ khi máy chủ không gửi. */
+      kindNode.textContent =
+        (row && typeof row.kind_text === "string" && row.kind_text) ||
+        violationKindLabel(kind);
+
+      item.appendChild(time);
+      item.appendChild(kindNode);
+
+      var durationText = formatViolationDuration(row && row.duration_s);
+      if (durationText) {
+        var duration = document.createElement("span");
+        duration.className = "viol__duration";
+        duration.textContent = durationText;
+        item.appendChild(duration);
+      }
+      els.violationsList.appendChild(item);
+    });
+
+    /* Rỗng = tin tốt: câu tích cực, và cố ý KHÔNG dùng màu cảnh báo.
+     * NHƯNG khi máy chủ báo `error` thì rỗng không phải là "sạch": đã có câu
+     * lỗi ở trên rồi, hiện thêm "Chưa có vi phạm nào" sẽ mâu thuẫn ngay trong
+     * cùng một hộp. */
+    if (els.violationsEmpty) {
+      els.violationsEmpty.hidden = serverError ? true : rows.length > 0;
+    }
+  }
+
+  function showViolationError(text) {
+    if (els.violationsError) {
+      els.violationsError.textContent = text;
+      els.violationsError.hidden = !text;
+    }
+    if (els.violationsRetry) els.violationsRetry.hidden = !text;
+  }
+
+  function violationFailText(response, data) {
+    /* 404 đứng TRƯỚC nhánh "câu máy chủ thắng": 404 của Flask (và của
+     * `not_found` chung trong app.py) là câu đúng nhưng vô nghĩa với người
+     * dùng — "Không có API này." không nói được là bản dashboard đang chạy
+     * thiếu route nhật ký. Đây là ca thật khi máy chủ còn là bản cũ, nên câu
+     * cụ thể quan trọng hơn câu chung. */
+    if (response && response.status === 404) {
+      return (
+        "Máy chủ chưa có nhật ký vi phạm (thiếu route /api/violations). " +
+        "Bản dashboard đang chạy có thể cũ hơn mã nguồn — cập nhật rồi khởi " +
+        "động lại."
+      );
+    }
+    /* Các mã khác: câu của máy chủ luôn thắng, vì nó nói đúng chuyện gì đang
+     * thiếu (ví dụ "Chưa bật kho dữ liệu"). */
+    if (data && typeof data.message === "string" && data.message) {
+      return data.message;
+    }
+    if (response && response.status === 503) {
+      return "Máy chủ chưa bật kho dữ liệu nên chưa có nhật ký vi phạm.";
+    }
+    if (response && response.status === 400) {
+      return "Máy chủ từ chối tham số lọc. Chọn lại loại vi phạm.";
+    }
+    return "Không tải được nhật ký vi phạm. Kiểm tra kết nối tới máy chủ.";
+  }
+
+  function loadViolations() {
+    if (!els.violationsSheet) return;
+    /* Huỷ lượt trước nếu còn treo: nhịp 5 giây mà máy chủ chậm thì các request
+     * sẽ chồng lên nhau và dồn ứ trên Pi. */
+    if (violationState.controller) {
+      violationState.controller.abort();
+    }
+    var controller =
+      typeof window.AbortController === "function"
+        ? new window.AbortController()
+        : null;
+    violationState.controller = controller;
+    violationState.fetches += 1;
+    /* Phơi số đếm ra để kiểm chứng được "đã dừng sau khi đóng" từ test trình
+     * duyệt; không phải API công khai, chỉ là điểm quan sát. */
+    window.__violationsFetches = violationState.fetches;
+
+    var url =
+      "/api/violations" +
+      (violationState.filter
+        ? "?kinds=" + encodeURIComponent(violationState.filter)
+        : "");
+    var options = { cache: "no-store" };
+    if (controller) options.signal = controller.signal;
+
+    return fetch(url, options)
+      .then(function (res) {
+        return readJson(res).then(function (data) {
+          /* Hộp đã đóng trong lúc chờ: bỏ kết quả, không vẽ vào hộp đã ẩn. */
+          if (!violationState.timer && !violationState.controller) return;
+          if (!res.ok) {
+            showViolationError(violationFailText(res, data));
+            return;
+          }
+          showViolationError("");
+          renderViolations(data);
+        });
+      })
+      .catch(function (error) {
+        /* request bị chính mình huỷ (đóng hộp / đổi bộ lọc) không phải lỗi. */
+        if (error && error.name === "AbortError") return;
+        if (!violationState.timer && !violationState.controller) return;
+        showViolationError(
+          "Không tải được nhật ký vi phạm. Kiểm tra kết nối mạng rồi thử lại."
+        );
+      })
+      .finally(function () {
+        if (violationState.controller === controller) {
+          violationState.controller = null;
+        }
+      });
+  }
+
+  function stopViolationPolling() {
+    if (violationState.timer) {
+      window.clearInterval(violationState.timer);
+      violationState.timer = null;
+    }
+    if (violationState.controller) {
+      violationState.controller.abort();
+      violationState.controller = null;
+    }
+  }
+
+  function startViolationPolling() {
+    /* Xoá nhịp cũ trước: mở/đóng liên tiếp không được nhân đôi nhịp. */
+    stopViolationPolling();
+    /* Đặt cờ nhịp TRƯỚC khi tải để nhánh "đã đóng" trong loadViolations biết
+     * hộp đang mở. Dùng một số 0 tạm là giá trị thật của setInterval sau đó. */
+    violationState.timer = window.setInterval(loadViolations, VIOLATION_POLL_MS);
+    loadViolations();
+  }
+
+  function openViolations() {
+    if (!els.violationsSheet) return;
+    showViolationError("");
+    if (els.violationsSummary) els.violationsSummary.textContent = "Đang tải…";
+    if (els.violationsList) els.violationsList.textContent = "";
+    if (els.violationsEmpty) els.violationsEmpty.hidden = true;
+    if (els.violationsCounts) {
+      els.violationsCounts.textContent = "";
+      els.violationsCounts.hidden = true;
+    }
+    openOverlay(els.violationsSheet, els.violationsClose);
+    startViolationPolling();
+  }
+
+  function closeViolations() {
+    /* Dừng nhịp TRƯỚC khi ẩn hộp: ẩn trước rồi mới dừng thì một nhịp có thể
+     * chen vào giữa và gọi mạng sau khi hộp đã đóng. */
+    stopViolationPolling();
+    closeOverlay(els.violationsSheet);
+  }
+
+  function setViolationFilter(filter) {
+    if (violationState.filter === filter) return;
+    violationState.filter = filter;
+    if (els.violationFilters) {
+      els.violationFilters.forEach(function (button) {
+        button.setAttribute(
+          "aria-pressed",
+          button.dataset.violationFilter === filter ? "true" : "false"
+        );
+      });
+    }
+    /* Đổi bộ lọc là tải lại ngay, không đợi nhịp kế tiếp: người dùng vừa bấm
+     * và cần thấy kết quả. Nhịp 5 giây giữ nguyên. */
+    if (violationState.timer) loadViolations();
+  }
+
+  if (els.violationsBtn) {
+    els.violationsBtn.addEventListener("click", openViolations);
+  }
+  if (els.violationsClose) {
+    els.violationsClose.addEventListener("click", closeViolations);
+  }
+  if (els.violationsRetry) {
+    els.violationsRetry.addEventListener("click", function () {
+      loadViolations();
+    });
+  }
+  if (els.violationFilters) {
+    els.violationFilters.forEach(function (button) {
+      button.addEventListener("click", function () {
+        setViolationFilter(button.dataset.violationFilter || "");
+      });
+    });
+  }
+  if (els.violationsSheet) {
+    /* Bấm ra ngoài tấm thẻ để đóng — cùng khuôn với các hộp nổi khác. */
+    els.violationsSheet.addEventListener("click", function (event) {
+      if (event.target === els.violationsSheet) closeViolations();
+    });
   }
 
   /* Cập nhật mỗi giây một lần. Dữ liệu người không bao giờ vào localStorage:

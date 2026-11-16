@@ -33,8 +33,9 @@ from typing import Any, Callable, Mapping
 from flask import Flask, Response, jsonify, render_template, request
 
 from .. import camera_control
+from .. import log_buffer as logs_module
 from ..classifier import LABEL_ORDER
-from ..logging_setup import get_logger
+from ..logging_setup import get_log_buffer, get_logger
 from ..study_session import (
     DEFAULT_MINUTES as SESSION_DEFAULT_MINUTES,
     MAX_MINUTES as SESSION_MAX_MINUTES,
@@ -111,6 +112,43 @@ STREAM_POLL_S = 0.05
 #: chèn một phần tử văn bản báo lỗi vào giữa (trình duyệt sẽ trắng ảnh).
 STREAM_STALE_WARN_S = 5.0
 
+#: Câu trả về khi ``web.stream_enabled`` tắt. Dùng chung cho ``/stream`` và
+#: ``GET /api/frame``: hai route cùng phục vụ một thứ (khung hình camera), nên
+#: người dùng chỉ được đọc **một** câu giải thích và một cách bật. Viết câu thứ
+#: hai là cách chắc chắn nhất để hai route trôi lệch nhau.
+STREAM_DISABLED_MESSAGE = (
+    "Tính năng xem trực tiếp đang tắt. Bật 'web.stream_enabled: "
+    "true' trong config.yaml nếu thật sự cần (tốn CPU và ảnh "
+    "hưởng quyền riêng tư)."
+)
+
+#: Thời gian chờ khung mới tối đa cho ``GET /api/frame`` (giây).
+#:
+#: Chọn **0,5 s** vì hai lý do đối nhau:
+#:
+#: - Đủ dài để một khung vừa tới theo nhịp camera thật (``target_fps: 5`` →
+#:   200 ms một khung) được trả ngay thay vì báo "chưa có khung" oan. Ngắn hơn
+#:   200 ms là tự tạo lỗi giả.
+#: - Đủ ngắn để không treo worker của Flask. Flask dev server mặc định chạy
+#:   ``threaded`` nhưng số luồng không cấm; app điện thoại gọi lại liên tục, nên
+#:   một request giữ luồng quá lâu sẽ dồn ứ các request khác. 0,5 s ngắn hơn
+#:   hẳn ``STREAM_WAIT_S`` (2 s) của ``/stream`` — luồng MJPEG cần giữ kết nối
+#:   lâu, còn ảnh rời thì không.
+#:
+#: Con số này **chưa đo trên Pi**: đây là lựa chọn từ nhịp camera đã cấu hình,
+#: không phải kết quả của phép đo độ trễ.
+FRAME_WAIT_S = 0.5
+
+#: Câu trả về khi ``GET /api/frame`` được gọi mà bộ nhớ chưa có khung nào
+#: (dashboard vừa khởi động, vòng lặp chưa đặt khung đầu tiên). Trả 503 + JSON
+#: thay vì 200 với thân rỗng: ứng dụng điện thoại cần phân biệt "chưa có ảnh"
+#: với "có ảnh nhưng 0 byte" để biết có nên thử lại hay báo lỗi.
+FRAME_MISSING_MESSAGE = (
+    "Chưa có khung hình nào trong bộ nhớ. Vòng lặp camera chưa đặt khung đầu "
+    "tiên — đợi vài giây rồi thử lại. Nếu vẫn không có, kiểm tra camera và "
+    "xem log của 'posture_monitor run'."
+)
+
 #: Câu trả về khi phiên chạy không được tiêm dịch vụ người học.
 #: Trang chủ vẫn render bình thường; chỉ các khối liên quan hiện câu này
 #: thay cho lỗi, và mọi route người học trả 503 (không phải 500).
@@ -128,6 +166,46 @@ SPEAKER_DISABLED_MESSAGE = (
 #: quyền riêng tư: kể cả dịch vụ lỡ trả thêm ``embedding``/``vector`` thì
 #: route cũng không đẩy chúng ra HTTP (spec §5.13.1, §8.3).
 PUBLIC_PERSON_FIELDS = ("id", "name", "created_ts")
+
+#: Số bản ghi log trả mặc định cho ``GET /api/logs``.
+#:
+#: 100 đủ để thấy diễn biến một sự cố gần đây mà popup trên điện thoại vẫn
+#: cuộn thoải mái. Đây là **số bản ghi trả về**, khác ``LogBuffer.maxlen``
+#: (500) là số bản ghi **giữ trong RAM** — buffer giữ nhiều hơn để không mất
+#: manh mối cũ khi có sự cố dồn dập.
+LOGS_DEFAULT_LIMIT = 100
+
+#: Trần của ``limit``. Bằng ``LogBuffer.maxlen``: xin nhiều hơn số đang giữ là
+#: vô nghĩa, và nhận số vô lý (``limit=10_000_000``) chỉ tổ làm route dựng một
+#: list khổng lồ. Trả 400 thay vì lặng lẽ cắt bớt để client biết mình xin sai.
+LOGS_MAX_LIMIT = logs_module.DEFAULT_MAXLEN
+
+#: Ba mã vi phạm trả qua ``GET /api/violations``, đúng ba cảnh báo của dự án.
+#: Trùng với :data:`~posture_monitor.state.ALERT_EVENT_TYPE` (ánh xạ
+#: ``leave_frame`` → ``ABSENT``, ``phone`` → ``PHONE_USE``, ``stranger`` →
+#: ``IMPOSTOR``); định nghĩa lại ở đây để route không phải import module máy
+#: trạng thái chỉ vì ba chuỗi.
+VIOLATION_KINDS = ("ABSENT", "PHONE_USE", "IMPOSTOR")
+
+#: Nhãn tiếng Việt **server sinh** cho từng mã vi phạm.
+#:
+#: Vì sao ở server chứ không ở client: dashboard web, popup web và app cùng
+#: hiển thị một việc. Nếu mỗi bên tự dịch mã thì chỉ cần đổi câu ở một nơi là
+#: ba nơi nói khác nhau, và không ai phát hiện. Ở đây là nguồn duy nhất.
+VIOLATION_KIND_TEXT = {
+    "ABSENT": "Rời khỏi bàn học",
+    "PHONE_USE": "Dùng điện thoại",
+    "IMPOSTOR": "Không phải người đăng ký",
+}
+
+#: Số dòng vi phạm trả mặc định. Bảng ``events`` có thể rất dài (mỗi vi phạm
+#: được ghi lại theo từng đợt nhắc), nên phải chặn cả hai đầu.
+VIOLATIONS_DEFAULT_LIMIT = 100
+
+#: Trần của ``limit`` cho ``/api/violations``. Lớn hơn ``LOGS_MAX_LIMIT`` vì
+#: đây là dữ liệu người dùng thật sự đọc (một buổi học có thể vài chục lần
+#: nhắc), không phải log chẩn đoán.
+VIOLATIONS_MAX_LIMIT = 500
 
 
 class DashboardState:
@@ -291,6 +369,7 @@ def create_app(
     people: PeopleService | None = None,
     speaker=None,
     study_session=None,
+    log_buffer_getter: Callable[[], Any] | None = None,
 ) -> Flask:
     """Tạo ứng dụng Flask.
 
@@ -328,6 +407,13 @@ def create_app(
             khối "Phiên học" không hiện và ``/api/session*`` trả 503. Truyền
             **cùng một** đối tượng với vòng lặp thì nút Bắt đầu/Dừng trên web
             điều khiển đúng việc model có chạy hay không.
+        log_buffer_getter: hàm trả :class:`~posture_monitor.log_buffer.
+            LogBuffer` cho ``GET /api/logs``. Keyword-only, mặc định ``None``
+            nghĩa là dùng :func:`~posture_monitor.logging_setup.get_log_buffer`
+            — buffer **dùng chung** mà ``setup_logging`` đã gắn vào logger, nên
+            route đọc đúng chỗ handler đang ghi. Truyền ``lambda: None`` để mô
+            phỏng "phiên chạy chưa bật buffer" (route trả 503); truyền một
+            buffer riêng để test kiểm soát nội dung.
 
     Returns:
         :class:`flask.Flask` đã gắn đủ route.
@@ -339,6 +425,12 @@ def create_app(
     )
     # JSON không sắp xếp khóa để giữ thứ tự dễ đọc khi debug bằng mắt.
     app.json.sort_keys = False
+
+    # Hàm đọc buffer log. Mặc định trỏ tới buffer **dùng chung** để route
+    # ``/api/logs`` đọc đúng nơi handler của ``setup_logging`` đang ghi.
+    _logs_buffer_provider: Callable[[], Any] = (
+        log_buffer_getter if log_buffer_getter is not None else get_log_buffer
+    )
 
     dashboard = state or DashboardState()
     web_cfg = getattr(config, "web", None)
@@ -427,6 +519,225 @@ def create_app(
         payload["stream_enabled"] = stream_enabled
         payload["min_distance_cm"] = min_distance
         return jsonify(payload)
+
+    @app.get("/api/logs")
+    def api_logs() -> Response:
+        """Nhật ký lỗi gần đây, đọc từ bộ đệm RAM.
+
+        Người dùng cần một tab log ở cả web lẫn app để biết "hệ thống vừa báo
+        lỗi gì, lúc nào" mà không phải SSH vào Pi xem file. Route này phục vụ
+        cả hai: cùng một JSON, cùng một nguồn.
+
+        Nguồn dữ liệu là :class:`~posture_monitor.log_buffer.LogBuffer` **dùng
+        chung** — không phải bảng ``events`` trong SQLite (bảng đó chứa sự kiện
+        cảnh báo ``leave_frame``/``phone``/``stranger``, không phải log lỗi hệ
+        thống; trộn hai loại sẽ làm hỏng cả hai nghĩa).
+
+        Tham số:
+
+        - ``limit``: số bản ghi trả về, mặc định :data:`LOGS_DEFAULT_LIMIT`,
+          tối đa :data:`LOGS_MAX_LIMIT`. Giá trị ngoài dải hoặc không phải số
+          nguyên → 400.
+        - ``level``: mức tối thiểu, mặc định **``WARNING``**. Lý do mặc định
+          là WARNING: người dùng cần thấy **lỗi**, không cần thấy nhật ký hoạt
+          động bình thường; ``INFO`` sẽ làm ngập popup và che mất lỗi thật.
+          ``level=ERROR`` chỉ trả ERROR+CRITICAL; ``level=DEBUG`` trả mọi thứ
+          (dùng khi cần chẩn đoán sâu). Giá trị lạ → 400 kèm danh sách hợp lệ.
+
+        Bộ đệm **giữ mọi mức** và chỉ lọc ở đây, nên đổi ``level`` không cần
+        khởi động lại và không làm mất log ``INFO`` đã ghi.
+
+        Chưa có buffer (phiên chạy không bật logging có buffer) → 503 JSON kèm
+        câu tiếng Việt, không trả HTML và không sập.
+        """
+        logs = _logs_buffer_provider()
+        if logs is None:
+            return _json_error(
+                "Chưa có bộ đệm nhật ký trong phiên chạy này nên chưa đọc "
+                "được log. Bật logging của ứng dụng rồi thử lại.",
+                503,
+            )
+
+        raw_limit = request.args.get("limit")
+        if raw_limit is None or str(raw_limit).strip() == "":
+            limit = LOGS_DEFAULT_LIMIT
+        else:
+            try:
+                limit = int(str(raw_limit).strip())
+            except (TypeError, ValueError):
+                return _json_error(
+                    f"Tham số 'limit' phải là số nguyên, nhận được {raw_limit!r}.",
+                    400,
+                )
+            if limit <= 0:
+                return _json_error(
+                    "'limit' phải là số dương — cần ít nhất một bản ghi.", 400
+                )
+            if limit > LOGS_MAX_LIMIT:
+                return _json_error(
+                    f"'limit' tối đa là {LOGS_MAX_LIMIT}, nhận được {limit}.",
+                    400,
+                )
+
+        raw_level = request.args.get("level")
+        level = logs_module.normalize_level(raw_level)
+        if level is None:
+            return _json_error(
+                f"Tham số 'level' phải là một trong "
+                f"{', '.join(logs_module.LEVEL_ORDER)}; nhận được "
+                f"{raw_level!r}.",
+                400,
+            )
+
+        entries = logs.snapshot(limit=limit, min_level=level)
+        return jsonify(
+            {
+                "logs": entries,
+                "total": len(entries),
+                "level": level,
+                "limit": limit,
+            }
+        )
+
+    @app.get("/api/violations")
+    def api_violations() -> Response:
+        """Lịch sử **vi phạm** trong giờ học, đọc từ bảng ``events``.
+
+        Đây là thứ người dùng thật sự muốn xem khi bấm nút nhật ký: *"hôm nay
+        tôi đã rời bàn mấy lần, lúc nào, kéo dài bao lâu"* — không phải log
+        chẩn đoán của lập trình viên. Vì vậy route đọc bảng ``events`` trong
+        SQLite (đã có sẵn từ trước) chứ không phải bộ đệm log trong RAM:
+        bộ đệm mất khi khởi động lại, còn vi phạm phải còn sau nhiều ngày.
+
+        Ba loại được trả, đúng ba cảnh báo của dự án
+        (:data:`~posture_monitor.state.ALERT_EVENT_TYPE`):
+
+        - ``ABSENT`` — rời khung hình (``leave_frame``)
+        - ``PHONE_USE`` — dùng điện thoại (``phone``)
+        - ``IMPOSTOR`` — sai người học (``stranger``)
+
+        Bảng ``events`` còn chứa ``alert_start``/``alert_end``/``SPEAK_OK``/
+        ``break_reminder``/``absent_reset`` — **không** phải vi phạm, nên route
+        lọc bỏ. Không lọc thì popup sẽ đầy dòng kỹ thuật và người dùng không
+        đọc được gì.
+
+        ``kind_text`` là **nhãn tiếng Việt do server sinh**. App và web đều
+        dùng thẳng nhãn này thay vì tự dịch mã: ba nơi (dashboard, popup web,
+        app) phải nói cùng một câu, nếu mỗi nơi tự dịch thì sẽ lệch nhau ngay
+        lần đổi chữ đầu tiên.
+
+        Tham số:
+
+        - ``limit``: số dòng trả về, mặc định :data:`VIOLATIONS_DEFAULT_LIMIT`,
+          tối đa :data:`VIOLATIONS_MAX_LIMIT`. Ngoài dải → 400.
+        - ``kinds``: danh sách mã cách nhau bằng dấu phẩy, ví dụ
+          ``ABSENT,PHONE_USE``. Bỏ trống = cả ba loại. Mã lạ → 400 kèm danh
+          sách hợp lệ (không lặng lẽ bỏ qua: người dùng sẽ tưởng "không có vi
+          phạm nào" trong khi thật ra gõ sai tham số).
+        - ``since_s``: chỉ lấy vi phạm trong ``since_s`` giây gần nhất.
+
+        Chưa bật lưu trữ (``storage is None``) → 503 JSON kèm câu tiếng Việt.
+        DB lỗi → 200 với danh sách rỗng và ``error`` mô tả: web không được sập
+        vì một truy vấn hỏng, nhưng cũng không được giả vờ là "không có vi
+        phạm nào" mà không nói gì.
+        """
+        if storage is None:
+            return _json_error(
+                "Chưa bật lưu trữ nên chưa có lịch sử vi phạm. Bật mục "
+                "'storage' trong config.yaml rồi chạy lại.",
+                503,
+            )
+
+        raw_limit = request.args.get("limit")
+        if raw_limit is None or str(raw_limit).strip() == "":
+            limit = VIOLATIONS_DEFAULT_LIMIT
+        else:
+            try:
+                limit = int(str(raw_limit).strip())
+            except (TypeError, ValueError):
+                return _json_error(
+                    f"Tham số 'limit' phải là số nguyên, nhận được {raw_limit!r}.",
+                    400,
+                )
+            if limit <= 0:
+                return _json_error(
+                    "'limit' phải là số dương — cần ít nhất một dòng.", 400
+                )
+            if limit > VIOLATIONS_MAX_LIMIT:
+                return _json_error(
+                    f"'limit' tối đa là {VIOLATIONS_MAX_LIMIT}, nhận được {limit}.",
+                    400,
+                )
+
+        raw_kinds = request.args.get("kinds")
+        if raw_kinds is None or str(raw_kinds).strip() == "":
+            kinds = None
+        else:
+            kinds = []
+            for piece in str(raw_kinds).split(","):
+                code = piece.strip().upper()
+                if not code:
+                    continue
+                if code not in VIOLATION_KINDS:
+                    return _json_error(
+                        "Tham số 'kinds' chỉ nhận "
+                        f"{', '.join(VIOLATION_KINDS)}; gặp mã lạ "
+                        f"{piece.strip()!r}.",
+                        400,
+                    )
+                kinds.append(code)
+            if not kinds:
+                kinds = None
+
+        raw_since = request.args.get("since_s")
+        if raw_since is None or str(raw_since).strip() == "":
+            since_ts = None
+        else:
+            try:
+                since_s = float(str(raw_since).strip())
+            except (TypeError, ValueError):
+                return _json_error(
+                    f"Tham số 'since_s' phải là số giây, nhận được {raw_since!r}.",
+                    400,
+                )
+            if since_s < 0:
+                return _json_error("'since_s' không được âm.", 400)
+            since_ts = time.time() - since_s
+
+        try:
+            rows = storage.violations(limit=limit, kinds=kinds, since_ts=since_ts)
+        except Exception as exc:  # noqa: BLE001 - DB lỗi không được làm sập web
+            _logger.exception("Không đọc được lịch sử vi phạm từ DB.")
+            return _json_error(
+                f"Không đọc được lịch sử vi phạm từ cơ sở dữ liệu ({exc}). "
+                "Xem log của máy chủ.",
+                503,
+            )
+
+        counts = {kind: 0 for kind in VIOLATION_KINDS}
+        for row in rows:
+            kind = row.get("kind")
+            if kind in counts:
+                counts[kind] += 1
+
+        return jsonify(
+            {
+                "violations": [
+                    {
+                        "ts": row["ts"],
+                        "kind": row["kind"],
+                        "kind_text": VIOLATION_KIND_TEXT.get(
+                            row["kind"], str(row["kind"])
+                        ),
+                        "duration_s": row["duration_s"],
+                    }
+                    for row in rows
+                ],
+                "total": len(rows),
+                "counts": counts,
+                "limit": limit,
+            }
+        )
 
     @app.get("/api/history")
     def api_history() -> Response:
@@ -753,16 +1064,66 @@ def create_app(
         ``web.stream_enabled``; tắt thì trả 403 kèm thông điệp tiếng Việt.
         """
         if not stream_enabled:
-            return _json_error(
-                "Tính năng xem trực tiếp đang tắt. Bật 'web.stream_enabled: "
-                "true' trong config.yaml nếu thật sự cần (tốn CPU và ảnh "
-                "hưởng quyền riêng tư).",
-                403,
-            )
+            return _json_error(STREAM_DISABLED_MESSAGE, 403)
         return Response(
             _mjpeg(dashboard),
             mimetype="multipart/x-mixed-replace; boundary=frame",
         )
+
+    @app.get("/api/frame")
+    def api_frame() -> Response:
+        """Một khung JPEG rời, cho ứng dụng điện thoại tự tải lại theo nhịp.
+
+        Vì sao cần route này: iOS/React Native **không** render được
+        ``multipart/x-mixed-replace`` trong ``<Image>``, nên ``/stream`` không
+        dùng được cho app. Ứng dụng gọi route này theo nhịp của nó và nhận một
+        ảnh JPEG trọn vẹn mỗi lần.
+
+        Hành vi:
+
+        - ``web.stream_enabled`` tắt → 403 JSON, **cùng câu**
+          :data:`STREAM_DISABLED_MESSAGE` với ``/stream`` (một nguồn duy nhất,
+          không viết thông điệp thứ hai).
+        - Chưa có khung nào trong bộ nhớ → 503 JSON với
+          :data:`FRAME_MISSING_MESSAGE`. Không bao giờ trả 200 với thân rỗng:
+          app sẽ hiện ô ảnh trắng mà không biết vì sao.
+        - Có khung → 200, ``Content-Type: image/jpeg``, kèm
+          ``Cache-Control: no-store``. Header này bắt buộc: ảnh camera là dữ
+          liệu sống, cache của trình duyệt/proxy sẽ trả lại khung cũ và người
+          dùng thấy hình đứng trong khi phần số liệu vẫn chạy.
+
+        Chờ khung tối đa :data:`FRAME_WAIT_S` giây (``wait_frame``) để một
+        khung vừa tới kịp được trả, nhưng không giữ worker của Flask lâu hơn
+        thế. Nếu hết thời gian mà vẫn chưa có khung nào thì trả 503 như trên.
+
+        Route **chỉ đọc**: lấy byte từ ``DashboardState`` trong bộ nhớ rồi trả
+        thẳng. Không mở camera, không giải mã, không ghi đĩa, không lưu ảnh
+        (spec v2 §11.5). Nhờ vậy gọi route này bao nhiêu lần cũng không tạo
+        thêm tải cho camera hay sinh tệp rác trên Pi.
+        """
+        if not stream_enabled:
+            return _json_error(STREAM_DISABLED_MESSAGE, 403)
+
+        # ``last_seq = -1``: khung nào đang có cũng tính là "mới" so với mốc
+        # này, nên nếu bộ nhớ đã có ảnh thì trả ngay, không chờ vô ích.
+        _seq, frame = dashboard.wait_frame(-1, timeout=FRAME_WAIT_S)
+        # Chặn cả ``None`` **và** ``b""``: băng rỗng cũng là "chưa có khung",
+        # không phải một khung JPEG rỗng (JPEG thật luôn có ít nhất SOI+EOI).
+        # Trả 200 với thân rỗng là bẫy tệ nhất cho client — app hiện ô ảnh
+        # trắng mà không có thông tin gì để phân biệt "chưa có ảnh" với "ảnh
+        # hỏng".
+        #
+        # KHÔNG viết ``if not frame:``: nếu vòng lặp chính đặt một mảng numpy,
+        # ``not array`` ném ``ValueError: truth value of an array ... is
+        # ambiguous`` và route sập 500 thay vì trả lời. Đo được khi viết bài
+        # ``test_frame_numpy_buffer_duoc_gui_nguyen_ven``. Đếm độ dài là phép
+        # thử đúng cho cả ``None``, ``bytes``, ``bytearray`` và mảng numpy.
+        if frame is None or len(frame) == 0:
+            return _json_error(FRAME_MISSING_MESSAGE, 503)
+
+        response = Response(frame, mimetype="image/jpeg")
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     # ------------------------------------------------------------------
     # Người học (spec v3 §5.16). Mọi route dưới đây đều đi qua một lớp

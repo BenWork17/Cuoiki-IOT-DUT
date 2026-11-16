@@ -163,6 +163,33 @@ Cờ đáng chú ý của `run`:
 
 ---
 
+## Ứng dụng điện thoại (Expo Go)
+
+Ngoài dashboard web, có app React Native (TypeScript, Expo SDK 54) trong
+[`apps/mobile/`](apps/mobile/README.md) để xem trạng thái, ảnh camera, phiên
+học, tín hiệu, điều khiển PTZ và giọng đọc ngay trên iPhone.
+
+App chạy bằng **Expo Go**, không build native iOS (máy dev Windows không có
+Xcode). Điện thoại và máy chạy dashboard phải **cùng một mạng LAN**; địa chỉ
+nhập trong app là IP LAN của Pi, **không** phải `localhost`.
+
+```powershell
+cd apps\mobile
+npm install
+npx expo start      # quét QR bằng Camera của iPhone
+```
+
+Hướng dẫn đầy đủ (cổng 8000, tường lửa, ATS với `http://`, bảng route ↔ mã lỗi
+↔ câu hiển thị, và cách tự xác nhận lỗi "quay lại bàn học" đã hết):
+[`docs/INTEGRATION_MOBILE.md`](docs/INTEGRATION_MOBILE.md).
+
+> **Chưa kiểm chứng trên thiết bị thật.** App mới được kiểm bằng test tự động
+> (Node + jsdom), typecheck và build bundle iOS; chưa ai chạy nó trên iPhone,
+> và ATS với `http://` trong Expo Go vẫn là câu hỏi mở. Danh sách đầy đủ ở §9
+> của tài liệu tích hợp.
+
+---
+
 ## Phiên học: công tắc duy nhất bật model AI
 
 Ngoài phiên, hệ thống **vẫn xem camera và nhận diện khuôn mặt** (để dashboard
@@ -345,8 +372,10 @@ chúng vẫn mở được bằng `isOpened()`. Vì vậy script lọc theo tên
 │   ├── SPEC_V2.md            # đặc tả nền (tư thế, phần cứng)
 │   ├── SPEC_V3.md            # đặc tả hiện hành (người học, phiên học)
 │   ├── WEB_DASHBOARD.md      # dashboard: giao diện, API, PTZ
+│   ├── INTEGRATION_MOBILE.md # chạy app Expo Go trên iPhone + bảng route/mã lỗi
 │   ├── MODELS.md             # nguồn tải và cách kiểm chứng mô hình
 │   └── REUSE_AUDIT.md        # đánh giá tài nguyên tái sử dụng
+├── apps/mobile/              # app React Native (Expo Go) — xem README riêng
 ├── scripts/
 │   ├── camera_probe.py       # dò và in bảng thiết bị quay hình
 │   └── hw_selftest.py        # tự kiểm tra LED/buzzer/rung/siêu âm

@@ -56,12 +56,13 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .classifier import ABSENT
 from .logging_setup import get_logger
@@ -90,6 +91,16 @@ HISTORY_7D_DAYS = 7
 
 #: Số giây trong một ngày.
 DAY_S = 86400
+
+#: Ba mã vi phạm mà :meth:`Storage.violations` trả về.
+#:
+#: Trùng giá trị với các hằng ``EVENT_ABSENT``/``EVENT_PHONE_USE``/
+#: ``EVENT_IMPOSTOR`` trong :mod:`posture_monitor.state`, nhưng **không** import
+#: module đó: ``state`` kéo theo ``classifier``/``scheduler``, còn ``storage``
+#: là tầng thấp nhất và phải nạp được một mình (nó được import từ cả CLI lẫn
+#: web). Chuỗi trùng nhau là hợp đồng đã khoá bằng test
+#: ``tests/test_web_violations.py``; đổi một bên là test đỏ ngay.
+VIOLATION_KIND_CODES = ("ABSENT", "PHONE_USE", "IMPOSTOR")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -284,6 +295,17 @@ class Storage:
         self._clock = clock or time.time
 
         self._conn: sqlite3.Connection | None = None
+        #: Khoá bảo vệ **mọi** lần chạm ``self._conn``.
+        #:
+        #: Cần vì kết nối mở với ``check_same_thread=False`` (xem
+        #: :meth:`open`): vòng lặp camera ghi ở luồng chính còn Flask đọc ở
+        #: luồng ``dashboard-web``. Không khoá thì hai luồng cùng dùng một
+        #: ``sqlite3.Connection`` — sqlite3 không hứa an toàn cho việc đó, và
+        #: hỏng theo kiểu im lặng (trả rỗng) chứ không ném.
+        #:
+        #: ``RLock`` chứ không ``Lock``: ``record_event`` gọi ``_maybe_flush``
+        #: gọi ``flush`` — cùng một luồng vào lại khoá.
+        self._db_lock = threading.RLock()
         self._session_id: int | None = None
         self._last_record_ts: float | None = None
         self._buckets: dict[int, _Bucket] = {}
@@ -314,6 +336,14 @@ class Storage:
 
         Không raise khi DB lỗi/khoá/không ghi được: log lỗi và để mọi phương
         thức sau đó thành no-op (spec §11.4).
+
+        **Kết nối được mở với ``check_same_thread=False``**: đối tượng này
+        sống ở luồng chính (``_Dashboard`` trong ``__main__``) nhưng Flask
+        phục vụ ``/api/history`` và ``/api/violations`` ở luồng khác. Mặc định
+        của ``sqlite3`` là chặn việc đó, và triệu chứng rất khó thấy: route
+        trả **200 với danh sách rỗng** thay vì lỗi — popup nhật ký luôn hiện
+        "chưa có vi phạm nào" dù dữ liệu có thật. Mọi truy cập sau đó đi qua
+        :attr:`_db_lock` để bù lại việc đã tắt kiểm tra luồng.
         """
         if self._conn is not None:
             return
@@ -326,6 +356,9 @@ class Storage:
                 str(self.db_path),
                 timeout=5.0,
                 isolation_level=None,
+                # Đọc từ luồng Flask là bắt buộc (xem docstring ở trên); khoá
+                # ``_db_lock`` thay cho kiểm tra luồng của sqlite3.
+                check_same_thread=False,
             )
         except (OSError, sqlite3.Error) as exc:
             _logger.error(
@@ -502,32 +535,37 @@ class Storage:
             # isolation_level=None: mọi câu lệnh đều autocommit nếu không có
             # BEGIN. Ghi cả lô trong một giao dịch tường minh để thẻ nhớ chỉ
             # phải chốt (fsync) một lần.
-            self._conn.execute("BEGIN IMMEDIATE")
-            try:
-                if events:
-                    self._conn.executemany(
-                        "INSERT INTO events "
-                        "(session_id, ts, type, label, duration_s, extra_json) "
-                        "VALUES (?, ?, ?, ?, ?, ?)",
-                        events,
-                    )
-                if rows:
-                    self._conn.executemany(
-                        "INSERT INTO minute_stats "
-                        "(session_id, minute_ts, good_pct, avg_score, "
-                        "absent_s, distance_cm_avg) "
-                        "VALUES (?, ?, ?, ?, ?, ?) "
-                        "ON CONFLICT(session_id, minute_ts) DO UPDATE SET "
-                        "good_pct = excluded.good_pct, "
-                        "avg_score = excluded.avg_score, "
-                        "absent_s = excluded.absent_s, "
-                        "distance_cm_avg = excluded.distance_cm_avg",
-                        rows,
-                    )
-                self._conn.commit()
-            except sqlite3.Error:
-                self._conn.rollback()
-                raise
+            #
+            # Khoá bao cả giao dịch chứ không từng câu: nếu xen một lần đọc
+            # của Flask vào giữa BEGIN và COMMIT thì lần đọc đó thấy trạng thái
+            # nửa vời.
+            with self._db_lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    if events:
+                        self._conn.executemany(
+                            "INSERT INTO events "
+                            "(session_id, ts, type, label, duration_s, extra_json) "
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            events,
+                        )
+                    if rows:
+                        self._conn.executemany(
+                            "INSERT INTO minute_stats "
+                            "(session_id, minute_ts, good_pct, avg_score, "
+                            "absent_s, distance_cm_avg) "
+                            "VALUES (?, ?, ?, ?, ?, ?) "
+                            "ON CONFLICT(session_id, minute_ts) DO UPDATE SET "
+                            "good_pct = excluded.good_pct, "
+                            "avg_score = excluded.avg_score, "
+                            "absent_s = excluded.absent_s, "
+                            "distance_cm_avg = excluded.distance_cm_avg",
+                            rows,
+                        )
+                    self._conn.commit()
+                except sqlite3.Error:
+                    self._conn.rollback()
+                    raise
         except sqlite3.Error as exc:
             # Giữ nguyên hàng đợi để lần flush sau thử lại; chặn phình bộ nhớ
             # bằng MAX_PENDING_ROWS ở _queue_event.
@@ -603,6 +641,79 @@ class Storage:
     # ------------------------------------------------------------------
     # Đọc dữ liệu cho dashboard
     # ------------------------------------------------------------------
+    def violations(
+        self,
+        limit: int = 100,
+        kinds: Sequence[str] | None = None,
+        since_ts: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """Lịch sử **vi phạm** trong giờ học, mới nhất trước.
+
+        Khác :meth:`history` (số liệu tổng hợp theo giờ/ngày để vẽ biểu đồ),
+        hàm này trả **từng lần vi phạm** kèm thời điểm — thứ người dùng cần khi
+        tự hỏi "sáng nay tôi rời bàn mấy lần, lúc nào".
+
+        Nguồn là bảng ``events``, nhưng **chỉ ba loại vi phạm** được trả:
+        ``ABSENT`` (rời khung), ``PHONE_USE`` (dùng điện thoại), ``IMPOSTOR``
+        (sai người học). Bảng còn chứa ``alert_start``/``alert_end``/
+        ``SPEAK_OK``/``break_reminder``/``absent_reset`` — đó là dấu vết kỹ
+        thuật của máy trạng thái, không phải vi phạm; trả lẫn vào sẽ làm hỏng
+        cả hai nghĩa.
+
+        Args:
+            limit: số dòng tối đa, phải dương.
+            kinds: chỉ lấy các mã này; ``None`` = cả ba.
+            since_ts: chỉ lấy dòng có ``ts >= since_ts``; ``None`` = mọi mốc.
+
+        Returns:
+            List dict ``{ts, kind, duration_s}`` mới nhất trước. Rỗng khi chưa
+            mở DB, chưa có dữ liệu, hoặc DB lỗi (lỗi được log, không raise —
+            web không được sập vì một truy vấn hỏng).
+        """
+        if self._conn is None:
+            return []
+        try:
+            wanted = int(limit)
+        except (TypeError, ValueError):
+            return []
+        if wanted <= 0:
+            return []
+
+        allowed = list(VIOLATION_KIND_CODES) if kinds is None else [
+            str(kind) for kind in kinds
+        ]
+        if not allowed:
+            return []
+
+        placeholders = ", ".join("?" for _ in allowed)
+        sql = (
+            "SELECT ts, type, duration_s FROM events "
+            f"WHERE type IN ({placeholders})"
+        )
+        params: list[Any] = list(allowed)
+        if since_ts is not None:
+            moment = _finite_or_none(since_ts)
+            if moment is not None:
+                sql += " AND ts >= ?"
+                params.append(float(moment))
+        sql += " ORDER BY ts DESC LIMIT ?"
+        params.append(wanted)
+
+        try:
+            with self._db_lock:
+                rows = self._conn.execute(sql, params).fetchall()
+        except sqlite3.Error as exc:
+            _logger.error("Không đọc được lịch sử vi phạm: %s", exc)
+            return []
+        return [
+            {
+                "ts": float(row[0]),
+                "kind": str(row[1]),
+                "duration_s": float(row[2] or 0.0),
+            }
+            for row in rows
+        ]
+
     def history(
         self, range_key: str = "today", now: float | None = None
     ) -> dict[str, Any]:

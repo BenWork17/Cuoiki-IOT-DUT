@@ -1,0 +1,14 @@
+# Expo / Metro
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native build sinh ra khi prebuild (không dùng trên máy Windows này)
+ios/
+android/
+
+# Log và tệp tạm
+*.log
+.DS_Store

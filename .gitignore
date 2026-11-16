@@ -71,6 +71,36 @@ desktop.ini
 /.preserved-worktrees/
 /test.py
 
+# Cache và trạng thái công cụ, KHÔNG commit:
+#   .npm-cache/     cache npm trỏ vào workspace (hàng nghìn tệp, hàng trăm MB);
+#                   ai cần thì `npm install` sinh lại, nội dung không phải mã
+#   .agent-teams/   trạng thái phiên làm việc của công cụ đa tác nhân
+#   NewData/        bộ dữ liệu thô 4,1 GB — dữ liệu vào, không phải mã nguồn
+#   .pytest-*/tmp*/ thư mục sandbox tạo khi chạy test, không xoá được từ trong
+/.npm-cache/
+/.agent-teams/
+/NewData/
+/.pytest-base/
+/.pytest-run/
+/.pytest-tmp/
+/.w1/
+/.w2/
+/fresh-700/
+/probeE-700/
+/zz-700/
+/zzfinal/
+/pytest-of-ACER/
+/tmp3nntzror/
+/tmp987c30cw/
+/tmpc321_dvp/
+/tmpjcznvm9j/
+/tmppnrco9yd/
+/tmpvti8skgy/
+/tmpxtkzzlvj/
+
+# Tệp tạm của Office/Word (~$*.docx) — Word tạo khi đang mở tài liệu.
+~$*
+
 # Lưới an toàn (phải nằm CUỐI file, sau mọi mẫu loại trừ): spec §9 và §13
 # bắt buộc commit video mẫu + expected.json. Negation chỉ hiệu lực vì thư mục
 # cha tests/ không bị loại trừ — "/data/" không khớp "tests/data/".

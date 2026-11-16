@@ -1430,6 +1430,178 @@ h1 {
 }
 
 /* --------------------------------------------------------------------------
+ * Nhật ký vi phạm (một nút ở header + một hộp nổi)
+ *
+ * Hộp nổi dùng lại đúng `.sheet`/`.sheet__panel` ở trên nên không có lớp phủ
+ * thứ hai. Phần dưới chỉ thêm cách trình bày nội dung bên trong.
+ *
+ * Màu phân loại lấy từ biến đã có: rời bàn và dùng điện thoại là WARNING
+ * (cần chú ý, chưa nguy hiểm), sai người là NEGATIVE (nguy hiểm). Không thêm
+ * mã màu mới — mọi giá trị đều là var(--…) trong :root.
+ * ----------------------------------------------------------------------- */
+
+/* Nút mở nhật ký cao 52px: chuẩn cảm ứng của docs/WEB_DASHBOARD.md §6.
+ * Đặt riêng trên lớp `btn--logs` để `.btn` chung (38px, 44px trên điện thoại)
+ * không đổi — các nút khác giữ nguyên kích thước. */
+.btn--logs {
+  height: 52px;
+  min-height: 52px;
+}
+
+/* Hàng nút lọc: cùng chiều cao 52px, gói được nhiều dòng trên máy hẹp. */
+.viol__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.viol__filter {
+  flex: 1 1 auto;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+/* Nút lọc đang chọn: viền trong thay vì đổi màu nền, để vẫn đọc được cả khi
+ * máy ở chế độ tương phản cao. Trạng thái vẫn có `aria-pressed` đi kèm. */
+.viol__filter[aria-pressed="true"] {
+  color: var(--brand-strong);
+  background: var(--brand-wash);
+  box-shadow: inset 0 0 0 2px var(--brand);
+}
+
+.viol__summary {
+  margin: 4px 0 0;
+  font-size: var(--fs-section);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.viol__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* Chip đếm theo loại. Dùng đúng ba cặp biến như bảng màu trạng thái. */
+.viol__count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  background: var(--raise);
+  color: var(--text-soft);
+}
+
+.viol__count[data-kind="ABSENT"] {
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+.viol__count[data-kind="PHONE_USE"] {
+  background: var(--warning-wash);
+  color: var(--warning);
+}
+
+.viol__count[data-kind="IMPOSTOR"] {
+  background: var(--negative-wash);
+  color: var(--negative);
+}
+
+/* Danh sách: cuộn được và có giới hạn chiều cao, để trên điện thoại hộp nổi
+ * không cao hơn màn hình. `min-height: 0` cần cho flex con cuộn đúng. */
+.viol__list {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(52vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.viol__row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--raise);
+  /* Vạch màu bên trái theo loại: dấu hiệu thứ hai ngoài màu chữ, nhưng vẫn
+   * luôn có nhãn chữ bên cạnh nên màu không phải kênh duy nhất. */
+  border-left: 3px solid var(--line);
+}
+
+.viol__row[data-kind="ABSENT"] {
+  border-left-color: var(--warning);
+}
+
+.viol__row[data-kind="PHONE_USE"] {
+  border-left-color: var(--warning);
+}
+
+.viol__row[data-kind="IMPOSTOR"] {
+  border-left-color: var(--negative);
+}
+
+.viol__time {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--muted-strong);
+}
+
+.viol__kind {
+  font-size: var(--fs-small);
+  font-weight: 700;
+  color: var(--text-soft);
+}
+
+.viol__row[data-kind="ABSENT"] .viol__kind,
+.viol__row[data-kind="PHONE_USE"] .viol__kind {
+  color: var(--warning);
+}
+
+.viol__row[data-kind="IMPOSTOR"] .viol__kind {
+  color: var(--negative);
+}
+
+.viol__duration {
+  grid-column: 2;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* Câu "chưa có vi phạm" là tin TỐT: cố ý không dùng --warning/--negative,
+ * nếu không người dùng đọc thấy màu báo động khi hệ thống đang sạch. */
+.viol__empty {
+  margin-top: 14px;
+  margin-bottom: 0;
+  color: var(--positive);
+  font-weight: 600;
+}
+
+.viol__error {
+  margin: 14px 0 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  background: var(--negative-wash);
+  color: var(--negative);
+  font-size: var(--fs-small);
+  line-height: 20px;
+}
+
+.viol__retry {
+  width: 100%;
+}
+
+/* --------------------------------------------------------------------------
  * Hộp quét khuôn mặt kiểu Face ID
  * ----------------------------------------------------------------------- */
 
@@ -1816,6 +1988,17 @@ h1 {
   .btn,
   .field {
     height: 44px;
+  }
+
+  /* Ngoại lệ CÓ CHỦ ĐÍCH: nút mở nhật ký vi phạm phải cao 52px theo
+     docs/WEB_DASHBOARD.md §6, không bị quy tắc `.btn { height: 44px }` ngay
+     trên kéo xuống. Cần selector `.btn.btn--logs` (độ đặc hiệu 0,2,0) vì quy
+     tắc kia là `.btn` (0,1,0) — nếu chỉ viết `.btn--logs` thì thứ tự khai báo
+     quyết định và nút bị ép về 44px trên điện thoại. */
+  .btn.btn--logs,
+  .viol__filter {
+    height: 52px;
+    min-height: 52px;
   }
 
   .main {

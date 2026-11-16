@@ -188,6 +188,38 @@ def test_detect_reports_person_count(monkeypatch):
     assert estimator.last_person_count == 3
 
 
+def test_person_count_correct_when_keypoints_missing(monkeypatch):
+    """Có hộp nhưng **không đọc được keypoint**: ``None`` nhưng đếm đúng số người.
+
+    ``detect()`` không thể trả ``PoseResult`` khi thiếu keypoint (hợp đồng đòi
+    ``xy`` (17,2) và ``conf`` (17)), nhưng ``last_person_count`` vẫn phải là
+    ``len(boxes)`` — nếu đặt 0 thì tầng trên lại bị nói dối là "khung trống",
+    đúng kiểu lỗi mà bản sửa này vừa loại bỏ.
+    """
+
+    class _NoKeypointsResult:
+        def __init__(self, count: int) -> None:
+            self.boxes = _FakeBoxes(
+                [[0, 0, 10, 10]] * count, ids=list(range(count))
+            )
+            self.keypoints = None
+
+    class _Model:
+        def __init__(self) -> None:
+            self.results = [_NoKeypointsResult(2)]
+
+        def track(self, frame, **kwargs):
+            return self.results
+
+        def predict(self, frame, **kwargs):
+            return self.results
+
+    estimator = _estimator(monkeypatch, _Model())
+
+    assert estimator.detect(np.zeros((48, 64, 3), dtype=np.uint8)) is None
+    assert estimator.last_person_count == 2, "vẫn thấy 2 người, không phải 0"
+
+
 def test_detect_selects_largest_box_initially(monkeypatch):
     """Chưa khoá ai thì chọn khung bao lớn nhất (spec §5.6)."""
     boxes = [[0, 0, 10, 10], [20, 20, 60, 60]]
@@ -235,30 +267,71 @@ def test_detect_keeps_locked_track_when_other_person_bigger(monkeypatch):
 
 
 def test_detect_returns_none_while_track_temporarily_absent(monkeypatch):
-    """Track đang bám vắng tạm thời → ``None``, không nhảy sang người khác."""
+    """Track đang bám vắng, khung chỉ còn hộp rác → ``None``, không cướp khoá.
+
+    **Kịch bản của bài này đã đổi.** Bản cũ dùng khung 8x8 với một người
+    200x200 mang id 9 và đòi ``detect()`` trả ``None`` — tức nó khoá luôn
+    hành vi lỗi "BotSORT đổi id thì mất skeleton 120 s" (xem
+    ``tests/test_pose_track_reacquire.py``). Ý định còn đúng của bài cũ — khi
+    khung chỉ còn hộp rác nhỏ thì không được nhảy khoá — được giữ nguyên ở
+    đây: khung thật 640x480, hộp 3x3 (0,47 % cạnh khung, dưới
+    ``REACQUIRE_MIN_FRAME_RATIO``), nên vẫn phải trả ``None`` và giữ khoá 7.
+    """
     estimator = _estimator(monkeypatch, _FakeModel([]))
     estimator._locked_id = 7
     estimator._last_seen_ts = pose_mod.time.monotonic()
     estimator._model = _FakeModel(
-        [_result_for([[0, 0, 200, 200]], ids=[9])]
+        [_result_for([[100, 100, 103, 103]], ids=[9])]
     )
 
-    assert estimator.detect(np.zeros((8, 8, 3), dtype=np.uint8)) is None
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    assert estimator.detect(frame) is None
+    assert estimator._locked_id == 7, "hộp rác không được cướp khoá"
+    assert estimator.last_person_count == 1, "khung vẫn có 1 người"
 
 
 def test_detect_releases_track_after_absent_reset(monkeypatch):
-    """Vắng quá ``absent_reset_s`` thì nhả khoá và chọn người mới."""
+    """Vắng quá ``absent_reset_s`` thì nhả khoá và chọn người mới.
+
+    Chạy trên **khung thật 640x480 với hộp 3x3** để đi đúng **nhánh nhả khoá**
+    chứ không phải nhánh bám lại: hộp 3x3 không qua được cổng kích thước, nên
+    chỉ có đường "chờ hết ``absent_reset_s`` rồi chọn" mới trả về người.
+
+    Trước đây bài này dùng khung 8x8 với hộp 200x200 — một hộp lớn hơn cả khung
+    hình, dữ liệu không thể xảy ra từ camera thật. Với bản sửa bám lại, hộp đó
+    sẽ bám lại **ngay**, nên kịch bản cũ không còn đi tới nhánh nhả khoá nữa.
+    """
     estimator = _estimator(monkeypatch, _FakeModel([]))
     estimator._locked_id = 7
     # Giả lập đã vắng lâu hơn absent_reset_s (mặc định 120 giây).
     estimator._last_seen_ts = pose_mod.time.monotonic() - 10_000
     estimator._model = _FakeModel(
-        [_result_for([[0, 0, 200, 200]], ids=[9])]
+        [_result_for([[100, 100, 103, 103]], ids=[9])]
     )
 
-    pose = estimator.detect(np.zeros((8, 8, 3), dtype=np.uint8))
+    pose = estimator.detect(np.zeros((480, 640, 3), dtype=np.uint8))
+
     assert pose is not None
     assert estimator._locked_id == 9
+
+
+def test_detect_keeps_lock_before_absent_reset_elapsed(monkeypatch):
+    """Chưa hết ``absent_reset_s`` thì vẫn ``None`` và khoá giữ nguyên.
+
+    Nửa còn lại của bài trên: cùng khung 640x480 + hộp 3x3, nhưng đồng hồ vắng
+    mới 60 s trong khi ``absent_reset_s`` là 120 s. Nếu thiếu assert này thì
+    một bản sửa "nhả khoá sớm" sẽ làm bài trên xanh oan.
+    """
+    estimator = _estimator(monkeypatch, _FakeModel([]))
+    estimator._locked_id = 7
+    estimator._absent_reset_s = 120.0
+    estimator._last_seen_ts = pose_mod.time.monotonic() - 60.0
+    estimator._model = _FakeModel(
+        [_result_for([[100, 100, 103, 103]], ids=[9])]
+    )
+
+    assert estimator.detect(np.zeros((480, 640, 3), dtype=np.uint8)) is None
+    assert estimator._locked_id == 7, "chưa hết hạn thì không được nhả khoá"
 
 
 def test_tracking_failure_falls_back_to_predict(monkeypatch):
