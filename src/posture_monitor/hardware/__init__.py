@@ -15,26 +15,34 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from ..logging_setup import get_logger
+from ..core.logging_setup import get_logger
 from .base import Hardware, NullHardware
+from .sensors import (
+    FakeSensor,
+    NullSensor,
+    Sensor,
+    UltrasonicSensor,
+    create_sensor,
+)
 
 logger = get_logger(__name__)
 
 __all__ = [
-    "Hardware",
-    "NullHardware",
+    "FakeSensor",
     "GpioMockHardware",
     "GpioRealHardware",
+    "Hardware",
+    "NullHardware",
+    "NullSensor",
+    "Sensor",
+    "UltrasonicSensor",
     "create_hardware",
+    "create_sensor",
 ]
 
 
 def __getattr__(name: str):
-    """Nạp muộn hai lớp triển khai khi được truy cập qua gói.
-
-    Cho phép ``from posture_monitor.hardware import GpioMockHardware`` mà
-    không import ``gpiozero`` ngay khi import gói, và giữ ``__init__`` gọn.
-    """
+    """Nạp muộn hai lớp triển khai khi được truy cập qua gói."""
     if name == "GpioMockHardware":
         from .gpio_mock import GpioMockHardware  # noqa: PLC0415
 
@@ -50,8 +58,6 @@ def _gpio_available() -> bool:
     """Có GPIO dùng được không (Linux + có chip GPIO của Pi)."""
     if not sys.platform.startswith("linux"):
         return False
-    # Trên Pi 4, driver GPIO tạo các node này. Thiếu cả hai nghĩa là không
-    # phải bo mạch Pi hoặc GPIO chưa nạp.
     return any(
         Path(path).exists()
         for path in ("/dev/gpiochip0", "/sys/class/gpio")
@@ -59,17 +65,7 @@ def _gpio_available() -> bool:
 
 
 def create_hardware(config, no_gpio: bool = False) -> Hardware:
-    """Tạo đối tượng phần cứng theo ``config.hardware.mock`` và ``--no-gpio``.
-
-    Quy tắc:
-
-    - ``no_gpio=True`` → luôn dùng mock.
-    - ``mock: true`` → mock; ``mock: false`` → thật (lỗi thì rơi về mock có
-      cảnh báo, không crash).
-    - ``mock: auto`` → thật nếu phát hiện GPIO, ngược lại mock.
-
-    Không bao giờ raise: phần cứng thiếu chỉ làm giảm chức năng (spec §11.4).
-    """
+    """Tạo đối tượng phần cứng theo ``config.hardware.mock`` và ``--no-gpio``."""
     mode = config.hardware.mock
 
     if no_gpio:

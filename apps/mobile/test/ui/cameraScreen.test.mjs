@@ -15,11 +15,13 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
-const { APP, calls, resetFetchLog, setScenario, mountScreen, sleep } = await import(
+const { APP, act, calls, resetFetchLog, setScenario, mountScreen, sleep } = await import(
   './env.mjs'
 );
 
 const { CameraScreen } = require(path.join(APP, 'src/screens/CameraScreen.tsx'));
+const { TabNavigator, TABS } = require(path.join(APP, 'src/navigation/TabNavigator.tsx'));
+const { WebView } = require('./webview-stub.cjs');
 
 const STATUS_OK = {
   state: 'GOOD',
@@ -207,5 +209,250 @@ test('Camera: lời gọi /api/status bị HUỶ khi rời màn (không chỉ b�
     );
   } finally {
     globalThis.fetch = previousFetch;
+  }
+});
+
+test('Camera: chế độ Trực tiếp dựng đúng URL /stream và tự lùi sang Ảnh tĩnh khi WebView lỗi', async () => {
+  resetFetchLog();
+  setScenario({
+    '/api/status': { status: 200, body: STATUS_OK },
+    '/api/frame': { status: 503, body: { ok: false, message: 'Chưa có khung hình nào.' } },
+  });
+  await withCamera(async (ui) => {
+    const webview = ui.host.querySelector('[data-testid="rn-webview"]');
+    assert.ok(webview, 'mặc định mở ở chế độ Trực tiếp có WebView');
+    assert.equal(webview.getAttribute('data-uri'), 'http://192.168.1.5:8000/stream');
+    assert.ok(typeof WebView.__lastProps?.onError === 'function');
+
+    await act(async () => {
+      WebView.__lastProps.onError();
+    });
+    await ui.wait(120);
+
+    assert.equal(
+      ui.host.querySelector('[data-testid="rn-webview"]'),
+      null,
+      'khi WebView lỗi phải tự lùi khỏi /stream sang Ảnh tĩnh',
+    );
+    assert.match(ui.text(), /Không tải được luồng trực tiếp/);
+    assert.ok(
+      calls.some((c) => c.includes('/api/frame')),
+      'sau khi lùi sang Ảnh tĩnh phải tự gọi /api/frame',
+    );
+    assert.deepEqual(ui.errors, []);
+  });
+});
+
+test('Camera: stream_enabled=false từ /api/status ⇒ tự động lùi sang Ảnh tĩnh không cần bấm tay', async () => {
+  resetFetchLog();
+  setScenario({
+    '/api/status': { status: 200, body: { ...STATUS_OK, stream_enabled: false } },
+    '/api/frame': {
+      status: 403,
+      body: { ok: false, message: 'Tính năng xem trực tiếp đang tắt.' },
+    },
+  });
+  await withCamera(async (ui) => {
+    assert.equal(
+      ui.host.querySelector('[data-testid="rn-webview"]'),
+      null,
+      'stream_enabled=false phải tự thoát chế độ WebView',
+    );
+    assert.ok(ui.text().includes('web.stream_enabled'));
+    assert.deepEqual(ui.errors, []);
+  });
+});
+
+test('Camera: hiển thị trực tiếp Trạng thái tư thế & lưới Bento 2×2 ngay trong tab Camera', async () => {
+  resetFetchLog();
+  let currentScore = 91.5;
+  let currentState = 'GOOD';
+  let currentLabels = [];
+  setScenario((pathOnly) => {
+    if (pathOnly === '/api/status') {
+      return {
+        status: 200,
+        body: {
+          state: currentState,
+          label_texts: currentLabels,
+          score: currentScore,
+          sitting_s: 2520,
+          distance_cm: 54,
+          muted: false,
+          stale: false,
+          data_age_s: 0.2,
+          stream_enabled: true,
+        },
+      };
+    }
+    return undefined;
+  });
+
+  await withCamera(async (ui) => {
+    const text = ui.text();
+    assert.ok(text.includes('Camera & Trạng thái'), `phải có tiêu đề gộp. Nhận: ${text}`);
+    assert.ok(text.includes('Tư thế tốt'), `phải hiện trạng thái ngay dưới camera. Nhận: ${text}`);
+    assert.ok(text.includes('✓ Đúng tư thế'), `phải hiện chip Đúng tư thế. Nhận: ${text}`);
+    assert.ok(text.includes('91,5'), `phải hiện điểm tư thế 91,5. Nhận: ${text}`);
+    assert.ok(text.includes('thang 100'), 'phải hiện thang 100');
+    assert.ok(text.includes('42 phút'), `phải hiện thời lượng đã ngồi. Nhận: ${text}`);
+    assert.ok(text.includes('54 cm'), `phải hiện khoảng cách. Nhận: ${text}`);
+    assert.ok(text.includes('Đang bật'), `phải hiện trạng thái tiếng cảnh báo. Nhận: ${text}`);
+
+    // Ở nhịp poll kế tiếp (~2 s), trạng thái đổi sang BAD -> màn Camera tự cập nhật trực tiếp.
+    currentScore = 44.0;
+    currentState = 'BAD';
+    currentLabels = ['Cúi đầu quá thấp'];
+    await ui.wait(2300);
+    const nextText = ui.text();
+    assert.ok(nextText.includes('Tư thế sai'), `phải tự cập nhật sang Tư thế sai. Nhận: ${nextText}`);
+    assert.ok(nextText.includes('Cúi đầu quá thấp'), `phải hiện chip Cúi đầu quá thấp. Nhận: ${nextText}`);
+    assert.equal(nextText.includes('✓ Đúng tư thế'), false, 'khi BAD không được còn chip Đúng tư thế');
+    assert.ok(nextText.includes('44,0'), `phải tự cập nhật điểm mới. Nhận: ${nextText}`);
+    assert.deepEqual(ui.errors, []);
+  });
+});
+
+test('Camera: công tắc tiếng cảnh báo trong lưới Bento gọi POST /api/mute ngay tại chỗ', async () => {
+  resetFetchLog();
+  let serverMuted = false;
+  setScenario((pathOnly) => {
+    if (pathOnly === '/api/status') {
+      return {
+        status: 200,
+        body: { ...STATUS_OK, score: 88, muted: serverMuted },
+      };
+    }
+    if (pathOnly === '/api/mute') {
+      serverMuted = true;
+      return {
+        status: 200,
+        body: { ok: true, muted: true, message: 'Đã tắt tiếng cảnh báo.' },
+      };
+    }
+    return undefined;
+  });
+
+  await withCamera(async (ui) => {
+    assert.ok(ui.text().includes('Đang bật'));
+    assert.equal(await ui.click('Tắt tiếng cảnh báo'), true);
+    await sleep(60);
+    assert.ok(ui.text().includes('Đang tắt'), `bấm xong phải chuyển sang Đang tắt. Nhận: ${ui.text()}`);
+    assert.equal(calls.filter((c) => c.startsWith('POST /api/mute')).length, 1);
+    assert.deepEqual(ui.errors, []);
+  });
+});
+
+test('Camera: hiển thị 3 tín hiệu người học (Có mặt, Điện thoại, Người đang học) ngay dưới khung Camera', async () => {
+  resetFetchLog();
+  let phoneState = 'khong_dung';
+  let phoneFresh = true;
+  let identityState = 'MATCH';
+  let identityName = 'Nguyễn Minh';
+
+  setScenario((pathOnly) => {
+    if (pathOnly === '/api/status') {
+      return {
+        status: 200,
+        body: { ...STATUS_OK, state: 'GOOD', score: 92.0 },
+      };
+    }
+    if (pathOnly === '/api/signals') {
+      return {
+        status: 200,
+        body: {
+          presence: { state: 'co_mat', age_s: 0.4, fresh: true },
+          phone: { state: phoneState, age_s: 0.4, fresh: phoneFresh },
+          identity: {
+            state: identityState,
+            name: identityName,
+            age_s: 0.8,
+            fresh: true,
+          },
+        },
+      };
+    }
+    return undefined;
+  });
+
+  await withCamera(async (ui) => {
+    const text = ui.text();
+    assert.ok(text.includes('Tín hiệu người học'), `phải có cụm Tín hiệu người học. Nhận: ${text}`);
+    assert.ok(text.includes('Đang trong khung hình'), `phải hiện Có mặt = Đang trong khung hình. Nhận: ${text}`);
+    assert.ok(text.includes('Không dùng'), `phải hiện Điện thoại = Không dùng. Nhận: ${text}`);
+    assert.ok(
+      text.includes('Đúng người (Nguyễn Minh)'),
+      `phải hiện tên người đang học. Nhận: ${text}`,
+    );
+
+    // Cụm 3 tín hiệu phải nằm NGAY DƯỚI khung Camera (trước khối Trạng thái tư thế)
+    // để người dùng vừa xem camera vừa quan sát 3 thông số không phải kéo xuống.
+    const idxCamera = text.indexOf('Mở trong trình duyệt');
+    const idxSignals = text.indexOf('Tín hiệu người học');
+    const idxPosture = text.indexOf('Tư thế tốt');
+    assert.ok(
+      idxCamera >= 0 && idxSignals > idxCamera && idxPosture > idxSignals,
+      `thứ tự hiển thị phải là Camera -> 3 Tín hiệu -> Trạng thái tư thế (${idxCamera}, ${idxSignals}, ${idxPosture})`,
+    );
+
+    // Nhịp poll kế tiếp (~2 s): phát hiện dùng điện thoại + người lạ ngồi vào,
+    // rồi nhịp nữa `phone.fresh = false` phải ghi "Chưa có dữ liệu mới".
+    phoneState = 'dung';
+    identityState = 'MISMATCH';
+    identityName = '';
+    await ui.wait(2300);
+    const updatedText = ui.text();
+    assert.ok(updatedText.includes('Đang dùng'), `phải báo Đang dùng điện thoại. Nhận: ${updatedText}`);
+    assert.ok(updatedText.includes('Khác người'), `phải báo Khác người. Nhận: ${updatedText}`);
+
+    phoneFresh = false;
+    await ui.wait(2300);
+    const staleSignalText = ui.text();
+    assert.ok(
+      staleSignalText.includes('Chưa có dữ liệu mới'),
+      `khi fresh=false phải hiện "Chưa có dữ liệu mới" thay vì giữ trạng thái cũ. Nhận: ${staleSignalText}`,
+    );
+    assert.equal(
+      staleSignalText.includes('Đang dùng'),
+      false,
+      'khi fresh=false tuyệt đối không được lặp lại "Đang dùng"',
+    );
+    assert.deepEqual(ui.errors, []);
+  });
+});
+
+test('TabNavigator: gồm 6 tab gọn nhẹ và mở mặc định ở màn gộp Camera + 3 Tín hiệu + Trạng thái', async () => {
+  resetFetchLog();
+  setScenario({
+    '/api/status': { status: 200, body: { ...STATUS_OK, state_text: 'Tư thế tốt', score: 95 } },
+    '/api/signals': {
+      status: 200,
+      body: {
+        presence: { state: 'co_mat', age_s: 0.3, fresh: true },
+        phone: { state: 'khong_dung', age_s: 0.3, fresh: true },
+        identity: { state: 'MATCH', name: 'Minh', age_s: 0.5, fresh: true },
+      },
+    },
+  });
+  assert.equal(TABS.length, 6, 'thanh điều hướng gọn thành 6 tab');
+  assert.equal(TABS[0].key, 'camera', 'tab đầu tiên là camera');
+  assert.equal(
+    TABS.some((t) => t.key === 'status' || t.key === 'signals'),
+    false,
+    'không còn tab Trạng thái hay Tín hiệu tách rời',
+  );
+
+  const ui = await mountScreen(TabNavigator, {});
+  try {
+    const text = ui.text();
+    assert.ok(text.includes('Camera & Trạng thái'));
+    assert.ok(text.includes('Đang trong khung hình'));
+    assert.ok(text.includes('Không dùng'));
+    assert.ok(text.includes('Đúng người (Minh)'));
+    assert.ok(text.includes('Tư thế tốt'));
+    assert.ok(text.includes('95,0'));
+    assert.deepEqual(ui.errors, []);
+  } finally {
+    await ui.unmount();
   }
 });

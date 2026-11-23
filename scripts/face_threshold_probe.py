@@ -49,18 +49,18 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from posture_monitor.capture import (  # noqa: E402
+from posture_monitor.camera.capture import (  # noqa: E402
     FrameSource,
     capture_from_config,
 )
-from posture_monitor.config import (  # noqa: E402
+from posture_monitor.core.config import (  # noqa: E402
     CAMERA_SOURCE_ENV,
     CameraConfig,
     FaceConfig,
     _normalize_env_source,  # noqa: PLC2701 - dùng đúng chuẩn hoá của config
     redact_camera_source,
 )
-from posture_monitor.faces import (  # noqa: E402
+from posture_monitor.vision.faces import (  # noqa: E402
     FaceError,
     FaceModelError,
     FaceRecognizer,

@@ -1,56 +1,73 @@
-# Môi trường Python
+# =============================================================================
+# 1. Môi trường Python & đóng gói
+# =============================================================================
 venv/
 .venv/
 env/
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-
-# Dữ liệu sinh ra khi chạy (chỉ thư mục ở gốc repo; xem chú thích dưới)
-# Phải có dấu "/" đầu: mẫu "data/" không có dấu đầu sẽ khớp ở MỌI độ sâu,
-# tức là nuốt luôn tests/data/ — nơi spec §9 bắt buộc chứa video mẫu và
-# expected.json. Ghi "/data/" để chỉ chặn dữ liệu runtime ở gốc.
-/data/
-*.db
-*.db-journal
-*.log
-# File runtime ở gốc repo. Có dấu "/" đầu để không nuốt fixture trùng tên
-# nằm trong tests/ (ví dụ tests/data/calibration.json nếu sau này có).
-/calibration.json
-/out.json
-
-# Ultralytics tự tạo khi predict/export (ảnh overlay, log, weight trung gian)
-runs/
-
-# Thư mục nháp kiểm chứng ở gốc repo (ảnh overlay, khung hình chụp lại)
-# Có dấu "/" đầu: chỉ chặn ở gốc, không khớp thư mục con trùng tên.
-/out/
-/artifacts/
-
-# Model và file export (lớn, không nên commit)
-*.pt
-*.onnx
-*_ncnn_model/
-models/
-
-# Cấu hình cá nhân (giữ config.yaml mẫu trong repo)
-config.local.yaml
-
-# Công cụ Python sinh ra khi chạy test/đóng gói
 .coverage
 htmlcov/
 .tox/
 .nox/
-build/
-dist/
 
-# File rác do Paseo tự sinh, nội dung rỗng {}
+# =============================================================================
+# 2. Dữ liệu runtime, cấu hình cá nhân & triển khai (KHÔNG commit bí mật)
+# =============================================================================
+# Dấu "/" đầu bắt buộc để chỉ chặn ở gốc repo, không nuốt tests/data/.
+/data/
+/out/
+/artifacts/
+/calibration.json
+/out.json
+config.local.yaml
+*.db
+*.db-journal
+*.log
+runs/
+
+# Kịch bản triển khai cá nhân (chứa thông tin nhạy cảm)
+/.deploy/
+/test.py
+
+# =============================================================================
+# 3. Trọng số mô hình AI (lớn, chỉ giữ khung thư mục models/.gitkeep)
+# =============================================================================
+*.pt
+*.onnx
+*_ncnn_model/
+/models/*
+!/models/.gitkeep
+
+# =============================================================================
+# 4. Sandbox, cache kiểm thử & thư mục nháp của công cụ tự động
+# =============================================================================
+/.pytest-*/
+/pytest-of-*/
+/tmp*/
+/torchinductor_*/
+/.w[0-9]*/
+/probe*/
+/zz*/
+/fresh-*/
+/.scratch/
+/.live-shot/
+/.agent-teams/
+/.preserved-worktrees/
+/.npm-cache/
 paseo.json
 
-# Editor / OS
+# =============================================================================
+# 5. Tài liệu xuất tự động, trình soạn thảo & hệ điều hành
+# =============================================================================
+~$*
+/BaoCao/*.docx
 *.swp
 *~
 *.bak
@@ -60,48 +77,7 @@ desktop.ini
 .idea/
 .vscode/
 
-# Thư mục nháp của công cụ/phiên làm việc. Phải chặn trước phần "Lưới an toàn"
-# bên dưới, và phải chặn vì đã có thư mục chứa BÍ MẬT thật trong đó:
-#   .deploy/pi.py   chứa mật khẩu SSH của Raspberry Pi
-#   test.py         chứa mật khẩu tài khoản camera IP
-# Commit chúng là đẩy mật khẩu lên remote, và xoá khỏi lịch sử sau đó rất phiền.
-/.deploy/
-/.live-shot/
-/.scratch/
-/.preserved-worktrees/
-/test.py
-
-# Cache và trạng thái công cụ, KHÔNG commit:
-#   .npm-cache/     cache npm trỏ vào workspace (hàng nghìn tệp, hàng trăm MB);
-#                   ai cần thì `npm install` sinh lại, nội dung không phải mã
-#   .agent-teams/   trạng thái phiên làm việc của công cụ đa tác nhân
-#   NewData/        bộ dữ liệu thô 4,1 GB — dữ liệu vào, không phải mã nguồn
-#   .pytest-*/tmp*/ thư mục sandbox tạo khi chạy test, không xoá được từ trong
-/.npm-cache/
-/.agent-teams/
-/NewData/
-/.pytest-base/
-/.pytest-run/
-/.pytest-tmp/
-/.w1/
-/.w2/
-/fresh-700/
-/probeE-700/
-/zz-700/
-/zzfinal/
-/pytest-of-ACER/
-/tmp3nntzror/
-/tmp987c30cw/
-/tmpc321_dvp/
-/tmpjcznvm9j/
-/tmppnrco9yd/
-/tmpvti8skgy/
-/tmpxtkzzlvj/
-
-# Tệp tạm của Office/Word (~$*.docx) — Word tạo khi đang mở tài liệu.
-~$*
-
-# Lưới an toàn (phải nằm CUỐI file, sau mọi mẫu loại trừ): spec §9 và §13
-# bắt buộc commit video mẫu + expected.json. Negation chỉ hiệu lực vì thư mục
-# cha tests/ không bị loại trừ — "/data/" không khớp "tests/data/".
+# =============================================================================
+# 6. Lưới an toàn (luôn đặt CUỐI file để bảo vệ dữ liệu mẫu kiểm thử)
+# =============================================================================
 !tests/data/**

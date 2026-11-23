@@ -1,82 +1,62 @@
 /**
- * Màn 2 — Ảnh camera.
+ * Màn chính gộp — Camera, 3 Tín hiệu người học & Trạng thái tư thế
+ * (theo thiết kế Nocturne Telemetry của Google Stitch).
  *
- * Có **hai chế độ xem**, người dùng chuyển bằng nút trong màn:
- *
- * 1. **Trực tiếp (MJPEG qua WebView)** — mượt như dashboard web. `GET /stream`
- *    trả `multipart/x-mixed-replace`; `<Image>` của React Native **không** đọc
- *    được luồng vô hạn (nó tải một URL **một** lần), nhưng `WebView` thì đọc
- *    được vì đó là trình duyệt thật. Đây là chế độ mặc định khi
- *    `stream_enabled` bật.
- * 2. **Khung tĩnh (`GET /api/frame`)** — dự phòng. Mỗi lượt là một ảnh JPEG
- *    trọn vẹn nên **không** phụ thuộc WebView; chậm hơn (tải theo nhịp
- *    `FRAME_REFRESH_MS`), nhưng vẫn xem được khi WebView không dùng được
- *    (ví dụ chính sách mạng chặn, hoặc cần tiết kiệm pin).
- *
- * Vì sao giữ cả hai thay vì chỉ MJPEG: `/api/frame` là đường duy nhất còn lại
- * khi WebView hỏng, và nó cho biết chính xác lỗi HTTP (403/404/503) bằng câu
- * tiếng Việt — WebView chỉ hiện một trang trắng, không phân biệt được nguyên
- * nhân. Bỏ nó đi là mất khả năng chẩn đoán.
- *
- * Ba trạng thái phải phân biệt được, và đây là chỗ dễ làm ẩu nhất:
- * - **403** — `web.stream_enabled: false`. Đây là *cấu hình*, không phải sự
- *   cố: hiện hướng dẫn bật, **không** tự thử lại liên tục.
- * - **404** — bản dashboard đang chạy **chưa có** route này (nhiệm vụ thêm
- *   route có thể chưa xong). Nói đúng là "máy chủ chưa có route", không nói
- *   "lỗi mạng", và không được crash.
- * - **503** — route có, nhưng chưa có khung nào trong RAM (camera chưa mở).
- *   Tự thử lại vì khung sẽ tới khi camera chạy.
+ * Kết hợp trực tiếp trên một màn hình duy nhất:
+ * 1. Khung hình Camera 4:3 (MJPEG qua WebView hoặc Ảnh tĩnh dự phòng qua `/api/frame`).
+ * 2. Cụm 3 Tín hiệu người học đặt ngay dưới khung Camera (`Có mặt`, `Điện thoại`,
+ *    `Người đang học / Danh tính` từ `/api/signals`) để quan sát cùng lúc không cần cuộn.
+ * 3. Banner Trạng thái tư thế & lưới thông số Bento 2×2 tự làm mới mỗi 2 giây từ `/api/status`.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
   Linking,
+  Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { WebView } from 'react-native-webview';
 
-import { FRAME_TIMEOUT_MS, type FramePayload } from '../api/client';
+import { API_PATH, FRAME_TIMEOUT_MS, type FramePayload } from '../api/client';
+import type { ApiError } from '../api/errors';
+import { formatClock, formatDecimal } from '../api/format';
 import {
   INITIAL_RETRY_STATE,
   afterFrameFailure,
   shouldPollAgain,
   type FrameRetryState,
 } from '../api/framePolicy';
-import type { ApiError } from '../api/errors';
-import { normalizeStatus } from '../api/payload';
-import { Button, Card, Chip, ErrorBanner, Label, Notice, Screen } from '../components/ui';
+import { normalizeSignals, normalizeStatus } from '../api/payload';
+import { buildUrl } from '../api/url';
+import { LearnerSignalsSection } from '../components/LearnerSignalsSection';
+import { PostureStatusSection } from '../components/PostureStatusSection';
+import {
+  Button,
+  ErrorBanner,
+  LoadingCard,
+  Notice,
+  Screen,
+  UnconfiguredNotice,
+} from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { colors, radius, spacing, type as typo } from '../theme';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { toPollFetcher, usePoll } from '../hooks/usePoll';
+import { colors, monoFamily, radius, spacing, type as typo } from '../theme';
 
-/**
- * Nhịp tải khung ở chế độ ảnh tĩnh.
- *
- * 300 ms ≈ 3,3 lượt/giây — đủ để thấy chuyển động, không phải 0,5 lượt/giây
- * như giá trị 2000 ms ban đầu (chậm gấp 4 lần và là lý do người dùng báo
- * "app chậm" trong khi web mượt).
- *
- * Không hạ thấp hơn nữa: mỗi lượt là một request HTTP mới (bắt tay + header +
- * JPET vài chục KB), nên sàn thực tế của cách này quanh 5–10 lượt/giây tuỳ
- * LAN. Muốn mượt hơn thì dùng chế độ **Trực tiếp**, không phải poll dày hơn.
- */
 const FRAME_REFRESH_MS = 300;
 
 type FrameState = {
   data: FramePayload | null;
   error: ApiError | null;
   loading: boolean;
-  /** Lỗi 403 (stream tắt) — dừng tự làm mới, hiện hướng dẫn. */
   streamDisabled: boolean;
-  /** Lỗi 404 — bản dashboard chưa có route `/api/frame`. */
   routeMissing: boolean;
-  /** Lỗi 503 — route có nhưng chưa có khung; tự thử lại. */
   noFrameYet: boolean;
 };
 
-/** Cách xem: luồng trực tiếp (mượt) hay ảnh tĩnh (dự phòng). */
 type ViewMode = 'live' | 'still';
 
 const INITIAL: FrameState = {
@@ -88,35 +68,76 @@ const INITIAL: FrameState = {
   noFrameYet: false,
 };
 
-/** `focused` do thanh tab truyền vào: rời tab là dừng tải ảnh. */
 export function CameraScreen({ focused }: { focused: boolean }): React.ReactElement {
   const { api, baseUrl, loading: configLoading } = useApp();
   const [state, setState] = useState<FrameState>(INITIAL);
-  /** `stream_enabled` từ `/api/status` — công bố ở `app.py:427`. */
-  const [streamEnabled, setStreamEnabled] = useState<boolean | null>(null);
-  /**
-   * Cách xem hiện tại. Mặc định `live` vì đó là thứ người dùng mong đợi
-   * ("web mượt thì app cũng phải mượt"). Tự lùi về `still` khi biết chắc
-   * `stream_enabled = false` hoặc khi WebView báo lỗi tải.
-   */
   const [mode, setMode] = useState<ViewMode>('live');
-  /** WebView báo không tải được luồng — hiện gợi ý chuyển sang ảnh tĩnh. */
   const [liveFailed, setLiveFailed] = useState(false);
+  const [mutedOverride, setMutedOverride] = useState<boolean | null>(null);
+  const [muteBusy, setMuteBusy] = useState(false);
+  const muteAction = useAsyncAction();
+
+  // Poll `/api/status` mỗi 2 s khi màn đang hiện; tự động abort() ngay khi rời màn.
+  const statusFetcher = useMemo(
+    () => toPollFetcher((signal) => api.getStatus({ signal }), normalizeStatus),
+    [api],
+  );
+  const {
+    data: statusView,
+    error: statusError,
+    loading: statusLoading,
+    updatedAt: statusUpdatedAt,
+    refresh: refreshStatus,
+  } = usePoll(statusFetcher, {
+    enabled: focused && !configLoading && !!baseUrl,
+  });
+
+  // Poll `/api/signals` mỗi 2 s để hiển thị trực tiếp 3 thông số:
+  // Có mặt trong khung hình, Sử dụng điện thoại, Người đang học là ai.
+  const [signalsRouteMissing, setSignalsRouteMissing] = useState(false);
+  useEffect(() => {
+    setSignalsRouteMissing(false);
+  }, [baseUrl]);
+
+  const signalsFetcher = useMemo(
+    () => toPollFetcher((signal) => api.getSignals({ signal }), normalizeSignals),
+    [api],
+  );
+  const {
+    data: signalsRows,
+    error: signalsError,
+    loading: signalsLoading,
+    refresh: refreshSignals,
+  } = usePoll(signalsFetcher, {
+    enabled: focused && !configLoading && !!baseUrl && !signalsRouteMissing,
+  });
+
+  useEffect(() => {
+    if (signalsError?.status === 404) {
+      setSignalsRouteMissing(true);
+    }
+  }, [signalsError]);
+
+  const streamEnabled = statusView ? statusView.streamEnabled : null;
+
+  // Khi máy chủ báo `stream_enabled = false`, tự động lùi sang chế độ Ảnh tĩnh.
+  useEffect(() => {
+    if (streamEnabled === false) {
+      setMode('still');
+    }
+  }, [streamEnabled]);
+
+  // Đồng bộ lại `mutedOverride` mỗi khi nhịp poll mới từ máy chủ trả về.
+  useEffect(() => {
+    if (statusUpdatedAt !== null) {
+      setMutedOverride(null);
+    }
+  }, [statusUpdatedAt]);
 
   const mountedRef = useRef(true);
   const busyRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
-  /**
-   * Bộ đếm + lý do dừng, giữ trong ref thay vì đọc `state` bên trong effect.
-   *
-   * Lý do quan trọng: `state.error` là một object mới sau mỗi lần lỗi, nên
-   * nếu effect phụ thuộc nó thì mỗi lần lỗi sẽ **khởi động lại cả vòng** —
-   * `clearInterval` rồi `loadFrame()` ngay. Một máy chủ đang lỗi sẽ bị hỏi dồn
-   * dập hơn cả khi mọi thứ bình thường, ngược hẳn ý định. Quyết định "có thử
-   * lại hay không" nằm trong `framePolicy.ts` (thuần, có test).
-   */
   const retryRef = useRef<FrameRetryState>(INITIAL_RETRY_STATE);
-  /** Đếm lượt bấm "Thử lại" để effect khởi động lại vòng tải. */
   const [attempt, setAttempt] = useState(0);
 
   const loadFrame = useCallback(async (): Promise<void> => {
@@ -142,18 +163,11 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
         });
         return;
       }
-      // Rời màn: không phải lỗi, không hiện gì, không đổi bộ đếm.
       if (result.error.kind === 'cancelled') return;
       retryRef.current = afterFrameFailure(
         { kind: result.error.kind, status: result.error.status },
         retryRef.current,
       );
-      // **Giữ khung cuối** khi lỗi (setState dạng hàm, giống `usePoll`).
-      //
-      // Trước đây nhánh này đặt `data: null`, tức một nhịp 503 hay một lần
-      // mất mạng xoá luôn ảnh đang xem — màn hình nhảy về ô trống dù khung
-      // vừa tải vẫn còn đúng. Ảnh cũ **có** nhãn thời gian riêng nên người
-      // dùng biết nó cũ; xoá nó chỉ làm mất thông tin.
       setState((prev) => ({
         data: prev.data,
         error: result.error,
@@ -168,49 +182,19 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
     }
   }, [api]);
 
-  // Hỏi `/api/status` một lần khi mở màn để biết `stream_enabled`; nếu tắt
-  // thì hiện hướng dẫn ngay, khỏi phải chờ một lời gọi ảnh chắc chắn 403.
-  useEffect(() => {
-    if (!focused || !baseUrl || configLoading) return;
-    let cancelled = false;
-    // Huỷ thật khi rời màn, không chỉ bỏ qua kết quả: một lời gọi `/api/status`
-    // treo tới hết hạn chờ vẫn chiếm một khe trên máy chủ Pi (thứ đang phải lo
-    // camera), và promise của nó sẽ giữ closure cho tới khi xong.
-    const controller = new AbortController();
-    api
-      .getStatus({ signal: controller.signal })
-      .then((result) => {
-        if (cancelled || !mountedRef.current) return;
-        if (result.ok) setStreamEnabled(normalizeStatus(result.data).streamEnabled);
-      })
-      .catch(() => {
-        // Không lấy được status thì cứ thử ảnh; lỗi thật sẽ hiện ở vòng ảnh.
-      });
-    return () => {
-      cancelled = true;
-      controller.abort();
-    };
-  }, [api, baseUrl, focused, configLoading]);
-
   useEffect(() => {
     mountedRef.current = true;
-    // Chế độ Trực tiếp không cần vòng poll: WebView tự đọc luồng. Chỉ chạy
-    // poll khi đang ở chế độ ảnh tĩnh, nếu không sẽ tải hai thứ cùng lúc.
     if (!focused || !baseUrl || configLoading || mode !== 'still') {
       return () => {
         mountedRef.current = false;
       };
     }
-    // Mỗi lần effect chạy lại (mở tab, đổi địa chỉ, bấm Thử lại) là một vòng
-    // mới: đặt lại bộ đếm, nếu không vòng mới sẽ tự tắt ngay từ nhịp đầu.
     retryRef.current = INITIAL_RETRY_STATE;
 
     let stopped = false;
     void loadFrame();
     const timer = setInterval(() => {
       if (stopped) return;
-      // Dừng hẳn khi nguyên nhân là cấu hình/bản cũ/hết số lần thử: tự hỏi
-      // lại mỗi 2 s chỉ làm nóng máy và che mất hướng dẫn người dùng cần đọc.
       if (!shouldPollAgain(retryRef.current)) return;
       void loadFrame();
     }, FRAME_REFRESH_MS);
@@ -222,38 +206,90 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
       controllerRef.current?.abort();
       busyRef.current = false;
     };
-  }, [focused, baseUrl, loadFrame, attempt, mode]);
+  }, [focused, baseUrl, configLoading, loadFrame, attempt, mode]);
 
   const onRetry = useCallback(() => {
     retryRef.current = INITIAL_RETRY_STATE;
     setLiveFailed(false);
+    setSignalsRouteMissing(false);
     setState((prev) => ({ ...prev, error: null, loading: true }));
     setAttempt((n) => n + 1);
+    refreshStatus();
+    refreshSignals();
+  }, [refreshSignals, refreshStatus]);
+
+  const handleLiveFailure = useCallback(() => {
+    setLiveFailed(true);
+    setMode('still');
   }, []);
 
-  const header = state.data ? (
-    <Chip text={`${formatClock(state.data.receivedAt)}`} tone="good" />
+  const handleToggleMute = useCallback(() => {
+    if (!statusView) return;
+    const currentMuted = mutedOverride ?? statusView.muted;
+    const nextMuted = !currentMuted;
+    setMuteBusy(true);
+    void muteAction.run(async ({ signal, isActive }) => {
+      try {
+        const res = await api.setMuted(nextMuted, { signal });
+        if (!isActive()) return;
+        if (res.ok) {
+          setMutedOverride(typeof res.data.muted === 'boolean' ? res.data.muted : nextMuted);
+        }
+      } finally {
+        if (isActive()) {
+          setMuteBusy(false);
+        }
+      }
+    });
+  }, [api, muteAction, mutedOverride, statusView]);
+
+  const badgeClockTs =
+    mode === 'still' && state.data ? state.data.receivedAt : statusUpdatedAt;
+
+  const liveBadge = baseUrl ? (
+    <View style={styles.livePill}>
+      <View
+        style={[
+          styles.liveDot,
+          {
+            backgroundColor:
+              statusView?.stale || state.error ? colors.warn : colors.good,
+          },
+        ]}
+      />
+      <Text
+        style={[
+          styles.livePillTag,
+          {
+            color: statusView?.stale || state.error ? colors.warn : colors.good,
+          },
+        ]}
+      >
+        {mode === 'live' ? 'LIVE' : 'TĨNH'}
+      </Text>
+      {badgeClockTs ? (
+        <>
+          <Text style={styles.livePillSep}>·</Text>
+          <Text style={styles.livePillClock}>{formatClock(badgeClockTs)}</Text>
+        </>
+      ) : null}
+    </View>
   ) : null;
 
-  /** Địa chỉ luồng MJPEG — cùng máy chủ, khác route. */
-  const streamUrl = baseUrl ? `${baseUrl}/stream` : '';
+  const streamUrl = baseUrl ? buildUrl(baseUrl, API_PATH.stream) : '';
 
   return (
     <Screen
-      title="Camera"
+      title="Camera & Trạng thái"
       subtitle={
         mode === 'live'
-          ? 'Luồng trực tiếp (mượt như dashboard web)'
-          : `Ảnh tĩnh, tải lại mỗi ${(FRAME_REFRESH_MS / 1000).toFixed(1)} giây`
+          ? 'Luồng trực tiếp từ Raspberry Pi'
+          : `Ảnh tĩnh, tải lại mỗi ${formatDecimal(FRAME_REFRESH_MS / 1000, 1)} giây`
       }
-      right={header}
+      right={liveBadge}
     >
       {!baseUrl ? (
-        <Notice
-          title="Chưa cấu hình máy chủ"
-          body="Mở tab Kết nối và nhập IP LAN của máy chạy dashboard trước khi xem camera."
-          tone="warn"
-        />
+        <UnconfiguredNotice body="Mở tab Kết nối và nhập IP LAN của máy chạy dashboard trước khi xem camera và trạng thái." />
       ) : null}
 
       {baseUrl && streamEnabled === false && !state.data ? (
@@ -292,48 +328,84 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
       {baseUrl && state.error && !state.streamDisabled && !state.routeMissing ? (
         <ErrorBanner
           message={state.error.message}
-          hint={state.noFrameYet ? 'Máy chủ chưa có khung nào trong bộ nhớ — thử lại sau vài giây.' : undefined}
+          hint={
+            state.noFrameYet
+              ? 'Máy chủ chưa có khung nào trong bộ nhớ — thử lại sau vài giây.'
+              : undefined
+          }
           onRetry={onRetry}
           retrying={state.loading}
         />
       ) : null}
 
-      {/* Ảnh vẫn còn nhưng lượt tải mới nhất hỏng: nói rõ đây là ảnh **cũ**,
-          kèm mốc thời gian. Không có nhãn này, người dùng nhìn ảnh đứng yên và
-          tưởng camera vẫn đang trực tiếp. */}
       {state.data && state.error ? (
         <Text style={[typo.caption, styles.staleNote]}>
           Ảnh cuối lúc {formatClock(state.data.receivedAt)} — chưa tải được khung mới.
         </Text>
       ) : null}
 
-      <Card style={styles.frameCard}>
-        <View style={styles.frameHead}>
-          <Label>{mode === 'live' ? 'Luồng trực tiếp' : 'Khung mới nhất'}</Label>
-          {mode === 'still' && state.data ? (
-            <Text style={[typo.caption, styles.muted]}>
-              {(state.data.byteLength / 1024).toFixed(0)} KB · cập nhật{' '}
-              {formatClock(state.data.receivedAt)}
+      {/* 1. Camera Viewport Card (Hero) */}
+      <View style={styles.cameraCard}>
+        <View style={styles.cameraToolbar}>
+          <View style={styles.segmentedTrack}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Trực tiếp"
+              onPress={() => {
+                setLiveFailed(false);
+                setMode('live');
+              }}
+              style={[
+                styles.segmentBtn,
+                mode === 'live' ? styles.segmentBtnActive : null,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  mode === 'live' ? styles.segmentTextActive : null,
+                ]}
+              >
+                Trực tiếp
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Ảnh tĩnh"
+              onPress={() => setMode('still')}
+              style={[
+                styles.segmentBtn,
+                mode === 'still' ? styles.segmentBtnActive : null,
+              ]}
+            >
+              <Text
+                style={[
+                  styles.segmentText,
+                  mode === 'still' ? styles.segmentTextActive : null,
+                ]}
+              >
+                Ảnh tĩnh
+              </Text>
+            </Pressable>
+          </View>
+
+          {mode === 'live' && baseUrl ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Mở luồng trong trình duyệt"
+              onPress={() => void Linking.openURL(streamUrl)}
+              style={({ pressed }) => [
+                styles.browserLink,
+                pressed ? { opacity: 0.7 } : null,
+              ]}
+            >
+              <Text style={styles.browserLinkText}>Mở trong trình duyệt ↗</Text>
+            </Pressable>
+          ) : mode === 'still' && state.data ? (
+            <Text style={styles.kbCaption}>
+              {(state.data.byteLength / 1024).toFixed(0)} KB
             </Text>
           ) : null}
-        </View>
-
-        <View style={styles.modeRow}>
-          <Button
-            label="Trực tiếp"
-            onPress={() => {
-              setLiveFailed(false);
-              setMode('live');
-            }}
-            variant={mode === 'live' ? 'primary' : 'secondary'}
-            style={styles.modeButton}
-          />
-          <Button
-            label="Ảnh tĩnh"
-            onPress={() => setMode('still')}
-            variant={mode === 'still' ? 'primary' : 'secondary'}
-            style={styles.modeButton}
-          />
         </View>
 
         <View style={styles.frameBox}>
@@ -342,16 +414,13 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
               source={{ uri: streamUrl }}
               style={styles.frame}
               originWhitelist={['*']}
-              // Không cho zoom: luồng là ảnh camera, pinch làm nhoè.
               scalesPageToFit={false}
               javaScriptEnabled={false}
-              // Android cần bật để hiển thị nội dung http:// trong WebView.
               mixedContentMode="always"
-              // `domStorage` tắt: trang chỉ có một thẻ <img> của luồng.
               domStorageEnabled={false}
               accessibilityLabel="Luồng camera trực tiếp"
-              onError={() => setLiveFailed(true)}
-              onHttpError={() => setLiveFailed(true)}
+              onError={handleLiveFailure}
+              onHttpError={handleLiveFailure}
             />
           ) : mode === 'live' ? (
             <View style={styles.framePlaceholder}>
@@ -384,42 +453,100 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
               )}
             </View>
           )}
+
+          {/* HUD Overlay góc trên khung hình giống thiết kế Stitch */}
+          {baseUrl ? (
+            <View pointerEvents="none" style={styles.hudOverlay}>
+              <View style={styles.hudBadge}>
+                <Text style={styles.hudBadgeText}>
+                  {mode === 'live' ? '▣ MJPEG STREAM' : '▣ JPEG SNAPSHOT'}
+                </Text>
+              </View>
+              {statusView && statusView.dataAgeS !== null ? (
+                <View style={styles.hudBadge}>
+                  <View
+                    style={[
+                      styles.hudDot,
+                      { backgroundColor: statusView.stale ? colors.warn : colors.good },
+                    ]}
+                  />
+                  <Text
+                    style={[
+                      styles.hudBadgeText,
+                      { color: statusView.stale ? colors.warn : colors.good },
+                    ]}
+                  >
+                    {formatDecimal(statusView.dataAgeS, 1)} s
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+          ) : null}
         </View>
 
-        {mode === 'live' && liveFailed ? (
+        {liveFailed && !state.streamDisabled && !state.routeMissing ? (
           <Notice
             title="Không tải được luồng trực tiếp"
             body={
-              'WebView không đọc được /stream. Nguyên nhân thường gặp: tường lửa chặn cổng, ' +
-              'hoặc web.stream_enabled = false trong config.yaml. Bấm "Ảnh tĩnh" để xem bằng ' +
-              'đường dự phòng — đường đó báo được lỗi HTTP cụ thể.'
+              'WebView không đọc được /stream nên đã tự chuyển sang chế độ Ảnh tĩnh dự phòng — ' +
+              'đường đó báo được lỗi HTTP cụ thể. Bấm "Trực tiếp" nếu muốn thử lại luồng.'
             }
             tone="warn"
           />
         ) : null}
 
         {mode === 'still' ? (
-          <>
-            <Button
-              label="Tải khung mới"
-              onPress={onRetry}
-              variant="quiet"
-              busy={state.loading && !!state.data}
-            />
-            <Text style={[typo.caption, styles.muted]}>
-              Chế độ ảnh tĩnh chậm hơn Trực tiếp vì mỗi lượt là một request HTTP
-              riêng, không phải một luồng liên tục.
-            </Text>
-          </>
+          <Button
+            label="Tải khung mới"
+            onPress={onRetry}
+            variant="quiet"
+            busy={state.loading && !!state.data}
+          />
         ) : null}
-      </Card>
+      </View>
 
-      {mode === 'live' && baseUrl ? (
-        <Button
-          label="Mở luồng trong trình duyệt"
-          onPress={() => void Linking.openURL(streamUrl)}
-          variant="quiet"
-        />
+      {/* 2. Cụm 3 Tín hiệu người học đặt ngay dưới khung Camera (Có mặt, Điện thoại, Người đang học) */}
+      {baseUrl ? (
+        signalsRows || signalsError?.status === 503 || (signalsLoading && !signalsError) ? (
+          <LearnerSignalsSection
+            rows={signalsRows}
+            peopleDisabledMessage={
+              signalsError?.status === 503
+                ? (signalsError.message ||
+                  'Máy chủ chưa bật dịch vụ nhận diện người học trong lần chạy này.')
+                : null
+            }
+          />
+        ) : signalsError && signalsError.status !== 404 && !statusError ? (
+          <ErrorBanner
+            title="Chưa đọc được tín hiệu người học"
+            message={signalsError.message}
+            onRetry={refreshSignals}
+            retrying={signalsLoading}
+          />
+        ) : null
+      ) : null}
+
+      {/* 3. Integrated Posture Status Banner + 2x2 Bento Telemetry Grid */}
+      {baseUrl ? (
+        statusView ? (
+          <PostureStatusSection
+            view={statusView}
+            updatedAt={statusUpdatedAt}
+            mutedOverride={mutedOverride}
+            muteBusy={muteBusy}
+            onToggleMute={handleToggleMute}
+          />
+        ) : statusError ? (
+          <ErrorBanner
+            title="Chưa đọc được trạng thái tư thế"
+            message={statusError.message}
+            onRetry={refreshStatus}
+            retrying={statusLoading}
+          />
+        ) : statusLoading ? (
+          <LoadingCard label="Đang đồng bộ trạng thái tư thế từ Raspberry Pi…" />
+        ) : null
       ) : null}
 
       <Text style={[typo.caption, styles.footnote]}>
@@ -429,31 +556,95 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
   );
 }
 
-/** "14:07:31" theo giờ máy — đọc được ngay, không cần bảng màu. */
-function formatClock(epochMs: number): string {
-  return new Date(epochMs).toLocaleTimeString('vi-VN');
-}
-
 const styles = StyleSheet.create({
-  frameCard: {
-    gap: spacing.md,
-  },
-  frameHead: {
+  livePill: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceElevated,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  liveDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  livePillTag: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.6,
+  },
+  livePillSep: {
+    fontSize: 11,
+    color: colors.textFaint,
+  },
+  livePillClock: {
+    fontFamily: monoFamily,
+    fontSize: 11,
+    color: colors.textMuted,
+    fontVariant: ['tabular-nums'],
+  },
+  cameraCard: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+    padding: spacing.sm,
     gap: spacing.sm,
   },
-  modeRow: {
+  cameraToolbar: {
     flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     gap: spacing.sm,
+    paddingHorizontal: 2,
   },
-  modeButton: {
-    flex: 1,
+  segmentedTrack: {
+    flexDirection: 'row',
+    backgroundColor: colors.surfaceRaised,
+    borderRadius: radius.sm,
+    padding: 3,
+    gap: 2,
+  },
+  segmentBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  segmentBtnActive: {
+    backgroundColor: colors.accent,
+  },
+  segmentText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textMuted,
+  },
+  segmentTextActive: {
+    color: colors.onAccent,
+    fontWeight: '700',
+  },
+  browserLink: {
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+  },
+  browserLinkText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.accent,
+  },
+  kbCaption: {
+    fontFamily: monoFamily,
+    fontSize: 11,
+    color: colors.textMuted,
   },
   frameBox: {
+    position: 'relative',
     aspectRatio: 4 / 3,
-    backgroundColor: '#0A0E12',
+    backgroundColor: colors.surfaceLowest,
     borderRadius: radius.md,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
@@ -470,6 +661,38 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     padding: spacing.lg,
   },
+  hudOverlay: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    right: 8,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  hudBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+    backgroundColor: 'rgba(10, 15, 20, 0.78)',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(255, 255, 255, 0.08)',
+  },
+  hudDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  hudBadgeText: {
+    fontFamily: monoFamily,
+    fontSize: 10,
+    fontWeight: '600',
+    color: colors.text,
+    fontVariant: ['tabular-nums'],
+  },
   muted: {
     color: colors.textMuted,
   },
@@ -480,5 +703,3 @@ const styles = StyleSheet.create({
     color: colors.textFaint,
   },
 });
-
-

@@ -103,13 +103,13 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from posture_monitor import pose as pose_mod  # noqa: E402
-from posture_monitor.capture import (  # noqa: E402
+from posture_monitor.camera.capture import (  # noqa: E402
     FrameSource,
     capture_from_config,
 )
-from posture_monitor.config import CameraConfig, load_config  # noqa: E402
-from posture_monitor.pose import (  # noqa: E402
+from posture_monitor.core.config import CameraConfig, load_config  # noqa: E402
+from posture_monitor.vision import pose as pose_mod  # noqa: E402
+from posture_monitor.vision.pose import (  # noqa: E402
     PoseError,
     PoseEstimator,
     # Dùng chính công thức của mã để số đo không bao giờ lệch khỏi hành vi thật.
@@ -790,7 +790,7 @@ def main(
     print(file=out)
     print("  LƯU Ý: công cụ này CHỈ ĐO. Không có số nào được tự áp vào mã.", file=out)
     print(
-        "  Muốn dùng, bạn tự sửa hằng trong src/posture_monitor/pose.py và tự "
+        "  Muốn dùng, bạn tự sửa hằng trong src/posture_monitor/vision/pose.py và tự "
         "ghi lại điều kiện đo (camera, ánh sáng, khoảng cách) vào docstring.",
         file=out,
     )

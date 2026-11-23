@@ -13,148 +13,131 @@
  * và không crash. Vì vậy nút bấm bị khoá khi `sessionEnabled === false`, chứ
  * không phải để người dùng bấm rồi nhận lỗi mãi.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
 
-import { normalizeSession, type SessionView } from '../api/payload';
 import type { ApiError } from '../api/errors';
-import { Button, Card, Chip, Divider, ErrorBanner, Label, Notice, Screen } from '../components/ui';
+import { normalizeSession, type SessionView } from '../api/payload';
+import {
+  Button,
+  Card,
+  Chip,
+  Divider,
+  ErrorBanner,
+  Label,
+  Notice,
+  Screen,
+  SuccessBanner,
+  UnconfiguredNotice,
+} from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { usePoll, type PollResult } from '../hooks/usePoll';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { toPollFetcher, usePoll } from '../hooks/usePoll';
 import { colors, radius, spacing, type as typo } from '../theme';
 
-/**
- * `focused` do thanh tab truyền vào: màn chỉ hỏi máy chủ khi đang được hiện.
- *
- * Không có hằng câu "Phiên học chưa bật" ở đây: câu đó thuộc về **server**
- * (`app.py` `_session_unavailable`), và app chỉ hiện lại `message` server gửi.
- * Viết lại câu ấy trong app là tạo nguồn sự thật thứ hai — sửa một bên thì
- * bên kia lệch, mà người đọc không biết bên nào đúng. `SignalsScreen` đã làm
- * đúng mẫu này; đây là chỗ cuối cùng còn lặp.
- */
 export function SessionScreen({ focused }: { focused: boolean }): React.ReactElement {
   const { api, baseUrl, loading: configLoading } = useApp();
+  const { run: runAction } = useAsyncAction();
 
   const [minutesText, setMinutesText] = useState<string>('');
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [actionMessage, setActionMessage] = useState<string>('');
   const [busy, setBusy] = useState<'start' | 'stop' | null>(null);
-  /** `true` khi server đã trả 503 — khoá nút và hiện câu giải thích. */
+  /** `false` khi server đã trả 503 — khoá nút và hiện câu giải thích. */
   const [sessionEnabled, setSessionEnabled] = useState<boolean | null>(null);
 
-  /** Đã unmount chưa — mọi setState sau `await` phải kiểm cờ này. */
-  const mounted = useRef(true);
-  /** Request lệnh đang chạy, để huỷ khi rời màn. */
-  const actionController = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      actionController.current?.abort();
-      actionController.current = null;
-    };
-  }, []);
-
-  const fetcher = useCallback(
-    async (signal: AbortSignal): Promise<PollResult<SessionView>> => {
-      const result = await api.getSession({ signal });
-      if (result.ok) {
-        // Đọc được phiên nghĩa là server **có** bật phiên. Phải ghi lại điều
-        // đó, nếu không một lần 503 (ví dụ máy chủ đang khởi động lại) sẽ khoá
-        // nút vĩnh viễn cho tới khi đóng app — người dùng sẽ tưởng app hỏng.
-        setSessionEnabled(true);
-        return { ok: true, data: normalizeSession(result.data), ignored: false };
-      }
-      if (result.error.kind === 'cancelled') {
-        return { ok: false, error: result.error, ignored: true };
-      }
-      if (result.status === 503) setSessionEnabled(false);
-      return { ok: false, error: result.error, ignored: false };
-    },
+  const fetcher = useMemo(
+    () =>
+      toPollFetcher(
+        async (signal) => {
+          const result = await api.getSession({ signal });
+          if (result.ok) setSessionEnabled(true);
+          else if (result.status === 503) setSessionEnabled(false);
+          return result;
+        },
+        normalizeSession,
+      ),
     [api],
   );
 
-  const { data, error, loading, refresh } = usePoll(fetcher, { enabled: focused && !configLoading && !!baseUrl });
+  const { data, error, loading, refresh } = usePoll<SessionView>(fetcher, {
+    enabled: focused && !configLoading && !!baseUrl,
+  });
 
   // 503 ⇒ phiên chưa bật. Suy ra từ lỗi của vòng làm mới, để màn hình không
   // phải gọi thêm một request nữa chỉ để biết điều đã biết.
   const pollDisabled = error?.status === 503;
   const enabled = pollDisabled ? false : sessionEnabled ?? true;
 
-  const sendStart = useCallback(async (): Promise<void> => {
-    actionController.current?.abort();
-    const controller = new AbortController();
-    actionController.current = controller;
-    setBusy('start');
-    setActionError(null);
-    setActionMessage('');
-    // Chưa nhập gì ⇒ gửi thân rỗng để server dùng thời lượng mặc định
-    // (`app.py:509-512`), thay vì app tự đoán một con số.
-    const parsed = minutesText.trim() ? Number(minutesText.trim()) : null;
-    if (parsed !== null && (!Number.isFinite(parsed) || !Number.isInteger(parsed))) {
-      setBusy(null);
-      setActionError({
-        kind: 'config',
-        status: null,
-        message: 'Số phút phải là số nguyên. Ví dụ: 45.',
-        retryable: false,
-      });
-      return;
-    }
-    const result = await api.startSession(parsed, { signal: controller.signal });
-    if (!mounted.current || controller.signal.aborted) return;
-    setBusy(null);
-    if (result.ok) {
-      setSessionEnabled(true);
-      setActionMessage(
-        typeof result.data?.message === 'string'
-          ? result.data.message
-          : 'Đã bắt đầu phiên học.',
-      );
-      refresh();
-      return;
-    }
-    if (result.error.kind === 'cancelled') return;
-    if (result.status === 503) setSessionEnabled(false);
-    // 400 (số phút ngoài 1–720) hiện **đúng** câu server gửi, không tự đoán.
-    setActionError(result.error);
-  }, [api, minutesText, refresh]);
+  const sendStart = useCallback(
+    (): Promise<void> =>
+      runAction(async ({ signal, isActive }) => {
+        setBusy('start');
+        setActionError(null);
+        setActionMessage('');
+        // Chưa nhập gì ⇒ gửi thân rỗng để server dùng thời lượng mặc định
+        // (`app.py:509-512`), thay vì app tự đoán một con số.
+        const parsed = minutesText.trim() ? Number(minutesText.trim()) : null;
+        if (parsed !== null && (!Number.isFinite(parsed) || !Number.isInteger(parsed))) {
+          setBusy(null);
+          setActionError({
+            kind: 'config',
+            status: null,
+            message: 'Số phút phải là số nguyên. Ví dụ: 45.',
+            retryable: false,
+          });
+          return;
+        }
+        const result = await api.startSession(parsed, { signal });
+        if (!isActive()) return;
+        setBusy(null);
+        if (result.ok) {
+          setSessionEnabled(true);
+          setActionMessage(
+            typeof result.data?.message === 'string'
+              ? result.data.message
+              : 'Đã bắt đầu phiên học.',
+          );
+          refresh();
+          return;
+        }
+        if (result.error.kind === 'cancelled') return;
+        if (result.status === 503) setSessionEnabled(false);
+        // 400 (số phút ngoài 1–720) hiện **đúng** câu server gửi, không tự đoán.
+        setActionError(result.error);
+      }),
+    [api, minutesText, refresh, runAction],
+  );
 
-  const sendStop = useCallback(async (): Promise<void> => {
-    actionController.current?.abort();
-    const controller = new AbortController();
-    actionController.current = controller;
-    setBusy('stop');
-    setActionError(null);
-    setActionMessage('');
-    const result = await api.stopSession({ signal: controller.signal });
-    if (!mounted.current || controller.signal.aborted) return;
-    setBusy(null);
-    if (result.ok) {
-      setActionMessage(
-        typeof result.data?.message === 'string' ? result.data.message : 'Đã dừng phiên học.',
-      );
-      refresh();
-      return;
-    }
-    if (result.error.kind === 'cancelled') return;
-    if (result.status === 503) setSessionEnabled(false);
-    setActionError(result.error);
-  }, [api, refresh]);
+  const sendStop = useCallback(
+    (): Promise<void> =>
+      runAction(async ({ signal, isActive }) => {
+        setBusy('stop');
+        setActionError(null);
+        setActionMessage('');
+        const result = await api.stopSession({ signal });
+        if (!isActive()) return;
+        setBusy(null);
+        if (result.ok) {
+          setActionMessage(
+            typeof result.data?.message === 'string' ? result.data.message : 'Đã dừng phiên học.',
+          );
+          refresh();
+          return;
+        }
+        if (result.error.kind === 'cancelled') return;
+        if (result.status === 503) setSessionEnabled(false);
+        setActionError(result.error);
+      }),
+    [api, refresh, runAction],
+  );
 
   const running = data?.running === true;
   const disabled = !enabled || pollDisabled;
 
   return (
     <Screen title="Phiên học" subtitle="Bật/tắt việc phân tích tư thế trên Pi">
-      {!baseUrl ? (
-        <Notice
-          title="Chưa cấu hình máy chủ"
-          body="Mở tab Kết nối, nhập IP LAN của máy chạy dashboard rồi lưu lại."
-          tone="warn"
-        />
-      ) : null}
+      {!baseUrl ? <UnconfiguredNotice /> : null}
 
       {pollDisabled ? (
         <Notice
@@ -181,11 +164,7 @@ export function SessionScreen({ focused }: { focused: boolean }): React.ReactEle
         />
       ) : null}
 
-      {actionMessage ? (
-        <View style={styles.success}>
-          <Text style={[typo.body, { color: colors.good }]}>{actionMessage}</Text>
-        </View>
-      ) : null}
+      {actionMessage ? <SuccessBanner message={actionMessage} /> : null}
 
       <Card>
         <View style={styles.headRow}>
@@ -299,13 +278,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     borderColor: colors.border,
   },
-  success: {
-    backgroundColor: 'rgba(95,224,176,0.10)',
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(95,224,176,0.35)',
-    padding: spacing.lg,
-  },
   loadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -315,5 +287,3 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
 });
-
-

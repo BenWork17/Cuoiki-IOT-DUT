@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import time
 
-from ..logging_setup import get_logger
-from .base import STATES, Hardware
+from ..core.labels import STATE_ABSENT, STATE_BAD, STATE_GOOD, STATE_WARN
+from ..core.logging_setup import get_logger
+from .base import HW_BREAK, STATES, Hardware
 
 logger = get_logger(__name__)
 
@@ -33,9 +34,9 @@ class GpioMockHardware(Hardware):
         self._config = config
         self._devices: dict[str, object] = {}
         self._mock_ready = False
-        self._state = "ABSENT"
+        self._state = STATE_ABSENT
         self._install_mock_factory()
-        self.set_state("GOOD")
+        self.set_state(STATE_GOOD)
 
     # -- thiết lập ------------------------------------------------------
 
@@ -61,7 +62,7 @@ class GpioMockHardware(Hardware):
         """Dựng LED/buzzer giả theo bảng chân trong config."""
         pins = self._pins_config()
         try:
-            from gpiozero import Buzzer, LED  # noqa: PLC0415
+            from gpiozero import LED, Buzzer  # noqa: PLC0415
 
             self._devices["led_green"] = LED(pins["led_green"])
             self._devices["led_yellow"] = LED(pins["led_yellow"])
@@ -120,12 +121,7 @@ class GpioMockHardware(Hardware):
                 return
 
     def set_state(self, state: str, *, alert: bool = True) -> None:
-        """Ánh xạ trạng thái sang thiết bị và ghi log.
-
-        ``BAD`` và ``BREAK`` có tiếng buzzer nên chạy đồng bộ ngắn; các trạng
-        thái khác chỉ đổi LED, gần như tức thời. ``alert=False`` giữ nguyên
-        việc đổi LED nhưng bỏ tiếng — sự kiện đang bị cooldown chặn.
-        """
+        """Ánh xạ trạng thái sang thiết bị và ghi log."""
         if state not in STATES:
             logger.warning("Trạng thái phần cứng không hợp lệ: %r (bỏ qua).", state)
             return
@@ -134,20 +130,20 @@ class GpioMockHardware(Hardware):
         self._all_off()
         sound = bool(alert)
 
-        if state == "GOOD":
+        if state == STATE_GOOD:
             self._led("led_green", True)
             detail = "LED xanh sáng"
-        elif state == "WARN":
+        elif state == STATE_WARN:
             self._led("led_yellow", True)
             detail = "LED vàng sáng"
-        elif state == "BAD":
+        elif state == STATE_BAD:
             self._led("led_red", True)
             if sound:
                 detail = "LED đỏ sáng, buzzer 2 tiếng ngắn"
                 self._beep(2)
             else:
                 detail = "LED đỏ sáng, im lặng — cooldown"
-        elif state == "BREAK":
+        elif state == HW_BREAK:
             if sound:
                 detail = "buzzer 3 tiếng (nhắc nghỉ)"
                 self._beep(3)

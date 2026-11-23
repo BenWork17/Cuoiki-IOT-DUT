@@ -20,6 +20,24 @@
  *      phía server trông y như "chưa đo được" và không ai sửa.
  */
 
+import {
+  formatAge,
+  formatClock,
+  formatCountdown,
+  formatDecimal,
+  formatDuration,
+  unknownText,
+} from './format';
+
+export {
+  formatAge,
+  formatClock,
+  formatCountdown,
+  formatDecimal,
+  formatDuration,
+  unknownText,
+};
+
 /** Câu bắt buộc khi tín hiệu không còn mới (`app.js:124`). */
 export const NO_FRESH_TEXT = 'Chưa có dữ liệu mới';
 
@@ -151,38 +169,6 @@ function trimmedString(value: unknown): string | null {
   return trimmed ? trimmed : null;
 }
 
-/**
- * Định dạng số thực kiểu Việt Nam: dấu phẩy làm dấu thập phân, một chữ số.
- *
- * Dùng chung cho điểm và tuổi tín hiệu để màn hình không trộn hai quy ước
- * ("7.5" cạnh "1,4 s") — trộn như vậy trông như hai nguồn dữ liệu khác nhau.
- */
-export function formatDecimal(value: number | null, digits = 1): string {
-  if (value === null || !Number.isFinite(value)) return '–';
-  return value.toFixed(digits).replace('.', ',');
-}
-
-/** "cập nhật 1,4 s trước" hoặc "–" — khớp `formatAge()` của `app.js:136-141`. */
-export function formatAge(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds)) return '–';
-  return `cập nhật ${formatDecimal(seconds)} s trước`;
-}
-
-/**
- * Chữ cho một giá trị trạng thái mà app không có nhãn.
- *
- * Khớp `unknownText()` của `app.js:130-134`: hiện nguyên giá trị thô, không
- * im lặng đổi thành "Chưa rõ" trần.
- */
-export function unknownText(rawState: unknown): string {
-  if (rawState === null || rawState === undefined) {
-    return 'Chưa rõ (server không gửi giá trị)';
-  }
-  const shown = String(rawState);
-  if (!shown) return 'Chưa rõ (server không gửi giá trị)';
-  return `Chưa rõ (${shown})`;
-}
-
 /** Tông màu của `state` tư thế. */
 function toneForState(state: string | null): Tone {
   switch (state) {
@@ -277,25 +263,6 @@ export function normalizeStatus(payload: unknown): StatusView {
     muted: data.muted === true,
     tone: stale ? 'warn' : toneForState(state),
   };
-}
-
-/** "1 phút 20 giây" / "45 giây" — đọc được, không phải "80.0 s". */
-export function formatDuration(seconds: number): string {
-  const total = Math.max(0, Math.round(seconds));
-  const minutes = Math.floor(total / 60);
-  const rest = total % 60;
-  if (minutes === 0) return `${rest} giây`;
-  if (rest === 0) return `${minutes} phút`;
-  return `${minutes} phút ${rest} giây`;
-}
-
-/** "hh:mm:ss" từ số giây; dùng cho đồng hồ đếm ngược (`05:00`). */
-export function formatCountdown(seconds: number | null): string {
-  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return '–';
-  const total = Math.round(seconds);
-  const minutes = Math.floor(total / 60);
-  const rest = total % 60;
-  return `${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
 }
 
 /**

@@ -17,109 +17,82 @@
  * `fallbacks` khác rỗng nghĩa là người dùng đang nghe giọng khác giọng đã
  * chọn (vì thiếu bản thu) — phải nói ra, im lặng là để họ tưởng nhầm.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { StyleSheet, Text, View } from 'react-native';
 
-import { normalizeVoice, type VoiceView } from '../api/payload';
 import type { ApiError } from '../api/errors';
-import { Button, Card, Chip, Divider, ErrorBanner, Label, Notice, Screen } from '../components/ui';
+import { normalizeVoice, type VoiceView } from '../api/payload';
+import {
+  Button,
+  Card,
+  Chip,
+  Divider,
+  ErrorBanner,
+  Label,
+  LoadingCard,
+  Notice,
+  Screen,
+  SuccessBanner,
+  UnconfiguredNotice,
+} from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { usePoll, type PollResult } from '../hooks/usePoll';
-import { colors, radius, spacing, type as typo } from '../theme';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { toPollFetcher, usePoll } from '../hooks/usePoll';
+import { colors, spacing, type as typo } from '../theme';
 
 export function VoiceScreen({ focused }: { focused: boolean }): React.ReactElement {
   const { api, baseUrl, loading: configLoading } = useApp();
+  const { run: runAction } = useAsyncAction();
 
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [actionMessage, setActionMessage] = useState('');
   const [changingTo, setChangingTo] = useState<string | null>(null);
   /**
    * Giọng vừa định đổi mà lệnh hỏng — để nút "Gửi lại" gửi lại **đúng** giọng đó.
-   *
-   * Vì sao không dùng `changingTo`: nhánh lỗi đặt `setChangingTo(null)` để mở
-   * khoá các nút, nên tới lúc banner lỗi hiện ra thì `changingTo` đã là `null`
-   * và `onRetry` rơi về `refresh()` — tức chỉ tải lại danh sách, **không** gửi
-   * lại lệnh. Người dùng bấm "Thử lại", thấy banner biến mất và tin rằng giọng
-   * đã đổi, trong khi thực ra chẳng có lệnh nào được gửi lại. Đây đúng là lỗi
-   * mà ControlScreen đã sửa bằng `LastAction`; đây là bản tương ứng.
    */
   const [lastVoice, setLastVoice] = useState<string | null>(null);
 
-  /** Đã unmount chưa — mọi setState sau `await` phải kiểm cờ này. */
-  const mounted = useRef(true);
-  /** Request đổi giọng đang chạy, để huỷ khi rời màn. */
-  const actionController = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      actionController.current?.abort();
-      actionController.current = null;
-    };
-  }, []);
-
-  const fetcher = useCallback(
-    async (signal: AbortSignal): Promise<PollResult<VoiceView>> => {
-      const result = await api.getVoice({ signal });
-      if (result.ok) {
-        return { ok: true, data: normalizeVoice(result.data), ignored: false };
-      }
-      if (result.error.kind === 'cancelled') {
-        return { ok: false, error: result.error, ignored: true };
-      }
-      return { ok: false, error: result.error, ignored: false };
-    },
+  const fetcher = useMemo(
+    () => toPollFetcher((signal) => api.getVoice({ signal }), normalizeVoice),
     [api],
   );
 
-  const { data, error, loading, refresh } = usePoll(fetcher, {
+  const { data, error, loading, refresh } = usePoll<VoiceView>(fetcher, {
     enabled: focused && !configLoading && !!baseUrl,
   });
 
   const chooseVoice = useCallback(
-    async (voiceId: string): Promise<void> => {
-      actionController.current?.abort();
-      const controller = new AbortController();
-      actionController.current = controller;
-      setChangingTo(voiceId);
-      // Nhớ giọng đang thử NGAY từ đầu, và **giữ** nó nếu lệnh hỏng: nút "Gửi
-      // lại" phải gửi lại đúng giọng này, không phải tải lại danh sách. Chỉ
-      // xoá khi thành công (không còn gì để gửi lại) hoặc khi người dùng chọn
-      // giọng khác (lúc đó `setLastVoice` đã ghi đè).
-      setLastVoice(voiceId);
-      setActionError(null);
-      setActionMessage('');
-      const result = await api.setVoice(voiceId, { signal: controller.signal });
-      if (!mounted.current || controller.signal.aborted) return;
-      setChangingTo(null);
-      if (result.ok) {
-        setLastVoice(null);
-        // Hiện câu server gửi, rồi đọc lại để màn hình khớp máy chủ.
-        const view = normalizeVoice(result.data);
-        setActionMessage(
-          view.message || `Đã đổi sang ${view.currentLabel.toLowerCase()}.`,
-        );
-        refresh();
-        return;
-      }
-      if (result.error.kind === 'cancelled') return;
-      setActionError(result.error);
-    },
-    [api, refresh],
+    (voiceId: string): Promise<void> =>
+      runAction(async ({ signal, isActive }) => {
+        setChangingTo(voiceId);
+        // Nhớ giọng đang thử NGAY từ đầu, và **giữ** nó nếu lệnh hỏng: nút "Gửi
+        // lại" phải gửi lại đúng giọng này, không phải tải lại danh sách.
+        setLastVoice(voiceId);
+        setActionError(null);
+        setActionMessage('');
+        const result = await api.setVoice(voiceId, { signal });
+        if (!isActive()) return;
+        setChangingTo(null);
+        if (result.ok) {
+          setLastVoice(null);
+          const view = normalizeVoice(result.data);
+          setActionMessage(
+            view.message || `Đã đổi sang ${view.currentLabel.toLowerCase()}.`,
+          );
+          refresh();
+          return;
+        }
+        if (result.error.kind === 'cancelled') return;
+        setActionError(result.error);
+      }),
+    [api, refresh, runAction],
   );
 
   const unavailable = data ? !data.available : error?.status === 503;
 
   return (
     <Screen title="Giọng đọc" subtitle="Giọng phát cảnh báo ra loa camera">
-      {!baseUrl ? (
-        <Notice
-          title="Chưa cấu hình máy chủ"
-          body="Mở tab Kết nối, nhập IP LAN của máy chạy dashboard rồi lưu lại."
-          tone="warn"
-        />
-      ) : null}
+      {!baseUrl ? <UnconfiguredNotice /> : null}
 
       {error && !unavailable ? (
         <ErrorBanner message={error.message} onRetry={refresh} retrying={loading} />
@@ -147,18 +120,9 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
         />
       ) : null}
 
-      {actionMessage ? (
-        <View style={styles.success}>
-          <Text style={[typo.body, { color: colors.good }]}>{actionMessage}</Text>
-        </View>
-      ) : null}
+      {actionMessage ? <SuccessBanner message={actionMessage} /> : null}
 
-      {loading && !data ? (
-        <Card style={styles.loadingCard}>
-          <ActivityIndicator color={colors.accent} />
-          <Text style={[typo.caption, styles.muted]}>Đang hỏi máy chủ…</Text>
-        </Card>
-      ) : null}
+      {loading && !data ? <LoadingCard /> : null}
 
       {data ? (
         <Card>
@@ -170,15 +134,6 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
         </Card>
       ) : null}
 
-      {/* Câu giải thích lấy NGUYÊN VĂN từ `fallbacks` của server
-          (`speaker_alert._fallback_notes` đã là câu tiếng Việt hoàn chỉnh).
-          App không tự ghép câu: ghép là nguồn sự thật thứ hai, và bản trước
-          ghép sai hẳn — nó đọc value của `fallbacks` như thể đó là mã giọng,
-          nên in ra tên mã giọng thay vì câu server gửi.
-
-          Nhánh dự phòng chỉ chạy khi server có `fallbacks` nhưng value rỗng
-          (payload hỏng). Nó cố ý KHÔNG nhắc tới giọng nào: app không biết
-          giọng nào đang được mượn nếu server không nói. */}
       {data && data.fallbackCount > 0 ? (
         <Notice
           title="Còn câu phải mượn giọng khác"
@@ -209,10 +164,6 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
                       {voice.hasMissingClips ? <Chip text="Thiếu bản thu" tone="warn" /> : null}
                     </View>
                     <Text style={[typo.caption, styles.faint]}>{voice.id}</Text>
-                    {/* Lý do thiếu bản thu nằm ngay dưới **đúng giọng đó**,
-                        đọc từ `voices[ma].missing` của server. Đây là chỗ hợp
-                        lý để nói lý do — tuyệt đối không nhét câu giải thích
-                        vào danh sách tên giọng. */}
                     {voice.hasMissingClips ? (
                       <Text style={[typo.caption, styles.warnText]}>
                         {voice.missingKinds.length > 0
@@ -223,15 +174,11 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
                   </View>
                   <Button
                     label={voice.selected ? 'Đang dùng' : 'Chọn'}
-                    // Ba nút cùng chữ "Chọn" thì trình đọc màn hình đọc ba
-                    // lần giống nhau — phải nói rõ chọn giọng **nào**.
                     accessibilityLabel={
                       voice.selected ? `${voice.label} đang được dùng` : `Chọn ${voice.label}`
                     }
                     onPress={() => void chooseVoice(voice.id)}
                     variant={voice.selected ? 'quiet' : 'secondary'}
-                    // Giọng đang dùng thì không có gì để đổi; đang đổi giọng
-                    // khác thì khoá hết để không tạo hai lệnh chồng nhau.
                     disabled={voice.selected || (changingTo !== null && changingTo !== voice.id)}
                     busy={changingTo === voice.id}
                   />
@@ -267,17 +214,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     flexWrap: 'wrap',
-  },
-  loadingCard: {
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  success: {
-    backgroundColor: 'rgba(95,224,176,0.10)',
-    borderRadius: radius.lg,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(95,224,176,0.35)',
-    padding: spacing.lg,
   },
   muted: {
     color: colors.textMuted,

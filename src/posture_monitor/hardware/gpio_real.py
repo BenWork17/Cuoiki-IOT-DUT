@@ -12,10 +12,6 @@ Bảng đấu dây mặc định theo spec v2 §5.7:
 | HC-SR04 TRIG     | 5        |
 | HC-SR04 ECHO     | 6        |
 
-Lưu ý an toàn: chân ECHO của HC-SR04 là 5V, **bắt buộc** chia áp xuống 3.3V
-trước khi nối vào GPIO (xem README). Mô-tơ rung phải qua transistor NPN và
-diode flyback, không nối thẳng vào GPIO.
-
 Module này import được trên PC (không có gpiozero cũng không sao): mọi lỗi
 khởi tạo được ghi log và thiết bị vắng mặt bị bỏ qua, không crash.
 """
@@ -24,8 +20,9 @@ from __future__ import annotations
 
 import time
 
-from ..logging_setup import get_logger
-from .base import STATES, Hardware
+from ..core.labels import STATE_ABSENT, STATE_BAD, STATE_GOOD, STATE_WARN
+from ..core.logging_setup import get_logger
+from .base import HW_BREAK, STATES, Hardware
 
 logger = get_logger(__name__)
 
@@ -37,21 +34,17 @@ VIBRATION_BAD_SECONDS = 0.3
 
 
 class GpioRealHardware(Hardware):
-    """Điều khiển LED/buzzer/rung thật bằng gpiozero.
-
-    Mỗi thiết bị được khởi tạo độc lập: linh kiện nào vắng hoặc lỗi thì bỏ
-    qua, ghi log, các linh kiện còn lại vẫn chạy.
-    """
+    """Điều khiển LED/buzzer/rung thật bằng gpiozero."""
 
     def __init__(self, config=None) -> None:
         self._config = config
         self._leds: dict[str, object] = {}
         self._buzzer = None
         self._vibration = None
-        self._state = "ABSENT"
+        self._state = STATE_ABSENT
         self._available = False
         self._init_devices()
-        self.set_state("ABSENT")
+        self.set_state(STATE_ABSENT)
 
     # -- khởi tạo -------------------------------------------------------
 
@@ -72,7 +65,7 @@ class GpioRealHardware(Hardware):
     def _init_devices(self) -> None:
         """Dựng các đối tượng gpiozero; thiếu thư viện thì chỉ ghi log."""
         try:
-            from gpiozero import Buzzer, LED  # noqa: PLC0415 - cố ý import muộn
+            from gpiozero import LED, Buzzer  # noqa: PLC0415 - cố ý import muộn
         except Exception as exc:  # noqa: BLE001 - PC không có gpiozero
             logger.warning(
                 "Không import được gpiozero (%s); phần cứng thật không hoạt "
@@ -89,7 +82,9 @@ class GpioRealHardware(Hardware):
             try:
                 self._leds[key] = LED(pin)
             except Exception as exc:  # noqa: BLE001 - chân bận/hỏng
-                logger.warning("Không khởi tạo được %s trên GPIO%d: %s", key, pin, exc)
+                logger.warning(
+                    "Không khởi tạo được %s trên GPIO%d: %s", key, pin, exc
+                )
 
         try:
             self._buzzer = Buzzer(self._pin("buzzer", 18))
@@ -165,13 +160,7 @@ class GpioRealHardware(Hardware):
     # -- giao diện Hardware --------------------------------------------
 
     def set_state(self, state: str, *, alert: bool = True) -> None:
-        """Ánh xạ trạng thái sang LED/buzzer/rung theo spec §5.7.
-
-        ``alert=False`` vẫn đổi LED đúng trạng thái nhưng **không** kêu và
-        **không** rung — đó là trường hợp sự kiện bị ``alert_cooldown_s``
-        chặn: người dùng đã được nhắc gần đây thì đèn vẫn phải phản ánh tư
-        thế, chỉ tiếng là phải im.
-        """
+        """Ánh xạ trạng thái sang LED/buzzer/rung theo spec §5.7."""
         if state not in STATES:
             logger.warning("Trạng thái phần cứng không hợp lệ: %r (bỏ qua).", state)
             return
@@ -187,19 +176,17 @@ class GpioRealHardware(Hardware):
         vibration_enabled = bool(getattr(alerts, "vibration_enabled", True))
         sound = bool(alert)
 
-        if state == "GOOD":
+        if state == STATE_GOOD:
             self._led_on("led_green")
-        elif state == "WARN":
+        elif state == STATE_WARN:
             self._led_on("led_yellow")
-        elif state == "BAD":
+        elif state == STATE_BAD:
             self._led_on("led_red")
             if sound and buzzer_enabled:
                 self._beep(2)
             if sound and vibration_enabled:
                 self._vibrate(VIBRATION_BAD_SECONDS)
-        elif state == "BREAK":
-            # Nhắc nghỉ không bao giờ bị cooldown chặn, nhưng vẫn tôn trọng
-            # cờ cho nhất quán với hợp đồng.
+        elif state == HW_BREAK:
             if sound and buzzer_enabled:
                 self._beep(3)
         # ABSENT: tắt hết, không làm gì thêm.

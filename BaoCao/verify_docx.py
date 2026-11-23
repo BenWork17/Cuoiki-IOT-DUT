@@ -126,7 +126,7 @@ def main() -> int:
             print("  " + "   " * (level - 1) + f"H{level} · {text}")
     print("  tổng tiêu đề:", len(heads))
 
-    for want in ("Chương 1", "Chương 2", "Chương 3", "Chương 4", "Chương 5", "Phụ lục"):
+    for want in ("Chương 1", "Chương 2", "Chương 3", "Chương 4", "Chương 5", "Chương 6", "Phụ lục"):
         ok = any(want in t for _, t in heads)
         print(f"    {want:11s}: {'CÓ' if ok else 'THIẾU'}")
 

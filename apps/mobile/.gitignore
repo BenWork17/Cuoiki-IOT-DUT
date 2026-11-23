@@ -1,14 +1,21 @@
-# Expo / Metro
+# Expo / Metro / Bundler
 node_modules/
 .expo/
 dist/
 web-build/
 expo-env.d.ts
 
-# Native build sinh ra khi prebuild (không dùng trên máy Windows này)
+# Native build sinh ra khi prebuild
 ios/
 android/
 
-# Log và tệp tạm
+# Thư mục kiểm chứng bundle & bộ nhớ đệm
+.scratch-export/
+.scratch/
+coverage/
+*.tsbuildinfo
+
+# Log & hệ điều hành
 *.log
 .DS_Store
+Thumbs.db

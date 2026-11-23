@@ -12,12 +12,16 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from ..logging_setup import get_logger
+from ..core.labels import STATES as POSTURE_STATES
+from ..core.logging_setup import get_logger
 
 logger = get_logger(__name__)
 
+#: Trạng thái riêng của phần cứng khi nhắc nghỉ giải lao.
+HW_BREAK = "BREAK"
+
 #: Các trạng thái mà tầng cảnh báo có thể đặt.
-STATES = ("GOOD", "WARN", "BAD", "ABSENT", "BREAK")
+STATES = (*POSTURE_STATES, HW_BREAK)
 
 
 class Hardware(ABC):

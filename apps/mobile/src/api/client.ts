@@ -56,6 +56,8 @@ export const API_PATH = {
   mute: '/api/mute',
   ptz: '/api/ptz',
   frame: '/api/frame',
+  /** Luồng MJPEG trực tiếp cho `WebView` ở màn Camera. */
+  stream: '/stream',
   voice: '/api/voice',
   /** Lịch sử **vi phạm** (rời bàn / dùng điện thoại / sai người) từ bảng `events`. */
   violations: '/api/violations',

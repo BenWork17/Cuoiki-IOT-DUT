@@ -282,9 +282,9 @@ def add_cover(doc: Document, meta: dict[str, str]) -> None:
     doc.add_paragraph()
 
     rows = [
-        ("Bốn phần nội dung", "Model AI · Web FE/BE · Phần cứng (camera, Raspberry Pi) · Kiểm thử"),
-        ("Mã nguồn", "src/posture_monitor/  (32 module Python)"),
-        ("Bộ kiểm thử", "54 tệp · 1.496 bài test (chạy trên PC)"),
+        ("Sáu chương nội dung", "Tổng quan · Model AI · Web FE/BE · Phần cứng · Đánh giá · Mobile App"),
+        ("Mã nguồn", "src/posture_monitor/ (9 subpackages) & apps/mobile/"),
+        ("Bộ kiểm thử", "60 tệp Python + 13 tệp Mobile TypeScript/UI"),
         ("Phiên bản tài liệu", meta.get("version", "1.0")),
         ("Ngày hoàn thành", meta.get("date", "")),
     ]

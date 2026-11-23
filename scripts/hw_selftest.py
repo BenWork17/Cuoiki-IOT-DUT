@@ -39,12 +39,12 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from posture_monitor.config import (  # noqa: E402
+from posture_monitor.core.config import (  # noqa: E402
     ConfigError,
     PinsConfig,
     load_config,
 )
-from posture_monitor.sensors import (  # noqa: E402
+from posture_monitor.hardware.sensors import (  # noqa: E402
     MAX_DISTANCE_M,
     MAX_VALID_CM,
     MIN_VALID_CM,

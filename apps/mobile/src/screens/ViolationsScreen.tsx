@@ -1,5 +1,5 @@
 /**
- * Màn 8 — Vi phạm.
+ * Màn 7 — Vi phạm.
  *
  * `GET /api/violations?limit=200` — **lịch sử vi phạm** (rời khỏi camera, dùng
  * điện thoại, sai người học), đọc từ bảng `events` trong SQLite. Đây không
@@ -27,8 +27,10 @@
  *    giữ đúng dòng khi danh sách đổi.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
+import { FlatList, StyleSheet, Text, View } from 'react-native';
 
+import type { ApiError } from '../api/errors';
+import { formatClock, formatDecimal, formatDuration } from '../api/format';
 import {
   VIOLATION_KIND_ORDER,
   normalizeViolations,
@@ -36,8 +38,17 @@ import {
   type ViolationEntry,
   type ViolationsView,
 } from '../api/payload';
-import type { ApiError } from '../api/errors';
-import { Button, Card, Chip, ErrorBanner, Label, Screen, toneColor } from '../components/ui';
+import {
+  Button,
+  Card,
+  Chip,
+  ErrorBanner,
+  Label,
+  LoadingCard,
+  Screen,
+  UnconfiguredNotice,
+  toneColor,
+} from '../components/ui';
 import { useApp } from '../context/AppContext';
 import { colors, radius, spacing, type as typo } from '../theme';
 
@@ -46,8 +57,7 @@ import { colors, radius, spacing, type as typo } from '../theme';
  *
  * **Chép đúng chuỗi của server** (`VIOLATION_KIND_TEXT` trong `web/app.py`),
  * không phải câu app tự nghĩ ra. Đây chỉ là lưới an toàn cho payload thiếu
- * trường; bình thường nhãn luôn đến từ server. Chép lệch đi một chữ là app và
- * dashboard nói hai câu khác nhau về cùng một việc.
+ * trường; bình thường nhãn luôn đến từ server.
  */
 const KIND_FALLBACK_LABEL: Record<string, string> = {
   ABSENT: 'Rời khỏi bàn học',
@@ -55,25 +65,12 @@ const KIND_FALLBACK_LABEL: Record<string, string> = {
   IMPOSTOR: 'Không phải người đăng ký',
 };
 
-/** Giờ:phút:giây theo **múi giờ máy** — người dùng đối chiếu với đồng hồ của họ. */
-function formatClock(epochMs: number): string {
-  const d = new Date(epochMs);
-  if (Number.isNaN(d.getTime())) return '--:--:--';
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
-}
-
-/** "kéo dài 8 giây" — chỉ khi vi phạm có thời lượng thật. */
-function formatDuration(seconds: number): string | null {
+/** "kéo dài 8,2 giây" / "kéo dài 1 phút 35 giây" — chỉ khi vi phạm có thời lượng thật. */
+function violationDurationText(seconds: number): string | null {
   if (!Number.isFinite(seconds) || seconds <= 0) return null;
-  // Dưới 10 giây giữ một chữ số thập phân; từ 10 giây trở lên làm tròn cho gọn.
-  const text =
-    seconds < 10
-      ? seconds.toFixed(1).replace('.', ',')
-      : String(Math.round(seconds));
-  return `kéo dài ${text} giây`;
+  // Dưới 10 giây giữ một chữ số thập phân; từ 10 giây trở lên dùng formatDuration cho gọn.
+  if (seconds < 10) return `kéo dài ${formatDecimal(seconds, 1)} giây`;
+  return `kéo dài ${formatDuration(seconds)}`;
 }
 
 export function ViolationsScreen({ focused }: { focused: boolean }): React.ReactElement {
@@ -87,10 +84,7 @@ export function ViolationsScreen({ focused }: { focused: boolean }): React.React
   const mounted = useRef(true);
   /** Request đang chạy, để huỷ khi rời tab. */
   const controllerRef = useRef<AbortController | null>(null);
-  /**
-   * Chặn chồng request. Bấm "Làm mới" liên tục không được tạo một loạt lời
-   * gọi: Pi phải lo camera, không phải trả lời cùng một câu hỏi 5 lần.
-   */
+  /** Chặn chồng request khi bấm "Làm mới" liên tục. */
   const busyRef = useRef(false);
 
   const load = useCallback(async (): Promise<void> => {
@@ -127,12 +121,10 @@ export function ViolationsScreen({ focused }: { focused: boolean }): React.React
     };
   }, []);
 
-  // Chỉ tải khi tab đang hiện. Không có `setInterval` ở đây là **có chủ ý** —
-  // xem docstring đầu tệp.
+  // Chỉ tải khi tab đang hiện. Không có `setInterval` ở đây là **có chủ ý**.
   useEffect(() => {
     if (!focused || !baseUrl || configLoading) return;
     void load();
-    // `load` đổi khi `api` đổi (đổi địa chỉ máy chủ) — tải lại là đúng.
   }, [focused, baseUrl, configLoading, load]);
 
   const rows = view?.violations ?? [];
@@ -143,19 +135,9 @@ export function ViolationsScreen({ focused }: { focused: boolean }): React.React
     <Screen
       title="Vi phạm"
       subtitle="Lịch sử rời bàn, dùng điện thoại và sai người học"
-      // `scroll={false}`: `FlatList` tự cuộn. Bọc nó trong `ScrollView` của
-      // `Screen` sẽ cho hai vùng cuộn lồng nhau — trên iOS danh sách dài cuộn
-      // giật và đôi khi không cuộn được.
       scroll={false}
     >
-      {!baseUrl ? (
-        <Card>
-          <Text style={typo.heading}>Chưa cấu hình máy chủ</Text>
-          <Text style={[typo.body, styles.muted]}>
-            Mở tab Kết nối, nhập IP LAN của máy chạy dashboard rồi lưu lại.
-          </Text>
-        </Card>
-      ) : null}
+      {!baseUrl ? <UnconfiguredNotice /> : null}
 
       {error ? (
         <ErrorBanner
@@ -167,12 +149,7 @@ export function ViolationsScreen({ focused }: { focused: boolean }): React.React
 
       {view ? <Summary view={view} /> : null}
 
-      {showSpinner ? (
-        <Card style={styles.center}>
-          <ActivityIndicator color={colors.accent} />
-          <Text style={[typo.caption, styles.muted]}>Đang tải lịch sử…</Text>
-        </Card>
-      ) : null}
+      {showSpinner ? <LoadingCard label="Đang tải lịch sử…" /> : null}
 
       {showEmpty ? (
         // Trạng thái rỗng là tin **tốt** — không dùng màu báo động (đỏ/vàng).
@@ -188,9 +165,6 @@ export function ViolationsScreen({ focused }: { focused: boolean }): React.React
       {rows.length > 0 ? (
         <FlatList
           data={rows}
-          // Khoá ổn định: `ts` + `kind` + **chỉ số** vì hai vi phạm cùng loại
-          // có thể trùng tới mili giây. Thiếu chỉ số thì React cảnh báo trùng
-          // khoá và có thể vẽ sai dòng khi danh sách đổi.
           keyExtractor={(item, index) => `${item.ts}-${item.kind}-${index}`}
           renderItem={({ item }) => <ViolationRow entry={item} />}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
@@ -198,7 +172,6 @@ export function ViolationsScreen({ focused }: { focused: boolean }): React.React
           contentContainerStyle={styles.listContent}
           refreshing={loading}
           onRefresh={() => void load()}
-          // Danh sách đã mới nhất trước từ server; không sắp xếp lại ở đây.
         />
       ) : null}
 
@@ -244,13 +217,10 @@ function countLabel(c: ViolationCount): string {
   if (c.kindText) return c.kindText;
   const fallback = KIND_FALLBACK_LABEL[c.kind];
   if (fallback) return fallback;
-  // Mã lạ: hiện nguyên giá trị, không im lặng đổi thành "Khác" — một mã mới
-  // của server (hoặc lỗi đánh máy) phải nhìn thấy được để còn sửa.
   return c.kind;
 }
 
-/** Tông màu theo mức nghiêm trọng. Màu không bao giờ là kênh duy nhất: mỗi
- * dòng luôn có nhãn chữ bên cạnh. */
+/** Tông màu theo mức nghiêm trọng. */
 function toneForKind(kind: string): 'bad' | 'warn' | 'idle' {
   if (kind === 'IMPOSTOR') return 'bad';
   if (kind === 'PHONE_USE') return 'warn';
@@ -260,7 +230,7 @@ function toneForKind(kind: string): 'bad' | 'warn' | 'idle' {
 
 /** Một dòng vi phạm: giờ · nhãn · (kéo dài N giây). */
 function ViolationRow({ entry }: { entry: ViolationEntry }): React.ReactElement {
-  const duration = formatDuration(entry.durationS);
+  const duration = violationDurationText(entry.durationS);
   const label = entry.kindText ?? KIND_FALLBACK_LABEL[entry.kind] ?? entry.kind;
   const isUnknownKind =
     !entry.kindText &&
@@ -296,7 +266,6 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   clock: {
-    // Cột giờ cố định để các nhãn thẳng hàng — mắt quét theo cột dễ hơn.
     minWidth: 78,
   },
   rowBody: {
@@ -320,13 +289,9 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
     gap: spacing.sm,
   },
-  center: {
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
   emptyCard: {
     gap: spacing.sm,
-    borderColor: 'rgba(95,224,176,0.35)',
+    borderColor: 'rgba(52,211,153,0.35)',
     borderRadius: radius.lg,
   },
   footer: {

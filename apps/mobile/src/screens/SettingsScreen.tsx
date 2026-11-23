@@ -1,5 +1,5 @@
 /**
- * Màn 6 — Kết nối (bắt buộc theo tài liệu yêu cầu §5.1 hàng 7).
+ * Màn 8 — Kết nối (bắt buộc theo tài liệu yêu cầu §5.1 hàng 7).
  *
  * Địa chỉ máy chủ **nhập trong app** và **lưu lại**; không có IP/cổng nào
  * hardcode trong mã nguồn.
@@ -10,14 +10,24 @@
  * Flask, cũng trả 200 — báo "kết nối tốt" lúc đó là nói dối người dùng và
  * khiến họ đi tìm lỗi ở chỗ khác.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useCallback, useEffect, useState } from 'react';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
 
+import { createApiClient } from '../api/client';
 import { normalizeStatus, type StatusView } from '../api/payload';
 import { displayHost, normalizeBaseUrl } from '../api/url';
-import { Button, Card, Divider, Label, Notice, Screen } from '../components/ui';
+import {
+  Button,
+  Card,
+  Divider,
+  Label,
+  LoadingCard,
+  Notice,
+  Screen,
+} from '../components/ui';
 import { useApp } from '../context/AppContext';
-import { colors, radius, spacing, type as typo } from '../theme';
+import { useAsyncAction } from '../hooks/useAsyncAction';
+import { colors, monoFamily, radius, spacing, type as typo } from '../theme';
 
 type CheckResult =
   | { kind: 'idle' }
@@ -26,28 +36,13 @@ type CheckResult =
   | { kind: 'error'; message: string };
 
 export function SettingsScreen(): React.ReactElement {
-  const { baseUrl, setBaseUrl, clear, api, loading } = useApp();
+  const { baseUrl, setBaseUrl, clear, loading } = useApp();
+  const { run: runCheck, isMounted, abort: abortCheck } = useAsyncAction();
   const [text, setText] = useState(baseUrl);
   const [result, setResult] = useState<CheckResult>({ kind: 'idle' });
   const [saveNote, setSaveNote] = useState('');
 
-  /** Đã unmount chưa — mọi setState sau `await` phải kiểm cờ này. */
-  const mounted = useRef(true);
-  /** Request "Kiểm tra kết nối" đang chạy, để huỷ khi rời màn. */
-  const checkController = useRef<AbortController | null>(null);
-
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      checkController.current?.abort();
-      checkController.current = null;
-    };
-  }, []);
-
-  // Địa chỉ đọc từ bộ nhớ xong thì đổ vào ô nhập. Không làm vậy, lần mở app
-  // thứ hai ô nhập trống trong khi app vẫn đang dùng địa chỉ đã lưu — người
-  // dùng tưởng mất cấu hình.
+  // Địa chỉ đọc từ bộ nhớ xong thì đổ vào ô nhập.
   useEffect(() => {
     setText(baseUrl);
   }, [baseUrl]);
@@ -64,8 +59,9 @@ export function SettingsScreen(): React.ReactElement {
       setResult({ kind: 'error', message: parsed.message });
       return;
     }
-    const written = await saveAndReport(parsed.baseUrl, setBaseUrl);
-    if (!mounted.current) return;
+    abortCheck();
+    const written = await setBaseUrl(parsed.baseUrl);
+    if (!isMounted()) return;
     if (!written) {
       setResult({
         kind: 'error',
@@ -77,7 +73,7 @@ export function SettingsScreen(): React.ReactElement {
     setText(parsed.baseUrl);
     setSaveNote(`Đã lưu ${displayHost(parsed.baseUrl)}.`);
     setResult({ kind: 'idle' });
-  }, [setBaseUrl, text]);
+  }, [abortCheck, isMounted, setBaseUrl, text]);
 
   const check = useCallback(async (): Promise<void> => {
     const parsed = normalizeBaseUrl(text);
@@ -85,35 +81,33 @@ export function SettingsScreen(): React.ReactElement {
       setResult({ kind: 'error', message: parsed.message });
       return;
     }
-    checkController.current?.abort();
-    const controller = new AbortController();
-    checkController.current = controller;
-    setResult({ kind: 'running' });
-    // Kiểm tra trên địa chỉ **đang gõ**, chưa cần lưu: người dùng phải sửa
-    // được IP sai mà không bị app ghi đè cấu hình cũ trước khi họ chắc chắn.
-    const { createApiClient } = await import('../api/client');
-    if (!mounted.current) return;
-    const client = createApiClient(parsed.baseUrl);
-    const response = await client.checkConnection({ signal: controller.signal });
-    if (!mounted.current || controller.signal.aborted) return;
-    if (response.ok) {
-      setResult({ kind: 'ok', view: normalizeStatus(response.data.status) });
-      return;
-    }
-    if (response.error.kind === 'cancelled') {
-      setResult({ kind: 'idle' });
-      return;
-    }
-    setResult({ kind: 'error', message: response.error.message });
-  }, [text]);
+    await runCheck(async ({ signal, isActive }) => {
+      setResult({ kind: 'running' });
+      // Kiểm tra trên địa chỉ **đang gõ**, chưa cần lưu: người dùng phải sửa
+      // được IP sai mà không bị app ghi đè cấu hình cũ trước khi họ chắc chắn.
+      const client = createApiClient(parsed.baseUrl);
+      const response = await client.checkConnection({ signal });
+      if (!isActive()) return;
+      if (response.ok) {
+        setResult({ kind: 'ok', view: normalizeStatus(response.data.status) });
+        return;
+      }
+      if (response.error.kind === 'cancelled') {
+        setResult({ kind: 'idle' });
+        return;
+      }
+      setResult({ kind: 'error', message: response.error.message });
+    });
+  }, [runCheck, text]);
 
   const forget = useCallback(async (): Promise<void> => {
+    abortCheck();
     const cleared = await clear();
-    if (!mounted.current) return;
+    if (!isMounted()) return;
     setText('');
     setResult({ kind: 'idle' });
     setSaveNote(cleared ? 'Đã xoá địa chỉ đã lưu.' : 'Không xoá được địa chỉ đã lưu.');
-  }, [clear]);
+  }, [abortCheck, clear, isMounted]);
 
   return (
     <Screen title="Kết nối" subtitle="Địa chỉ máy chạy dashboard trong cùng mạng LAN">
@@ -199,22 +193,9 @@ export function SettingsScreen(): React.ReactElement {
   );
 }
 
-/** Ghi địa chỉ, trả `false` khi AsyncStorage lỗi. */
-async function saveAndReport(
-  value: string,
-  setter: (next: string) => Promise<boolean>,
-): Promise<boolean> {
-  return setter(value);
-}
-
 function CheckPanel({ result }: { result: CheckResult }): React.ReactElement {
   if (result.kind === 'running') {
-    return (
-      <Card style={styles.checkRunning}>
-        <ActivityIndicator color={colors.accent} />
-        <Text style={[typo.caption, styles.muted]}>Đang gọi /api/status…</Text>
-      </Card>
-    );
+    return <LoadingCard label="Đang gọi /api/status…" />;
   }
 
   if (result.kind === 'ok') {
@@ -283,15 +264,11 @@ const styles = StyleSheet.create({
   },
   code: {
     color: colors.accent,
-    fontFamily: 'Menlo',
+    fontFamily: monoFamily,
   },
   strong: {
     color: colors.text,
     fontWeight: '600',
-  },
-  checkRunning: {
-    alignItems: 'center',
-    gap: spacing.sm,
   },
   checkOk: {
     borderColor: 'rgba(95,224,176,0.35)',

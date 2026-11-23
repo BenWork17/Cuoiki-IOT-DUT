@@ -1755,12 +1755,11 @@
 
   function violationKindLabel(kind) {
     /* Chỉ dùng khi máy chủ KHÔNG gửi `kind_text` (bản cũ hơn). Nhãn chính
-     * luôn là của máy chủ; bảng này là lưới an toàn, không phải nguồn sự thật
-     * thứ hai — ba mã dưới đây là hằng số của `state.py`. */
+     * luôn là của máy chủ; bảng này khớp đúng bảng chuẩn của `core/labels.py`. */
     var fallback = {
-      ABSENT: "Rời bàn học",
+      ABSENT: "Rời khỏi bàn học",
       PHONE_USE: "Dùng điện thoại",
-      IMPOSTOR: "Sai người học"
+      IMPOSTOR: "Không phải người đăng ký"
     };
     return fallback[kind] || String(kind || "Vi phạm");
   }
@@ -1790,27 +1789,12 @@
     var counts = (data && data.counts) || {};
     var total = data && typeof data.total === "number" ? data.total : rows.length;
 
-    /* Máy chủ có thể trả 200 kèm danh sách RỖNG và một trường `error` (ví dụ
-     * truy vấn DB hỏng). Hiện "Chưa có vi phạm nào" lúc đó là nói dối người
-     * dùng: họ vừa rời bàn 5 lần mà popup bảo sạch. Vì vậy `error` trong thân
-     * 200 phải thắng câu rỗng, và phải hiện kèm nút thử lại. */
-    var serverError =
-      data && typeof data.error === "string" ? data.error.trim() : "";
-    if (serverError) {
-      showViolationError(
-        serverError + " Chưa đọc được lịch sử vi phạm từ máy chủ."
-      );
-    } else {
-      showViolationError("");
-    }
+    showViolationError("");
 
     /* Tổng + phân loại. Chỉ hiện chip cho loại có số > 0; chip 0 chỉ làm rối. */
     if (els.violationsSummary) {
-      els.violationsSummary.textContent = serverError
-        ? "Chưa đọc được lịch sử vi phạm"
-        : total > 0
-          ? "Tổng " + total + " vi phạm"
-          : "Chưa có vi phạm nào";
+      els.violationsSummary.textContent =
+        total > 0 ? "Tổng " + total + " vi phạm" : "Chưa có vi phạm nào";
     }
     if (els.violationsCounts) {
       els.violationsCounts.textContent = "";
@@ -1860,12 +1844,8 @@
       els.violationsList.appendChild(item);
     });
 
-    /* Rỗng = tin tốt: câu tích cực, và cố ý KHÔNG dùng màu cảnh báo.
-     * NHƯNG khi máy chủ báo `error` thì rỗng không phải là "sạch": đã có câu
-     * lỗi ở trên rồi, hiện thêm "Chưa có vi phạm nào" sẽ mâu thuẫn ngay trong
-     * cùng một hộp. */
     if (els.violationsEmpty) {
-      els.violationsEmpty.hidden = serverError ? true : rows.length > 0;
+      els.violationsEmpty.hidden = rows.length > 0;
     }
   }
 

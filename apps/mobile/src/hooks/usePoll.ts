@@ -14,11 +14,14 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+import type { ApiResult } from '../api/client';
+import type { ApiError } from '../api/errors';
+
 /** Kết quả một lượt tải; `null` khi chưa có lượt nào xong. */
 export type PollState<T> = {
   data: T | null;
   /** Lỗi của lượt gần nhất; `null` khi lượt đó thành công. */
-  error: import('../api/errors').ApiError | null;
+  error: ApiError | null;
   /** `true` đang có request chạy (lượt đầu hoặc lượt làm mới). */
   loading: boolean;
   /** `Date.now()` của lượt thành công gần nhất, để hiện "cập nhật lúc …". */
@@ -29,10 +32,39 @@ export type PollResult<T> = {
   /** Lượt tải xong (hoặc lỗi) và trả dữ liệu mới. */
   ok: boolean;
   data?: T;
-  error?: import('../api/errors').ApiError;
+  error?: ApiError;
   /** `true` khi lượt này không được áp vì màn đã unmount — không phải lỗi. */
   ignored: boolean;
 };
+
+/**
+ * Chuyển một lời gọi `ApiResult<Raw>` thành `fetcher` cho `usePoll`:
+ * tự đánh dấu `ignored: true` khi lỗi là `cancelled` (rời màn / đổi địa chỉ).
+ */
+export function toPollFetcher<T>(
+  request: (signal: AbortSignal) => Promise<ApiResult<T>>,
+): (signal: AbortSignal) => Promise<PollResult<T>>;
+export function toPollFetcher<Raw, T>(
+  request: (signal: AbortSignal) => Promise<ApiResult<Raw>>,
+  map: (raw: Raw) => T,
+): (signal: AbortSignal) => Promise<PollResult<T>>;
+export function toPollFetcher<Raw, T = Raw>(
+  request: (signal: AbortSignal) => Promise<ApiResult<Raw>>,
+  map?: (raw: Raw) => T,
+): (signal: AbortSignal) => Promise<PollResult<T>> {
+  return async (signal: AbortSignal): Promise<PollResult<T>> => {
+    const result = await request(signal);
+    if (result.ok) {
+      const data = map ? map(result.data) : (result.data as unknown as T);
+      return { ok: true, data, ignored: false };
+    }
+    return {
+      ok: false,
+      error: result.error,
+      ignored: result.error.kind === 'cancelled',
+    };
+  };
+}
 
 /** Nhịp làm mới được phép: không nhanh hơn dashboard web (`app.js:1708-1709`). */
 export const MIN_POLL_MS = 1000;

@@ -13,6 +13,7 @@ import {
   PAUSED_TEXT,
   STALE_TEXT,
   formatAge,
+  formatClock,
   formatCountdown,
   formatDecimal,
   formatDuration,
@@ -182,6 +183,16 @@ test('formatCountdown: hai chữ số, có số 0 dẫn đầu', () => {
   assert.equal(formatCountdown(0), '00:00');
   assert.equal(formatCountdown(null), '–');
   assert.equal(formatCountdown(-5), '–');
+});
+
+test('formatClock: luôn trả HH:MM:SS hai chữ số hoặc --:--:-- khi hỏng', async () => {
+  const formatMod = await import('../src/api/format.ts');
+  assert.equal(formatMod.formatClock, formatClock, 'payload.ts phải re-export format.ts');
+  assert.equal(formatMod.formatDecimal, formatDecimal);
+  const sample = new Date(2026, 4, 9, 7, 5, 3).getTime();
+  assert.equal(formatClock(sample), '07:05:03');
+  assert.equal(formatClock(Number.NaN), '--:--:--');
+  assert.equal(formatClock(Number.POSITIVE_INFINITY), '--:--:--');
 });
 
 /* ---------------------------------------------------------------- session */

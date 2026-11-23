@@ -1,6 +1,6 @@
 # Cấu hình mẫu của Hệ thống giám sát tư thế học tập.
 # Mọi ngưỡng đặt ở đây, không sửa trong code (docs/SPEC_V2.md §1, §6).
-# Bỏ một khóa thì chương trình dùng giá trị mặc định trong src/posture_monitor/config.py.
+# Bỏ một khóa thì chương trình dùng giá trị mặc định trong src/posture_monitor/core/config.py.
 
 camera:
   source: usb:0          # usb:N | picamera | file:duong_dan.mp4 | rtsp:rtsp://...
@@ -194,7 +194,7 @@ sensors:
   min_distance_cm: 35
 
 # Ngưỡng trạng thái hiện diện ("người còn ngồi trước bàn không").
-# Module: src/posture_monitor/presence.py.
+# Module: src/posture_monitor/domain/presence.py.
 # CHỈ có tác dụng khi 'schedule.enabled: true': vòng lặp chỉ dùng giá trị này
 # để điền 'held' cho cảnh báo "rời khung hình" trong giờ học. Khi giờ học
 # đang tắt (mặc định) nó không đổi hành vi gì.
@@ -215,8 +215,8 @@ presence:
 # 'enabled' để trống = tự động: bật khi đã có match_threshold, tắt khi chưa.
 face:
   enabled: true                # bật; ngưỡng tự suy ra khi đăng ký đủ mẫu
-  detector: yunet.onnx         # 228 KB — đường dẫn tới tệp mô hình phát hiện
-  recognizer: sface.onnx       # 37 MB — tệp mô hình đặc trưng
+  detector: models/yunet.onnx  # 228 KB — đường dẫn tới tệp mô hình phát hiện
+  recognizer: models/sface.onnx  # 37 MB — tệp mô hình đặc trưng
   interval_s: 2.0              # KHÔNG chạy mỗi khung (86,1 ms/lượt, spec §4.2)
   # Ngưỡng điểm của YuNet. Lý do hạ xuống: ở 0,9 bộ phát hiện BỎ MẤT mặt thật
   # trên một phần khung, nên mỗi bước đăng ký 1,5 s (~7 khung @5 FPS) không
@@ -237,16 +237,6 @@ face:
   impostor_hold_s: 5.0
   enroll_step_s: 1.5
   enroll_min_samples: 3
-  # CHƯA có người đọc: đường chạy thật (_build_face_processor trong
-  # __main__.py) cố ý detect trên khung gốc, không thu nhỏ. Đừng bật rồi
-  # tưởng là đã tối ưu — đo trên Pi (cv2 5.0.0, 20 khung thật): khung gốc
-  # 704x576 thấy mặt 20/20, còn 320x320 chỉ 0–3/20 vì score sát ngưỡng của
-  # YuNet lúc đó (0,9). Ngưỡng nay đã có khoá là 'score_threshold' ở trên,
-  # nhưng các số 320x320 đó CHƯA đo lại ở 0,7, nên chưa đủ căn cứ bật thu nhỏ.
-  detect_width: 320
-  # CHƯA có người đọc: face_worker.py (nơi duy nhất gọi CLAHE) không được
-  # khởi tạo ở đâu trong src/, nên chống ngược sáng hiện không chạy.
-  clahe_enabled: true
   store_path: "data/faces.json"  # chỉ chứa vector + tên, KHÔNG có ảnh
 
 storage:
@@ -297,7 +287,7 @@ web:
   stream_enabled: true
 
 # Giờ học quy định: chỉ phát cảnh báo trong các khung giờ dưới đây.
-# Module quyết định: src/posture_monitor/schedule.py. Mặc định TẮT (enabled:
+# Module quyết định: src/posture_monitor/domain/schedule.py. Mặc định TẮT (enabled:
 # false = cảnh báo bất cứ lúc nào, không giới hạn giờ).
 # Giờ PHẢI đặt trong ngoặc kép: YAML đọc 19:00 không ngoặc kép thành số 1140.
 schedule:
@@ -316,7 +306,7 @@ schedule:
     #   start: "22:00"
     #   end: "01:00"
   # Tắt riêng từng loại cảnh báo và đặt nhịp nhắc lại/thời gian giữ riêng.
-  # Bỏ một loại thì loại đó dùng mặc định trong src/posture_monitor/schedule.py.
+  # Bỏ một loại thì loại đó dùng mặc định trong src/posture_monitor/domain/schedule.py.
   #
   # 'cooldown_s' ở đây là NHỊP NHẮC LẠI khi lỗi còn tiếp diễn, không phải
   # "báo một lần rồi im". Điều kiện còn đúng thì held_s còn tăng, nên cứ mỗi
@@ -344,7 +334,7 @@ schedule:
 # Phiên học bật/tắt bằng tay (nút "Bắt đầu học" trên dashboard).
 # Khác 'schedule' ở trên: 'schedule' là lịch theo tuần (tự động), còn mục này
 # là việc người dùng ngồi xuống bấm nút. Cả hai phải cùng cho phép thì mới
-# cảnh báo — xem src/posture_monitor/study_session.py.
+# cảnh báo — xem src/posture_monitor/domain/study_session.py.
 session:
   # Thời lượng gợi ý khi mở dashboard (phút). Đếm NGƯỢC: hết số này thì hệ
   # thống tự dừng model và báo một câu.

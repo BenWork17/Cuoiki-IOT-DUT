@@ -1,0 +1,2 @@
+# Thư mục chứa trọng số mô hình AI tại máy chạy (không commit tệp nặng).
+# Xem docs/MODELS.md để tải yunet.onnx và sface.onnx; các trọng số YOLO tự tải/export.

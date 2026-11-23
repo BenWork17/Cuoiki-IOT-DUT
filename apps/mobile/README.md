@@ -1,7 +1,9 @@
-# App điện thoại — Giám sát tư thế (Expo Go, iOS)
+# App điện thoại — Giám sát học tập (Expo Go, iOS)
 
-App React Native (TypeScript, Expo SDK 54) điều khiển và xem dashboard của Pi
-qua mạng LAN: trạng thái, ảnh camera, phiên học, tín hiệu, tắt tiếng, PTZ.
+App React Native (TypeScript, Expo SDK 58) điều khiển và xem dashboard của Pi
+qua mạng LAN: trạng thái, camera (luồng MJPEG trực tiếp + ảnh tĩnh dự phòng),
+phiên học, tín hiệu, điều khiển (tắt tiếng, PTZ), giọng đọc, lịch sử vi phạm
+và kết nối.
 
 Chạy bằng **Expo Go**, không build native iOS. Máy dev là Windows nên **không**
 có Xcode, không có `xcodebuild`, không có iOS Simulator.
@@ -27,10 +29,10 @@ npx expo start
 
 > **Lưu ý về phiên bản Expo Go.** Mỗi bản Expo Go nhúng **đúng một** SDK; lệch
 > là lỗi *"Project is incompatible with this version of Expo Go"*. Project này
-> ghim `expo: ~54.0.38` trong [package.json](package.json). Theo tài liệu Expo,
-> **Expo Go trên App Store dừng ở SDK 54**, và trên iPhone thật **không cài
-> được bản Expo Go cũ hơn**, cũng không tự build Expo Go mới nếu không có Apple
-> Developer Program ([Expo — Expo Go version mismatch](https://docs.expo.dev/troubleshooting/expo-go-version-mismatch.md)).
+> khai báo `expo: ~58.0.24` (Expo SDK 58) trong [package.json](package.json).
+> Trên iPhone thật **không cài được bản Expo Go cũ hơn**, cũng không tự build
+> Expo Go mới nếu không có Apple Developer Program
+> ([Expo — Expo Go version mismatch](https://docs.expo.dev/troubleshooting/expo-go-version-mismatch.md)).
 > Vì vậy: **bước 0 khi chạy thật là mở Expo Go xem nó đang ở SDK nào**, rồi đặt
 > `expo` trong `package.json` đúng số đó. Không đoán.
 
@@ -103,24 +105,25 @@ tác dụng khi prebuild / dev build. Vì vậy:
 Ba quyết định có chủ đích (bảng màu và kiểu chữ nằm ở
 [src/theme.ts](src/theme.ts)):
 
-1. **Nền than chì ấm (`#12161B`) thay vì trắng.** App dùng lúc học buổi tối và
-   khung ảnh camera là vùng sáng duy nhất cần mắt; nền trắng làm mắt mỏi và làm
-   ảnh camera chìm đi.
-2. **Ba màu trạng thái lấy đúng ngữ nghĩa của dashboard web** — mint = đang ổn,
-   hổ phách = cần chú ý, san hô = sai/vắng — để người dùng không phải học lại
-   quy ước màu khi chuyển từ web sang điện thoại. Mỗi màu luôn đi kèm nhãn chữ,
-   không bao giờ chỉ dùng màu làm kênh duy nhất.
-3. **Số liệu dùng font mono + `tabular-nums` cỡ lớn.** Điện thoại đặt trên bàn
-   nên phải đọc được từ xa, và chữ số không được nhảy bề rộng mỗi lần làm mới
-   2 giây.
+1. **Nền Nocturne Telemetry (`#0F141A`) thiết kế cùng Google Stitch.** App dùng lúc
+   học buổi tối và khung ảnh camera là vùng sáng duy nhất cần mắt; nền than chì sâu
+   giúp mắt dịu và làm khung camera nổi bật.
+2. **Ba màu trạng thái đồng bộ ngữ nghĩa với dashboard web** — ngọc lục bảo (`#34D399`) =
+   đang ổn, hổ phách (`#FBBF24`) = cần chú ý, san hô (`#F87171`) = sai/vắng — để người
+   dùng không phải học lại quy ước màu khi chuyển từ web sang điện thoại. Mỗi màu luôn
+   đi kèm nhãn chữ, không bao giờ chỉ dùng màu làm kênh duy nhất.
+3. **Số liệu dùng font mono + `tabular-nums` cỡ lớn trong lưới Bento 2×2.** Điện thoại
+   đặt trên bàn nên phải đọc được từ xa, và chữ số không được nhảy bề rộng mỗi lần làm
+   mới 2 giây.
 
 Điều hướng là **thanh tab tự viết** ([src/navigation/TabNavigator.tsx](src/navigation/TabNavigator.tsx)),
-không dùng `@react-navigation/bottom-tabs`. Lý do: app chỉ có 7 màn cố định,
-không tham số route; react-navigation kéo thêm `react-native-screens`,
-`@react-navigation/elements`… — mỗi gói là một chỗ có thể lệch phiên bản với
-Expo Go, mà lệch phiên bản trong Expo Go là lỗi cài đặt chứ không phải lỗi mã.
-Thêm nữa, chỉ màn đang hiện được mount nên vòng tự làm mới của màn khác **dừng
-hẳn** khi chuyển tab.
+không dùng `@react-navigation/bottom-tabs`. Lý do: app chỉ có **6 tab cố định**
+(gộp trọn **Camera + 3 Tín hiệu người học + Trạng thái tư thế** ngay trên tab đầu
+tiên), không tham số route;
+react-navigation kéo thêm `react-native-screens`, `@react-navigation/elements`… —
+mỗi gói là một chỗ có thể lệch phiên bản với Expo Go, mà lệch phiên bản trong
+Expo Go là lỗi cài đặt chứ không phải lỗi mã. Thêm nữa, chỉ màn đang hiện được
+mount nên vòng tự làm mới của màn khác **dừng hẳn** khi chuyển tab.
 
 ---
 
@@ -130,12 +133,11 @@ Hợp đồng API đầy đủ: [docs/REQUIREMENTS_MOBILE_AND_PRESENCE_FIX.md](.
 
 | Tab | Route dùng | Ghi chú |
 |---|---|---|
-| **Trạng thái** | `GET /api/status` | Tự làm mới 2 s. `stale` ⇒ hiện "Không nhận được dữ liệu mới" thay vì `state_text`; `PAUSED` ⇒ "Chưa bắt đầu phiên học" |
-| **Camera** | `GET /api/frame` | Tự tải lại 2 s. 403 = stream tắt (hiện hướng dẫn, **không** tự hỏi lại); 404 = dashboard đang chạy cũ hơn; 503 = chưa có khung (**vẫn** thử lại, không đếm vào giới hạn) |
+| **Camera** *(gộp 3 Tín hiệu & Trạng thái)* | `GET /stream`, `GET /api/frame`, `GET /api/signals`, `GET /api/status`, `POST /api/mute` | Màn chính gộp: (1) Khung Camera 4:3 (MJPEG trực tiếp + tự lùi sang `GET /api/frame` mỗi **300 ms** khi `stream_enabled = false` hoặc WebView lỗi), (2) Cụm **3 Tín hiệu người học** đặt ngay dưới khung Camera (`Có mặt`, `Điện thoại`, `Người đang học / Danh tính`; `fresh: false` ⇒ "Chưa có dữ liệu mới"), (3) **Trạng thái tư thế & lưới Bento 2×2** (điểm **thang 100**, đã ngồi, khoảng cách, công tắc bật/tắt tiếng nhanh) |
 | **Phiên học** | `GET /api/session`, `POST /api/session/start\|stop` | 503 ⇒ hiện câu server, **khoá nút**, không crash. 400 ⇒ hiện đúng `message` của server |
-| **Tín hiệu** | `GET /api/signals` | `fresh: false` ⇒ "Chưa có dữ liệu mới", **không** lặp lại kết luận cũ |
-| **Điều khiển** | `POST /api/mute`, `POST /api/ptz` | PTZ gửi `{"direction","duration":0.5}`, khoá cả 4 nút khi đang xoay. Lỗi ⇒ banner "Không gửi được lệnh" + **Gửi lại** đúng lệnh vừa hỏng |
+| **Điều khiển** | `GET /api/status`, `POST /api/mute`, `POST /api/ptz` | PTZ gửi `{"direction","duration":0.5}`, khoá cả 4 nút khi đang xoay. Đồng bộ lại trạng thái tắt tiếng mỗi nhịp poll để thay đổi từ web không bị che khuất. Lỗi ⇒ banner "Không gửi được lệnh" + **Gửi lại** đúng lệnh vừa hỏng |
 | **Giọng đọc** | `GET /api/voice`, `POST /api/voice` | `available: false` ⇒ hiện `message` server, **không** hiện nút chọn. Giọng lạ ⇒ 400, hiện câu server (đã kèm danh sách hợp lệ). Tình trạng thiếu bản thu đọc theo **từng giọng**; lý do mượn giọng hiện **nguyên văn câu server** (xem ghi chú dưới bảng) |
+| **Vi phạm** | `GET /api/violations?limit=200` | Lịch sử rời bàn, dùng điện thoại, sai người học từ bảng `events`. Chỉ tải khi mở tab hoặc bấm **Làm mới** (**không** poll định kỳ). Nhãn `kind_text` lấy thẳng từ server |
 | **Kết nối** | `GET /api/status` | Nhập/lưu địa chỉ, kiểm tra kết nối |
 
 **Không có `POST /api/session`.** Gọi vào đó sẽ nhận **405** kèm thân **HTML**
@@ -163,7 +165,7 @@ rồi thử lại. Màn Camera xử lý đúng ca đó bằng thông điệp "M�
 
 Đọc value của `fallbacks` như thể nó là mã giọng là lỗi đã từng có trong bản
 trước: nó in ra câu app tự ghép "đang phát bằng espeak" — sai cả nghĩa lẫn
-nguồn. Hai bài kiểm trong
+nguồn. Các bài kiểm trong
 [`test/ui/voiceScreen.test.mjs`](test/ui/voiceScreen.test.mjs) khoá lại điều
 này.
 
@@ -185,8 +187,9 @@ Mọi lời gọi đi qua [src/api/client.ts](src/api/client.ts):
 Phần logic thuần (**không import `react-native`**) nằm ở:
 
 - [src/api/url.ts](src/api/url.ts) — chuẩn hoá địa chỉ, dựng URL
-- [src/api/errors.ts](src/api/errors.ts) — mã lỗi → câu tiếng Việt
-- [src/api/payload.ts](src/api/payload.ts) — chuẩn hoá `/api/status`, `/api/session`, `/api/signals`, `/api/voice`
+- [src/api/errors.ts](src/api/errors.ts) — mã lỗi → câu tiếng Việt + gợi ý theo route
+- [src/api/format.ts](src/api/format.ts) — định dạng số thập phân, thời lượng, đồng hồ đếm ngược, mốc giờ `HH:MM:SS`
+- [src/api/payload.ts](src/api/payload.ts) — chuẩn hoá `/api/status`, `/api/session`, `/api/signals`, `/api/voice`, `/api/violations`
 - [src/api/framePolicy.ts](src/api/framePolicy.ts) — chính sách thử lại ảnh camera
 - [src/api/client.ts](src/api/client.ts) — lớp gọi mạng (nhận `fetch` tiêm được)
 
@@ -194,9 +197,9 @@ Test chạy bằng **node thuần**, không Metro, không máy ảo, không buil
 
 ```powershell
 cd apps\mobile
-npm test          # 139 bài: logic thuần, KHÔNG cần npm install
-npm run verify    # 10 bài: giao diện thật trong jsdom (CẦN npm install)
-npm run verify:all  # cả hai
+npm test            # 160 bài: logic thuần, KHÔNG cần npm install
+npm run verify      # 29 bài: giao diện thật trong jsdom (CẦN npm install)
+npm run verify:all  # cả hai (189 bài)
 ```
 
 Cần **Node ≥ 22.18** — đây là điều kiện cứng, vì `test/register-ts.mjs` dùng
@@ -209,8 +212,8 @@ tra và báo bằng câu tiếng Việt nếu Node cũ hơn. Không cần
 
 | Lệnh | Nội dung | Cần `npm install`? |
 |---|---|---|
-| `npm test` | Logic thuần trong `test/`: chuẩn hoá payload, mã lỗi → tiếng Việt, dựng URL, chính sách thử lại ảnh | **Không** — không import gói nào từ `node_modules` |
-| `npm run verify` | Dựng **app React Native thật** trong jsdom rồi bấm nút: đổi giọng + "Gửi lại", huỷ request khi rời màn, giữ khung ảnh cuối | **Có** — cần `jsdom`, `react-dom`, `react-native-web`, Babel (đã khai trong `devDependencies`) |
+| `npm test` | Logic thuần trong `test/`: chuẩn hoá payload, định dạng, mã lỗi → tiếng Việt, dựng URL, chính sách thử lại ảnh | **Không** — không import gói nào từ `node_modules` |
+| `npm run verify` | Dựng **app React Native thật** trong jsdom rồi bấm nút: đổi giọng + "Gửi lại", đồng bộ tắt tiếng, tự lùi từ `/stream` sang ảnh tĩnh, huỷ request khi rời màn, giữ khung ảnh cuối | **Có** — cần `jsdom`, `react-dom`, `react-native-web`, Babel (đã khai trong `devDependencies`) |
 
 Tách như vậy để `npm test` vẫn chạy được ở môi trường tối thiểu, còn các bài
 kiểm giao diện thì **thuộc bản bàn giao** và chạy lại được bằng một lệnh —
@@ -230,8 +233,8 @@ npx tsc --noEmit
   tạo được `.ipa`, không có iOS Simulator. App chỉ chạy trong **Expo Go**.
 - Mọi thư viện cần **native module không có trong Expo Go** đều bị loại. Bộ
   thư viện hiện dùng (`react-native-safe-area-context`,
-  `@react-native-async-storage/async-storage`, `expo-status-bar`) đều có sẵn
-  trong Expo Go.
+  `@react-native-async-storage/async-storage`, `react-native-webview`,
+  `expo-status-bar`) đều có sẵn trong Expo Go.
 - Nếu sau này cần một SDK cũ hơn bản Expo Go đang cài, hoặc cần `Info.plist`
   của riêng project (ví dụ để xử lý ATS), thì **phải dùng development build** —
   và việc đó **không làm được trên Windows** (cần macOS/Xcode hoặc EAS Build
@@ -245,20 +248,25 @@ npx tsc --noEmit
 
 ```
 apps/mobile/
-├── App.tsx                     # SafeArea + AppProvider + thanh tab
-├── index.ts                    # registerRootComponent
-├── app.json                    # name/slug/scheme/icon/ios.supportsTablet
-├── assets/                     # icon, splash, adaptive-icon, favicon
+├── App.tsx                       # SafeArea + AppProvider + thanh tab
+├── index.ts                      # registerRootComponent
+├── app.json                      # name/slug/scheme/icon/ios.supportsTablet
+├── assets/                       # icon, splash, adaptive-icon, favicon
 ├── src/
-│   ├── api/                    # logic thuần + lớp client duy nhất
-│   ├── components/ui.tsx       # khối giao diện dùng chung
-│   ├── context/AppContext.tsx  # địa chỉ máy chủ + client
-│   ├── hooks/usePoll.ts        # tự làm mới tuần tự, không chồng request
-│   ├── navigation/             # thanh tab tự viết
-│   ├── screens/                # 7 màn hình
-│   ├── storage/baseUrl.ts      # AsyncStorage
-│   └── theme.ts                # bảng màu, khoảng cách, kiểu chữ
-└── test/                       # test chạy bằng node thuần
+│   ├── api/                      # logic thuần, formatters + lớp client duy nhất
+│   ├── components/
+│   │   ├── ui.tsx                    # khối giao diện dùng chung
+│   │   ├── LearnerSignalsSection.tsx # cụm 3 Tín hiệu người học trực tiếp (Bento 2+1)
+│   │   └── PostureStatusSection.tsx  # cụm Trạng thái + Bento 2×2 (Stitch)
+│   ├── context/AppContext.tsx    # địa chỉ máy chủ + client
+│   ├── hooks/
+│   │   ├── usePoll.ts            # tự làm mới tuần tự + toPollFetcher
+│   │   └── useAsyncAction.ts     # huỷ lệnh trước & chặn setState sau unmount
+│   ├── navigation/               # thanh tab tự viết (6 tab, mở mặc định Camera gộp)
+│   ├── screens/                  # các màn hình (CameraScreen gộp 3 Tín hiệu + Trạng thái)
+│   ├── storage/baseUrl.ts        # AsyncStorage
+│   └── theme.ts                  # bảng màu Nocturne Telemetry, khoảng cách, kiểu chữ
+└── test/                         # test thuần + test/ui chạy trong jsdom
 ```
 
 ## 9. Lỗi thường gặp
@@ -267,7 +275,7 @@ apps/mobile/
 |---|---|---|
 | "Project is incompatible with this version of Expo Go" | `expo` trong `package.json` khác SDK của Expo Go | Xem SDK trong Expo Go, đặt `expo` đúng số đó, `npx expo install --fix` |
 | "Không kết nối được tới máy chủ" | Khác LAN, sai IP, dashboard tắt, tường lửa | Mở `http://<ip>:8000/api/status` bằng Safari **trên chính iPhone**. Được thì lỗi ở app (địa chỉ/ATS); không được thì lỗi ở mạng |
-| "Máy chủ chưa có route ảnh" (404) | Bản dashboard **đang chạy** chưa có `GET /api/frame` — mã nguồn đã có route này, nhưng tiến trình đang phục vụ là bản cũ | Cập nhật dashboard lên bản có route đó, hoặc dashboard chưa được cập nhật lên bản có route này — khởi động lại tiến trình rồi bấm Thử lại |
+| "Máy chủ chưa có route ảnh" (404) | Bản dashboard **đang chạy** chưa có `GET /api/frame` — mã nguồn đã có route này, nhưng tiến trình đang phục vụ là bản cũ | Cập nhật dashboard lên bản có route đó, khởi động lại tiến trình rồi bấm Thử lại |
 | "Xem trực tiếp đang tắt" (403) | `web.stream_enabled: false` | Bật trong `config.yaml` rồi khởi động lại dashboard |
 | "Phiên học chưa bật" (503) | Dashboard chạy không có `StudySession` | Chạy dashboard đúng cách; app không gọi sai route |
-| Ảnh đứng yên | Camera không đẩy khung mới | Kiểm tra log dashboard; app vẫn tải lại mỗi 2 s |
+| Ảnh đứng yên | Camera không đẩy khung mới | Kiểm tra log dashboard; ở chế độ Ảnh tĩnh app vẫn tải lại mỗi 300 ms, ở chế độ Trực tiếp luồng đọc từ `/stream` |

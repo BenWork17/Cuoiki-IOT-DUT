@@ -1,7 +1,7 @@
 # Báo cáo đồ án — bộ tệp nộp bài
 
 Thư mục này chứa báo cáo hoàn chỉnh của đồ án **Hệ thống giám sát học tập trên
-Raspberry Pi 4**, chia làm năm phần tương ứng năm tầng kỹ thuật của hệ thống.
+Raspberry Pi 4**, chia làm sáu chương tương ứng các tầng kỹ thuật của hệ thống.
 
 ## Tệp nộp
 
@@ -17,7 +17,7 @@ Raspberry Pi 4**, chia làm năm phần tương ứng năm tầng kỹ thuật c
 |---|---|---|
 | 1 | Tổng quan | Bài toán, mục tiêu, phạm vi, kiến trúc bốn tầng, môi trường đo |
 | **2** | **Model AI** | YOLO11n-pose, YOLO11n detect (điện thoại), YuNet + SFace, presence, ngân sách FPS |
-| **3** | **Web FE / BE** | Flask, `DashboardState`, 22 route, luồng MJPEG, giao diện, phiên học, quyền riêng tư |
+| **3** | **Web FE / BE** | Flask, `DashboardState`, 24 route, luồng MJPEG, giao diện, phiên học, quyền riêng tư |
 | **4** | **Phần cứng** | Camera IP RTSP, Raspberry Pi 4, loa camera (backchannel), PTZ, GPIO, siêu âm, SQLite |
 | 5 | Đánh giá | 1.667 bài test, benchmark, đối chiếu nghiệm thu, hạn chế, bài học số liệu |
 | **6** | **Ứng dụng di động** | React Native / Expo Go trên iOS: 8 màn hình, 10 route, hai chế độ xem camera, giới hạn chưa kiểm |

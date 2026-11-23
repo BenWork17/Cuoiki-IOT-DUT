@@ -128,6 +128,15 @@ const ROUTE_HINTS: Record<string, Partial<Record<number, string>>> = {
     501: 'Camera không hỗ trợ PTZ (không điều khiển được hướng xoay).',
     502: 'Máy chủ không kết nối được tới camera để xoay.',
   },
+  '/api/voice': {
+    400: 'Giọng đọc gửi lên không hợp lệ.',
+    404: 'Máy chủ chưa có API giọng đọc (/api/voice). Cập nhật dashboard lên bản mới rồi thử lại.',
+    503: 'Loa cảnh báo chưa được bật trong phiên chạy này.',
+  },
+  '/api/violations': {
+    404: 'Máy chủ chưa có API lịch sử vi phạm (/api/violations). Cập nhật dashboard lên bản mới rồi thử lại.',
+    503: 'Chưa bật lưu trữ nên chưa có lịch sử vi phạm.',
+  },
 };
 
 /** Câu cho một mã lỗi, ưu tiên `message` của server, rồi gợi ý theo route. */

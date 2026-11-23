@@ -12,7 +12,6 @@ import React, {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react';
 
@@ -44,15 +43,12 @@ const AppContext = createContext<AppContextValue | null>(null);
 export function AppProvider({ children }: { children: React.ReactNode }): React.ReactElement {
   const [baseUrl, setBaseUrlState] = useState('');
   const [loading, setLoading] = useState(true);
-  // Giữ bản mới nhất để `setBaseUrl` không phụ thuộc giá trị cũ trong closure.
-  const baseUrlRef = useRef('');
 
   useEffect(() => {
     let mounted = true;
     loadBaseUrl()
       .then((stored) => {
         if (!mounted) return;
-        baseUrlRef.current = stored;
         setBaseUrlState(stored);
       })
       .finally(() => {
@@ -66,7 +62,6 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
   const setBaseUrl = useCallback(async (next: string) => {
     const written = await saveBaseUrl(next);
     if (written) {
-      baseUrlRef.current = next;
       setBaseUrlState(next);
     }
     return written;
@@ -75,7 +70,6 @@ export function AppProvider({ children }: { children: React.ReactNode }): React.
   const clear = useCallback(async () => {
     const cleared = await clearBaseUrl();
     if (cleared) {
-      baseUrlRef.current = '';
       setBaseUrlState('');
     }
     return cleared;

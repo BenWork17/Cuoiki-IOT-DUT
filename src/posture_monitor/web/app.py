@@ -1,442 +1,82 @@
-"""Ứng dụng Flask của dashboard (spec v2 §5.10).
+"""Nhà máy tạo ứng dụng Flask (:func:`create_app`) và máy chủ phát triển (:func:`run_server`).
 
-Kiến trúc: :class:`DashboardState` là **cầu nối duy nhất** giữa vòng lặp
-camera và web.
-
-- Vòng lặp chính gọi :meth:`DashboardState.update` mỗi khung (hoặc mỗi giây)
-  để đẩy trạng thái hiện tại lên.
-- Web đọc lại bằng :meth:`DashboardState.snapshot`; không bao giờ chạm camera.
-
-Lệnh từ web xuống vòng lặp (mute, calibrate) dùng đúng đối tượng đó:
-
-- :attr:`DashboardState.muted` — vòng lặp đọc mỗi khung để quyết định có bật
-  buzzer/rung hay không.
-- :meth:`DashboardState.request_calibration` đặt cờ; vòng lặp gọi
-  :meth:`DashboardState.consume_calibration_request` để lấy và xoá cờ (đọc
-  một lần, không lặp lại hiệu chỉnh).
-
-Dữ liệu lịch sử cho biểu đồ đọc từ :class:`posture_monitor.storage.Storage`
-(không bắt buộc — thiếu thì API trả kết quả rỗng thay vì lỗi).
-
-**Không mở ra Internet.** ``web.host`` mặc định ``0.0.0.0`` để xem từ điện
-thoại trong cùng mạng LAN; không NAT/forward cổng này ra ngoài (spec §5.10).
+Thay vì nhồi 24 route vào một hàm dài gần 1.000 dòng, module này chỉ khởi tạo
+:class:`WebContext`, gắn các nhóm route từ :mod:`posture_monitor.web.routes`,
+và re-export các hằng số/lớp công khai để giữ nguyên hợp đồng với bên ngoài.
 """
 
 from __future__ import annotations
 
-import functools
-import threading
-import time
-from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable
 
-from flask import Flask, Response, jsonify, render_template, request
+from flask import Flask, request
 
-from .. import camera_control
-from .. import log_buffer as logs_module
-from ..classifier import LABEL_ORDER
-from ..logging_setup import get_log_buffer, get_logger
-from ..study_session import (
-    DEFAULT_MINUTES as SESSION_DEFAULT_MINUTES,
-    MAX_MINUTES as SESSION_MAX_MINUTES,
-    MIN_MINUTES as SESSION_MIN_MINUTES,
-    StudySessionError,
-    payload as session_payload,
+from ..camera.audio import SpeakController
+from ..core.logging_setup import get_log_buffer, get_logger
+from .constants import (
+    FRAME_MISSING_MESSAGE,
+    FRAME_WAIT_S,
+    LABEL_ORDER,
+    LABEL_TEXT,
+    LOGS_DEFAULT_LIMIT,
+    LOGS_MAX_LIMIT,
+    PEOPLE_DISABLED_MESSAGE,
+    PTZ_DEFAULT_DURATION_S,
+    PTZ_DIRECTION_TEXT,
+    PTZ_DIRECTIONS,
+    PUBLIC_PERSON_FIELDS,
+    SPEAKER_DISABLED_MESSAGE,
+    STALE_AFTER_S,
+    STATE_TEXT,
+    STREAM_DISABLED_MESSAGE,
+    STREAM_POLL_S,
+    STREAM_STALE_WARN_S,
+    STREAM_WAIT_S,
+    VIOLATION_KIND_TEXT,
+    VIOLATION_KINDS,
+    VIOLATIONS_DEFAULT_LIMIT,
+    VIOLATIONS_MAX_LIMIT,
 )
-from .people_service import PeopleService, PeopleServiceError
-from ..camera_audio import (
-    CameraAudioBusy,
-    CameraAudioConfigError,
-    CameraAudioError,
-    CameraAudioInputError,
-    CameraAudioUnavailable,
-    DEFAULT_TONE_DURATION_S,
-    DEFAULT_TONE_HZ,
-    SpeakController,
-)
+from .context import WebContext, json_error
+from .people_service import PeopleService
+from .privacy import public_person as _public_person
+from .privacy import scrub_biometrics as _scrub_biometrics
+from .routes import register_all_routes
+from .state import DashboardState
+from .streaming import _placeholder_jpeg
+from .streaming import mjpeg_stream as _mjpeg
 
-_logger = get_logger(__name__)
-
-#: Hướng PTZ hợp lệ, khớp khóa của ``camera_control.DIRECTION_VECTORS``.
-#: Route từ chối hướng lạ trước khi chạm camera.
-PTZ_DIRECTIONS = ("left", "right", "up", "down")
-
-#: Thời gian xoay mặc định cho một cú bấm (giây), dùng khi client không gửi
-#: ``duration``. Chặn trên/dưới thuộc về ``camera_control`` — một nguồn sự
-#: thật duy nhất, tránh hai nơi ép hai kiểu.
-PTZ_DEFAULT_DURATION_S = 0.5
-
-#: Nhãn tiếng Việt của từng hướng, dùng cho thông điệp trả về UI.
-PTZ_DIRECTION_TEXT = {
-    "left": "trái",
-    "right": "phải",
-    "up": "lên",
-    "down": "xuống",
-}
-
-#: Nhãn tiếng Việt của trạng thái (spec v2 §5.6), dùng cho UI và API.
-STATE_TEXT = {
-    "GOOD": "Tư thế tốt",
-    "WARN": "Cần chú ý",
-    "BAD": "Tư thế sai",
-    "ABSENT": "Không thấy người",
-    #: Ngoài phiên học: hệ thống cố ý không đo. Phải khác "Không thấy người",
-    #: nếu không người dùng ngồi trước camera vẫn đọc thấy "không thấy ai".
-    "PAUSED": "Chưa bắt đầu phiên học",
-}
-
-#: Nhãn tiếng Việt của từng nhãn phân loại (spec v2 §5.5).
-LABEL_TEXT = {
-    "HEAD_DOWN": "Cúi đầu",
-    "TOO_CLOSE": "Ngồi quá gần",
-    "SHOULDER_TILT": "Nghiêng vai",
-    "HEAD_TILT": "Nghiêng đầu",
-    "LEAN": "Ngả người",
-    "LOOK_AWAY": "Nhìn ra chỗ khác",
-    "ABSENT": "Vắng mặt",
-    "GOOD": "Đúng tư thế",
-}
-
-#: Số giây không có cập nhật thì coi là "dữ liệu cũ" (vòng lặp có thể đã dừng).
-STALE_AFTER_S = 10.0
-
-#: Khoảng chờ tối đa giữa hai khung khi phục vụ ``/stream``.
-STREAM_WAIT_S = 2.0
-
-#: Khoảng nghỉ giữa hai lần kiểm tra khung mới trong ``/stream``.
-STREAM_POLL_S = 0.05
-
-#: Sau bao nhiêu giây không có khung mới thì ghi log **một lần** rằng luồng
-#: xem đang lặp lại khung cuối. Không đổi hành vi gửi ảnh: luồng
-#: ``multipart/x-mixed-replace`` chỉ được chứa ``image/jpeg``, nên không thể
-#: chèn một phần tử văn bản báo lỗi vào giữa (trình duyệt sẽ trắng ảnh).
-STREAM_STALE_WARN_S = 5.0
-
-#: Câu trả về khi ``web.stream_enabled`` tắt. Dùng chung cho ``/stream`` và
-#: ``GET /api/frame``: hai route cùng phục vụ một thứ (khung hình camera), nên
-#: người dùng chỉ được đọc **một** câu giải thích và một cách bật. Viết câu thứ
-#: hai là cách chắc chắn nhất để hai route trôi lệch nhau.
-STREAM_DISABLED_MESSAGE = (
-    "Tính năng xem trực tiếp đang tắt. Bật 'web.stream_enabled: "
-    "true' trong config.yaml nếu thật sự cần (tốn CPU và ảnh "
-    "hưởng quyền riêng tư)."
-)
-
-#: Thời gian chờ khung mới tối đa cho ``GET /api/frame`` (giây).
-#:
-#: Chọn **0,5 s** vì hai lý do đối nhau:
-#:
-#: - Đủ dài để một khung vừa tới theo nhịp camera thật (``target_fps: 5`` →
-#:   200 ms một khung) được trả ngay thay vì báo "chưa có khung" oan. Ngắn hơn
-#:   200 ms là tự tạo lỗi giả.
-#: - Đủ ngắn để không treo worker của Flask. Flask dev server mặc định chạy
-#:   ``threaded`` nhưng số luồng không cấm; app điện thoại gọi lại liên tục, nên
-#:   một request giữ luồng quá lâu sẽ dồn ứ các request khác. 0,5 s ngắn hơn
-#:   hẳn ``STREAM_WAIT_S`` (2 s) của ``/stream`` — luồng MJPEG cần giữ kết nối
-#:   lâu, còn ảnh rời thì không.
-#:
-#: Con số này **chưa đo trên Pi**: đây là lựa chọn từ nhịp camera đã cấu hình,
-#: không phải kết quả của phép đo độ trễ.
-FRAME_WAIT_S = 0.5
-
-#: Câu trả về khi ``GET /api/frame`` được gọi mà bộ nhớ chưa có khung nào
-#: (dashboard vừa khởi động, vòng lặp chưa đặt khung đầu tiên). Trả 503 + JSON
-#: thay vì 200 với thân rỗng: ứng dụng điện thoại cần phân biệt "chưa có ảnh"
-#: với "có ảnh nhưng 0 byte" để biết có nên thử lại hay báo lỗi.
-FRAME_MISSING_MESSAGE = (
-    "Chưa có khung hình nào trong bộ nhớ. Vòng lặp camera chưa đặt khung đầu "
-    "tiên — đợi vài giây rồi thử lại. Nếu vẫn không có, kiểm tra camera và "
-    "xem log của 'posture_monitor run'."
-)
-
-#: Câu trả về khi phiên chạy không được tiêm dịch vụ người học.
-#: Trang chủ vẫn render bình thường; chỉ các khối liên quan hiện câu này
-#: thay cho lỗi, và mọi route người học trả 503 (không phải 500).
-PEOPLE_DISABLED_MESSAGE = "Tính năng người học chưa được bật trong phiên chạy này."
-
-#: Câu trả về khi phiên chạy không có loa cảnh báo (``speaker_alert`` tắt hoặc
-#: dựng lỗi). Thẻ "Giọng đọc" vẫn hiện để người dùng biết chỗ chỉnh, kèm câu
-#: này thay vì lỗi — giống cách xử lý khối "Người học".
-SPEAKER_DISABLED_MESSAGE = (
-    "Loa cảnh báo chưa được bật trong phiên chạy này nên chưa đổi được giọng "
-    "đọc. Kiểm tra mục 'speaker_alert' và 'camera.speaker' trong config.yaml."
-)
-
-#: Ba khóa công khai của một người học. **Danh sách trắng** là lớp chặn
-#: quyền riêng tư: kể cả dịch vụ lỡ trả thêm ``embedding``/``vector`` thì
-#: route cũng không đẩy chúng ra HTTP (spec §5.13.1, §8.3).
-PUBLIC_PERSON_FIELDS = ("id", "name", "created_ts")
-
-#: Số bản ghi log trả mặc định cho ``GET /api/logs``.
-#:
-#: 100 đủ để thấy diễn biến một sự cố gần đây mà popup trên điện thoại vẫn
-#: cuộn thoải mái. Đây là **số bản ghi trả về**, khác ``LogBuffer.maxlen``
-#: (500) là số bản ghi **giữ trong RAM** — buffer giữ nhiều hơn để không mất
-#: manh mối cũ khi có sự cố dồn dập.
-LOGS_DEFAULT_LIMIT = 100
-
-#: Trần của ``limit``. Bằng ``LogBuffer.maxlen``: xin nhiều hơn số đang giữ là
-#: vô nghĩa, và nhận số vô lý (``limit=10_000_000``) chỉ tổ làm route dựng một
-#: list khổng lồ. Trả 400 thay vì lặng lẽ cắt bớt để client biết mình xin sai.
-LOGS_MAX_LIMIT = logs_module.DEFAULT_MAXLEN
-
-#: Ba mã vi phạm trả qua ``GET /api/violations``, đúng ba cảnh báo của dự án.
-#: Trùng với :data:`~posture_monitor.state.ALERT_EVENT_TYPE` (ánh xạ
-#: ``leave_frame`` → ``ABSENT``, ``phone`` → ``PHONE_USE``, ``stranger`` →
-#: ``IMPOSTOR``); định nghĩa lại ở đây để route không phải import module máy
-#: trạng thái chỉ vì ba chuỗi.
-VIOLATION_KINDS = ("ABSENT", "PHONE_USE", "IMPOSTOR")
-
-#: Nhãn tiếng Việt **server sinh** cho từng mã vi phạm.
-#:
-#: Vì sao ở server chứ không ở client: dashboard web, popup web và app cùng
-#: hiển thị một việc. Nếu mỗi bên tự dịch mã thì chỉ cần đổi câu ở một nơi là
-#: ba nơi nói khác nhau, và không ai phát hiện. Ở đây là nguồn duy nhất.
-VIOLATION_KIND_TEXT = {
-    "ABSENT": "Rời khỏi bàn học",
-    "PHONE_USE": "Dùng điện thoại",
-    "IMPOSTOR": "Không phải người đăng ký",
-}
-
-#: Số dòng vi phạm trả mặc định. Bảng ``events`` có thể rất dài (mỗi vi phạm
-#: được ghi lại theo từng đợt nhắc), nên phải chặn cả hai đầu.
-VIOLATIONS_DEFAULT_LIMIT = 100
-
-#: Trần của ``limit`` cho ``/api/violations``. Lớn hơn ``LOGS_MAX_LIMIT`` vì
-#: đây là dữ liệu người dùng thật sự đọc (một buổi học có thể vài chục lần
-#: nhắc), không phải log chẩn đoán.
-VIOLATIONS_MAX_LIMIT = 500
-
-
-class DashboardState:
-    """Trạng thái chia sẻ giữa vòng lặp chính và web, an toàn đa luồng.
-
-    Vòng lặp chính **ghi** (``update``, ``set_frame``, ``set_muted``); Flask
-    **đọc** (``snapshot``, ``latest_frame``, ``muted``). Mọi truy cập đi qua
-    một khóa, nên web không bao giờ thấy dict đang bị sửa dở.
-    """
-
-    def __init__(self, clock: Callable[[], float] | None = None) -> None:
-        self._clock = clock or time.monotonic
-        self._lock = threading.Lock()
-        self._status: dict[str, Any] = {
-            "state": "ABSENT",
-            "labels": [],
-            "score": 0.0,
-            "sitting_s": 0.0,
-            "distance_cm": None,
-            "alert": None,
-            "message": "",
-        }
-        self._updated_at: float | None = None
-        self._muted = False
-        self._calibration_requested = False
-        self._frame: bytes | None = None
-        self._frame_seq = 0
-
-    # ------------------------------------------------------------------
-    # Cập nhật từ vòng lặp chính
-    # ------------------------------------------------------------------
-    def update(self, status: Mapping[str, Any] | None = None, **fields) -> None:
-        """Cập nhật trạng thái hiện tại (nhận dict và/hoặc keyword).
-
-        Chỉ các khóa đã biết mới được nhận; khóa lạ bị bỏ qua kèm log DEBUG để
-        Peer nối dây không âm thầm đẩy sai tên trường.
-        """
-        merged: dict[str, Any] = {}
-        if status:
-            merged.update(dict(status))
-        merged.update(fields)
-
-        with self._lock:
-            for key, value in merged.items():
-                if key in self._status:
-                    self._status[key] = value
-                else:
-                    _logger.debug("Bỏ qua trường trạng thái lạ: %s", key)
-            # Chuẩn hóa để JSON luôn cùng kiểu, bất kể nguồn đẩy vào.
-            self._status["labels"] = [
-                str(label) for label in (self._status["labels"] or [])
-            ]
-            self._status["state"] = str(self._status["state"] or "ABSENT")
-            self._updated_at = float(self._clock())
-
-    def snapshot(self) -> dict[str, Any]:
-        """Bản sao trạng thái hiện tại, kèm thông tin dẫn xuất cho UI."""
-        with self._lock:
-            status = dict(self._status)
-            status["labels"] = list(self._status["labels"])
-            updated_at = self._updated_at
-            muted = self._muted
-            pending = self._calibration_requested
-
-        labels = status["labels"]
-        state = status["state"]
-        age = None if updated_at is None else max(0.0, self._clock() - updated_at)
-
-        status.update(
-            {
-                "state_text": STATE_TEXT.get(state, state),
-                "label_texts": [
-                    LABEL_TEXT.get(label, label)
-                    for label in LABEL_ORDER
-                    if label in labels
-                ],
-                "muted": muted,
-                "calibration_pending": pending,
-                "data_age_s": None if age is None else round(age, 1),
-                "stale": age is None or age > STALE_AFTER_S,
-            }
-        )
-        return status
-
-    def set_frame(self, jpeg: bytes | None) -> None:
-        """Đặt khung JPEG mới nhất cho ``/stream`` (chỉ khi bật stream)."""
-        with self._lock:
-            self._frame = jpeg
-            self._frame_seq += 1
-
-    def latest_frame(self) -> tuple[int, bytes | None]:
-        """Trả ``(số_thứ_tự, khung)`` để ``/stream`` biết khi nào có khung mới."""
-        with self._lock:
-            return self._frame_seq, self._frame
-
-    # ------------------------------------------------------------------
-    # Tiếng (mute)
-    # ------------------------------------------------------------------
-    @property
-    def muted(self) -> bool:
-        """Vòng lặp chính đọc thuộc tính này để bỏ qua buzzer/rung."""
-        with self._lock:
-            return self._muted
-
-    def set_muted(self, muted: bool) -> bool:
-        """Đặt trạng thái tiếng; trả giá trị sau khi đặt."""
-        value = bool(muted)
-        with self._lock:
-            self._muted = value
-        _logger.info("Tiếng cảnh báo: %s", "TẮT" if value else "BẬT")
-        return value
-
-    def toggle_mute(self) -> bool:
-        """Đảo trạng thái tiếng; trả giá trị mới."""
-        with self._lock:
-            self._muted = not self._muted
-            value = self._muted
-        _logger.info("Tiếng cảnh báo: %s", "TẮT" if value else "BẬT")
-        return value
-
-    # ------------------------------------------------------------------
-    # Yêu cầu hiệu chỉnh
-    # ------------------------------------------------------------------
-    def request_calibration(self) -> None:
-        """Đặt cờ yêu cầu hiệu chỉnh lại (do người dùng bấm trên web)."""
-        with self._lock:
-            self._calibration_requested = True
-        _logger.info("Đã nhận yêu cầu hiệu chỉnh lại từ dashboard.")
-
-    def consume_calibration_request(self) -> bool:
-        """Lấy và xoá cờ hiệu chỉnh; ``True`` nếu có yêu cầu đang chờ."""
-        with self._lock:
-            pending = self._calibration_requested
-            self._calibration_requested = False
-        return pending
-
-    def wait_frame(
-        self, last_seq: int, timeout: float = STREAM_WAIT_S
-    ) -> tuple[int, bytes | None]:
-        """Chờ tới khi có khung mới hoặc hết ``timeout``.
-
-        Không giữ khóa trong lúc ngủ, nên vòng lặp chính không bị chặn.
-        """
-        deadline = time.monotonic() + max(0.0, timeout)
-        while True:
-            seq, frame = self.latest_frame()
-            if seq != last_seq and frame is not None:
-                return seq, frame
-            if time.monotonic() >= deadline:
-                return seq, frame
-            time.sleep(STREAM_POLL_S)
+_logger = get_logger("posture_monitor.web.app")
 
 
 def create_app(
-    config=None,
+    config: Any = None,
     state: DashboardState | None = None,
-    storage=None,
+    storage: Any = None,
     speak_controller: SpeakController | None = None,
-    ptz=None,
+    ptz: Any = None,
     *,
     people: PeopleService | None = None,
-    speaker=None,
-    study_session=None,
+    speaker: Any = None,
+    study_session: Any = None,
     log_buffer_getter: Callable[[], Any] | None = None,
 ) -> Flask:
-    """Tạo ứng dụng Flask.
-
-    Args:
-        config: :class:`posture_monitor.config.Config`; chỉ đọc ``web`` (cổng,
-            stream), ``sensors`` (ngưỡng hiển thị), ``camera.onvif`` (điều
-            khiển PTZ) và ``camera.speaker`` (loa camera). Có thể là ``None``
-            khi test, dùng mặc định của spec.
-        state: :class:`DashboardState` dùng chung với vòng lặp chính; ``None``
-            thì tạo mới (tiện cho test và cho ``/stream`` bị tắt).
-        storage: :class:`posture_monitor.storage.Storage`; ``None`` thì
-            ``/api/history`` trả kết quả rỗng thay vì lỗi.
-        speak_controller: :class:`posture_monitor.camera_audio.SpeakController`
-            cho ``POST /api/speak``. ``None`` thì dựng từ ``config.camera.speaker``
-            ở lần gọi đầu tiên (để thiếu cấu hình không làm sập lúc khởi động).
-            Tham số thêm ở cuối, có mặc định — lời gọi cũ không phải đổi.
-        ptz: :class:`posture_monitor.camera_control.PtzController` (hoặc đối
-            tượng có ``move_direction``). ``None`` thì tạo từ
-            ``config.camera.onvif`` ở lần gọi ``/api/ptz`` đầu tiên — nhờ vậy
-            không mở phiên ONVIF khi người dùng chưa từng bấm nút xoay, và
-            test tiêm được bản giả mà không cần camera.
-        people: dịch vụ người học theo :class:`PeopleService` (spec v3 §5.16).
-            Keyword-only, mặc định ``None``: khi chưa nối dây, mọi route
-            ``/api/people*``, ``/api/enroll*``, ``/api/select``,
-            ``/api/schedule``, ``/api/signals`` trả 503 kèm thông điệp tiếng
-            Việt, và trang chủ vẫn render bình thường.
-        speaker: :class:`posture_monitor.speaker_alert.SpeakerAlerter` dùng
-            chung với vòng lặp chính. Keyword-only, mặc định ``None``: khi đó
-            thẻ "Giọng đọc" vẫn hiện nhưng bấm đổi giọng báo 503, và
-            ``/api/voice`` trả ``available: false``. Truyền vào **cùng một**
-            đối tượng với vòng lặp thì đổi giọng trên web có hiệu lực ngay cho
-            lần cảnh báo kế tiếp.
-        study_session: :class:`posture_monitor.study_session.StudySession` dùng
-            chung với vòng lặp chính. Keyword-only, mặc định ``None``: khi đó
-            khối "Phiên học" không hiện và ``/api/session*`` trả 503. Truyền
-            **cùng một** đối tượng với vòng lặp thì nút Bắt đầu/Dừng trên web
-            điều khiển đúng việc model có chạy hay không.
-        log_buffer_getter: hàm trả :class:`~posture_monitor.log_buffer.
-            LogBuffer` cho ``GET /api/logs``. Keyword-only, mặc định ``None``
-            nghĩa là dùng :func:`~posture_monitor.logging_setup.get_log_buffer`
-            — buffer **dùng chung** mà ``setup_logging`` đã gắn vào logger, nên
-            route đọc đúng chỗ handler đang ghi. Truyền ``lambda: None`` để mô
-            phỏng "phiên chạy chưa bật buffer" (route trả 503); truyền một
-            buffer riêng để test kiểm soát nội dung.
-
-    Returns:
-        :class:`flask.Flask` đã gắn đủ route.
-    """
+    """Dựng ứng dụng Flask của dashboard và gắn đầy đủ các nhóm route."""
     app = Flask(
         __name__,
         template_folder="templates",
         static_folder="static",
     )
-    # JSON không sắp xếp khóa để giữ thứ tự dễ đọc khi debug bằng mắt.
     app.json.sort_keys = False
-
-    # Hàm đọc buffer log. Mặc định trỏ tới buffer **dùng chung** để route
-    # ``/api/logs`` đọc đúng nơi handler của ``setup_logging`` đang ghi.
-    _logs_buffer_provider: Callable[[], Any] = (
-        log_buffer_getter if log_buffer_getter is not None else get_log_buffer
-    )
 
     dashboard = state or DashboardState()
     web_cfg = getattr(config, "web", None)
     sensors_cfg = getattr(config, "sensors", None)
     stream_enabled = bool(getattr(web_cfg, "stream_enabled", False))
     min_distance = float(getattr(sensors_cfg, "min_distance_cm", 35.0))
+    logs_provider = (
+        log_buffer_getter if log_buffer_getter is not None else get_log_buffer
+    )
 
     app.config["DASHBOARD_STATE"] = dashboard
     app.config["STORAGE"] = storage
@@ -445,1011 +85,35 @@ def create_app(
     app.config["SPEAK_CONTROLLER"] = speak_controller
     app.config["PEOPLE"] = people
     app.config["SPEAKER"] = speaker
-    people_enabled = people is not None
-    #: Phiên học bật/tắt bằng tay. ``None`` = phiên bản cũ không có tính năng
-    #: này (test cũ dựng ``create_app`` không truyền) — khi đó mọi route
-    #: ``/api/session`` trả 503 và trang chủ hiện câu giải thích thay vì nút
-    #: bấm không có tác dụng.
     app.config["STUDY_SESSION"] = study_session
-    session_enabled = study_session is not None
-
-    _speak_lock = threading.Lock()
-    _speak_state: dict[str, SpeakController | None] = {"controller": speak_controller}
-
-    def _resolve_speak_controller() -> SpeakController:
-        """Controller cho ``/api/speak``; dựng một lần từ ``camera.speaker``.
-
-        Cố ý trễ: thiếu mục ``camera.speaker`` phải làm hỏng **một** request
-        với lỗi tiếng Việt, không làm sập dashboard lúc khởi động. Khóa chỉ
-        bảo vệ việc dựng, không giữ trong lúc phát (controller tự lo việc đó).
-        """
-        if _speak_state["controller"] is not None:
-            return _speak_state["controller"]
-        with _speak_lock:
-            if _speak_state["controller"] is None:
-                _speak_state["controller"] = SpeakController.from_config(config)
-            return _speak_state["controller"]
-
     app.config["PTZ_CONTROLLER"] = ptz
-    # Bảo vệ bước tạo controller lười: hai request đồng thời không được mở hai
-    # phiên ONVIF (mỗi phiên tốn vài round-trip SOAP xuống camera).
-    ptz_create_lock = threading.Lock()
 
-    def _get_ptz():
-        """Trả controller PTZ, tạo một lần từ cấu hình nếu chưa được tiêm."""
-        controller = app.config.get("PTZ_CONTROLLER")
-        if controller is not None:
-            return controller
-        with ptz_create_lock:
-            controller = app.config.get("PTZ_CONTROLLER")
-            if controller is None:
-                controller = camera_control.from_config(config)
-                app.config["PTZ_CONTROLLER"] = controller
-        return controller
-
-    @app.get("/")
-    def index() -> str:
-        """Dashboard tiếng Việt, dùng được trên màn hình điện thoại."""
-        return render_template(
-            "index.html",
-            stream_enabled=stream_enabled,
-            min_distance_cm=min_distance,
-            people_enabled=people_enabled,
-            people_disabled_message=PEOPLE_DISABLED_MESSAGE,
-            speaker_enabled=speaker is not None,
-            session_enabled=session_enabled,
-            session_default_minutes=(
-                int(study_session.default_minutes)
-                if study_session is not None
-                else SESSION_DEFAULT_MINUTES
-            ),
-            session_min_minutes=SESSION_MIN_MINUTES,
-            session_max_minutes=SESSION_MAX_MINUTES,
-            #: Phiên bản tài nguyên tĩnh, gắn vào URL của CSS/JS (xem
-            #: ``_static_version``). Không có nó, người dùng sửa CSS xong chạy
-            #: lại vẫn thấy giao diện cũ vì trình duyệt dùng bản trong cache —
-            #: đúng hiện tượng "chạy code mà vẫn ra giao diện cũ".
-            asset_version=_static_version(),
-        )
-
-    @app.get("/api/status")
-    def api_status() -> Response:
-        """JSON trạng thái hiện tại; web tự gọi lại mỗi giây."""
-        payload = dashboard.snapshot()
-        payload["stream_enabled"] = stream_enabled
-        payload["min_distance_cm"] = min_distance
-        return jsonify(payload)
-
-    @app.get("/api/logs")
-    def api_logs() -> Response:
-        """Nhật ký lỗi gần đây, đọc từ bộ đệm RAM.
-
-        Người dùng cần một tab log ở cả web lẫn app để biết "hệ thống vừa báo
-        lỗi gì, lúc nào" mà không phải SSH vào Pi xem file. Route này phục vụ
-        cả hai: cùng một JSON, cùng một nguồn.
-
-        Nguồn dữ liệu là :class:`~posture_monitor.log_buffer.LogBuffer` **dùng
-        chung** — không phải bảng ``events`` trong SQLite (bảng đó chứa sự kiện
-        cảnh báo ``leave_frame``/``phone``/``stranger``, không phải log lỗi hệ
-        thống; trộn hai loại sẽ làm hỏng cả hai nghĩa).
-
-        Tham số:
-
-        - ``limit``: số bản ghi trả về, mặc định :data:`LOGS_DEFAULT_LIMIT`,
-          tối đa :data:`LOGS_MAX_LIMIT`. Giá trị ngoài dải hoặc không phải số
-          nguyên → 400.
-        - ``level``: mức tối thiểu, mặc định **``WARNING``**. Lý do mặc định
-          là WARNING: người dùng cần thấy **lỗi**, không cần thấy nhật ký hoạt
-          động bình thường; ``INFO`` sẽ làm ngập popup và che mất lỗi thật.
-          ``level=ERROR`` chỉ trả ERROR+CRITICAL; ``level=DEBUG`` trả mọi thứ
-          (dùng khi cần chẩn đoán sâu). Giá trị lạ → 400 kèm danh sách hợp lệ.
-
-        Bộ đệm **giữ mọi mức** và chỉ lọc ở đây, nên đổi ``level`` không cần
-        khởi động lại và không làm mất log ``INFO`` đã ghi.
-
-        Chưa có buffer (phiên chạy không bật logging có buffer) → 503 JSON kèm
-        câu tiếng Việt, không trả HTML và không sập.
-        """
-        logs = _logs_buffer_provider()
-        if logs is None:
-            return _json_error(
-                "Chưa có bộ đệm nhật ký trong phiên chạy này nên chưa đọc "
-                "được log. Bật logging của ứng dụng rồi thử lại.",
-                503,
-            )
-
-        raw_limit = request.args.get("limit")
-        if raw_limit is None or str(raw_limit).strip() == "":
-            limit = LOGS_DEFAULT_LIMIT
-        else:
-            try:
-                limit = int(str(raw_limit).strip())
-            except (TypeError, ValueError):
-                return _json_error(
-                    f"Tham số 'limit' phải là số nguyên, nhận được {raw_limit!r}.",
-                    400,
-                )
-            if limit <= 0:
-                return _json_error(
-                    "'limit' phải là số dương — cần ít nhất một bản ghi.", 400
-                )
-            if limit > LOGS_MAX_LIMIT:
-                return _json_error(
-                    f"'limit' tối đa là {LOGS_MAX_LIMIT}, nhận được {limit}.",
-                    400,
-                )
-
-        raw_level = request.args.get("level")
-        level = logs_module.normalize_level(raw_level)
-        if level is None:
-            return _json_error(
-                f"Tham số 'level' phải là một trong "
-                f"{', '.join(logs_module.LEVEL_ORDER)}; nhận được "
-                f"{raw_level!r}.",
-                400,
-            )
-
-        entries = logs.snapshot(limit=limit, min_level=level)
-        return jsonify(
-            {
-                "logs": entries,
-                "total": len(entries),
-                "level": level,
-                "limit": limit,
-            }
-        )
-
-    @app.get("/api/violations")
-    def api_violations() -> Response:
-        """Lịch sử **vi phạm** trong giờ học, đọc từ bảng ``events``.
-
-        Đây là thứ người dùng thật sự muốn xem khi bấm nút nhật ký: *"hôm nay
-        tôi đã rời bàn mấy lần, lúc nào, kéo dài bao lâu"* — không phải log
-        chẩn đoán của lập trình viên. Vì vậy route đọc bảng ``events`` trong
-        SQLite (đã có sẵn từ trước) chứ không phải bộ đệm log trong RAM:
-        bộ đệm mất khi khởi động lại, còn vi phạm phải còn sau nhiều ngày.
-
-        Ba loại được trả, đúng ba cảnh báo của dự án
-        (:data:`~posture_monitor.state.ALERT_EVENT_TYPE`):
-
-        - ``ABSENT`` — rời khung hình (``leave_frame``)
-        - ``PHONE_USE`` — dùng điện thoại (``phone``)
-        - ``IMPOSTOR`` — sai người học (``stranger``)
-
-        Bảng ``events`` còn chứa ``alert_start``/``alert_end``/``SPEAK_OK``/
-        ``break_reminder``/``absent_reset`` — **không** phải vi phạm, nên route
-        lọc bỏ. Không lọc thì popup sẽ đầy dòng kỹ thuật và người dùng không
-        đọc được gì.
-
-        ``kind_text`` là **nhãn tiếng Việt do server sinh**. App và web đều
-        dùng thẳng nhãn này thay vì tự dịch mã: ba nơi (dashboard, popup web,
-        app) phải nói cùng một câu, nếu mỗi nơi tự dịch thì sẽ lệch nhau ngay
-        lần đổi chữ đầu tiên.
-
-        Tham số:
-
-        - ``limit``: số dòng trả về, mặc định :data:`VIOLATIONS_DEFAULT_LIMIT`,
-          tối đa :data:`VIOLATIONS_MAX_LIMIT`. Ngoài dải → 400.
-        - ``kinds``: danh sách mã cách nhau bằng dấu phẩy, ví dụ
-          ``ABSENT,PHONE_USE``. Bỏ trống = cả ba loại. Mã lạ → 400 kèm danh
-          sách hợp lệ (không lặng lẽ bỏ qua: người dùng sẽ tưởng "không có vi
-          phạm nào" trong khi thật ra gõ sai tham số).
-        - ``since_s``: chỉ lấy vi phạm trong ``since_s`` giây gần nhất.
-
-        Chưa bật lưu trữ (``storage is None``) → 503 JSON kèm câu tiếng Việt.
-        DB lỗi → 200 với danh sách rỗng và ``error`` mô tả: web không được sập
-        vì một truy vấn hỏng, nhưng cũng không được giả vờ là "không có vi
-        phạm nào" mà không nói gì.
-        """
-        if storage is None:
-            return _json_error(
-                "Chưa bật lưu trữ nên chưa có lịch sử vi phạm. Bật mục "
-                "'storage' trong config.yaml rồi chạy lại.",
-                503,
-            )
-
-        raw_limit = request.args.get("limit")
-        if raw_limit is None or str(raw_limit).strip() == "":
-            limit = VIOLATIONS_DEFAULT_LIMIT
-        else:
-            try:
-                limit = int(str(raw_limit).strip())
-            except (TypeError, ValueError):
-                return _json_error(
-                    f"Tham số 'limit' phải là số nguyên, nhận được {raw_limit!r}.",
-                    400,
-                )
-            if limit <= 0:
-                return _json_error(
-                    "'limit' phải là số dương — cần ít nhất một dòng.", 400
-                )
-            if limit > VIOLATIONS_MAX_LIMIT:
-                return _json_error(
-                    f"'limit' tối đa là {VIOLATIONS_MAX_LIMIT}, nhận được {limit}.",
-                    400,
-                )
-
-        raw_kinds = request.args.get("kinds")
-        if raw_kinds is None or str(raw_kinds).strip() == "":
-            kinds = None
-        else:
-            kinds = []
-            for piece in str(raw_kinds).split(","):
-                code = piece.strip().upper()
-                if not code:
-                    continue
-                if code not in VIOLATION_KINDS:
-                    return _json_error(
-                        "Tham số 'kinds' chỉ nhận "
-                        f"{', '.join(VIOLATION_KINDS)}; gặp mã lạ "
-                        f"{piece.strip()!r}.",
-                        400,
-                    )
-                kinds.append(code)
-            if not kinds:
-                kinds = None
-
-        raw_since = request.args.get("since_s")
-        if raw_since is None or str(raw_since).strip() == "":
-            since_ts = None
-        else:
-            try:
-                since_s = float(str(raw_since).strip())
-            except (TypeError, ValueError):
-                return _json_error(
-                    f"Tham số 'since_s' phải là số giây, nhận được {raw_since!r}.",
-                    400,
-                )
-            if since_s < 0:
-                return _json_error("'since_s' không được âm.", 400)
-            since_ts = time.time() - since_s
-
-        try:
-            rows = storage.violations(limit=limit, kinds=kinds, since_ts=since_ts)
-        except Exception as exc:  # noqa: BLE001 - DB lỗi không được làm sập web
-            _logger.exception("Không đọc được lịch sử vi phạm từ DB.")
-            return _json_error(
-                f"Không đọc được lịch sử vi phạm từ cơ sở dữ liệu ({exc}). "
-                "Xem log của máy chủ.",
-                503,
-            )
-
-        counts = {kind: 0 for kind in VIOLATION_KINDS}
-        for row in rows:
-            kind = row.get("kind")
-            if kind in counts:
-                counts[kind] += 1
-
-        return jsonify(
-            {
-                "violations": [
-                    {
-                        "ts": row["ts"],
-                        "kind": row["kind"],
-                        "kind_text": VIOLATION_KIND_TEXT.get(
-                            row["kind"], str(row["kind"])
-                        ),
-                        "duration_s": row["duration_s"],
-                    }
-                    for row in rows
-                ],
-                "total": len(rows),
-                "counts": counts,
-                "limit": limit,
-            }
-        )
-
-    @app.get("/api/history")
-    def api_history() -> Response:
-        """JSON số liệu biểu đồ; ``range=today`` (mặc định) hoặc ``7d``."""
-        range_key = request.args.get("range", "today")
-        if range_key not in ("today", "7d"):
-            return _json_error("Tham số 'range' phải là 'today' hoặc '7d'.", 400)
-        if storage is None:
-            return jsonify(
-                {
-                    "range": range_key,
-                    "unit": "hour" if range_key == "today" else "day",
-                    "labels": [],
-                    "good_pct": [],
-                    "avg_score": [],
-                    "absent_s": [],
-                    "distance_cm_avg": [],
-                    "has_data": False,
-                    "message": "Chưa bật lưu trữ nên chưa có số liệu.",
-                }
-            )
-        try:
-            return jsonify(storage.history(range_key))
-        except Exception as exc:  # noqa: BLE001 - web không được sập vì DB
-            _logger.error("Không lấy được lịch sử cho dashboard: %s", exc)
-            return _json_error("Không đọc được số liệu đã lưu.", 503)
-
-    @app.post("/api/calibrate")
-    def api_calibrate() -> Response:
-        """Đặt cờ để vòng lặp chính chạy hiệu chỉnh lại."""
-        dashboard.request_calibration()
-        return jsonify(
-            {
-                "ok": True,
-                "message": "Đã gửi yêu cầu hiệu chỉnh. Hãy ngồi thẳng trong "
-                "5 giây tới.",
-                "calibration_pending": True,
-            }
-        )
-
-    # ------------------------------------------------------------------
-    # Phiên học (nút Bắt đầu / Dừng). Đây là công tắc duy nhất bật model AI:
-    # vòng lặp đọc ``study_session.is_running`` mỗi khung và bỏ qua pose/dò
-    # điện thoại khi phiên không chạy. Không có route nào khác bật được nó.
-    # ------------------------------------------------------------------
-    def _session_unavailable() -> Response:
-        """503 khi phiên chạy không được tiêm ``StudySession``."""
-        return _json_error(
-            "Phiên học chưa được bật trong lần chạy này nên chưa bấm được "
-            "Bắt đầu/Dừng.",
-            503,
-        )
-
-    @app.get("/api/session")
-    def api_session_get() -> Response:
-        """Trạng thái phiên học + thời lượng mặc định cho ô nhập trên web.
-
-        Chỉ **đọc**; không làm hết giờ cũng không phát câu thông báo. Việc phát
-        câu "đã hết giờ" thuộc vòng lặp (``StudySession.tick``), để nó ra loa
-        đúng một lần kể cả khi không ai mở dashboard.
-        """
-        if study_session is None:
-            return _session_unavailable()
-        data = session_payload(study_session.snapshot())
-        data["default_minutes"] = int(study_session.default_minutes)
-        data["min_minutes"] = SESSION_MIN_MINUTES
-        data["max_minutes"] = SESSION_MAX_MINUTES
-        return jsonify(data)
-
-    @app.post("/api/session/start")
-    def api_session_start() -> Response:
-        """Bắt đầu phiên học; thân tuỳ chọn ``{"minutes": 60}``.
-
-        Thiếu thân hoặc thiếu ``minutes`` thì dùng thời lượng mặc định của cấu
-        hình. Bắt đầu khi đang chạy là **bắt đầu lại** (ghi đè), đúng ý người
-        dùng đổi thời lượng giữa phiên.
-        """
-        if study_session is None:
-            return _session_unavailable()
-        body = request.get_json(silent=True)
-        minutes = None
-        if isinstance(body, Mapping) and body.get("minutes") is not None:
-            minutes = body["minutes"]
-        try:
-            snapshot = study_session.start(minutes)
-        except StudySessionError as exc:
-            return _json_error(str(exc), 400)
-        data = session_payload(snapshot)
-        data["ok"] = True
-        data["message"] = (
-            f"Đã bắt đầu phiên học {snapshot.minutes} phút. Hệ thống đang theo dõi."
-        )
-        return jsonify(data)
-
-    @app.post("/api/session/stop")
-    def api_session_stop() -> Response:
-        """Dừng phiên và tắt model AI; an toàn khi gọi lúc đang nghỉ."""
-        if study_session is None:
-            return _session_unavailable()
-        snapshot = study_session.stop()
-        data = session_payload(snapshot)
-        data["ok"] = True
-        data["message"] = "Đã dừng phiên học. Hệ thống tạm ngừng phân tích."
-        return jsonify(data)
-
-    @app.post("/api/mute")
-    def api_mute() -> Response:
-        """Bật/tắt tiếng cảnh báo.
-
-        Thân request tùy chọn: ``{"muted": true|false}``. Không có thân thì
-        đảo trạng thái hiện tại — tiện cho nút bấm trên điện thoại.
-        """
-        body = request.get_json(silent=True) or {}
-        if isinstance(body, Mapping) and "muted" in body:
-            muted = dashboard.set_muted(bool(body["muted"]))
-        else:
-            muted = dashboard.toggle_mute()
-        return jsonify(
-            {
-                "ok": True,
-                "muted": muted,
-                "message": "Đã tắt tiếng cảnh báo."
-                if muted
-                else "Đã bật lại tiếng cảnh báo.",
-            }
-        )
-
-    @app.post("/api/speak")
-    def api_speak() -> Response:
-        """Phát tiếng ra loa của camera IP (RTSP backchannel).
-
-        Thân JSON, mọi khóa đều tùy chọn::
-
-            {"tone_hz": 880, "duration": 0.5, "file": "duong_dan.mp3"}
-
-        - Không có ``file``: phát tiếng bíp ``tone_hz``/``duration`` — đường
-          này tự sinh G.711 nên **không cần ffmpeg**.
-        - Có ``file``: phát file đó; cần ffmpeg trên máy chạy dashboard.
-
-        Trả 200 kèm tóm tắt lần phát; lỗi tham số 400, đang phát 409, chưa
-        cấu hình loa 403 (giống ``/stream`` khi bị tắt trong config), thiếu
-        thư viện/ffmpeg 503, camera lỗi 502. Thông điệp tiếng Việt và không bao
-        giờ chứa mật khẩu camera.
-        """
-        body = request.get_json(silent=True)
-        if body is None:
-            # Thân rỗng là hợp lệ (dùng tiếng bíp mặc định), nhưng thân có
-            # nội dung mà không đọc được thì phải báo lỗi — nếu không, một
-            # request JSON hỏng sẽ lặng lẽ phát bíp ngoài ý muốn.
-            if request.get_data(cache=True):
-                return _json_error(
-                    "Thân request của /api/speak không phải JSON hợp lệ.", 400
-                )
-            body = {}
-        if not isinstance(body, Mapping):
-            return _json_error(
-                "Thân request của /api/speak phải là một đối tượng JSON.", 400
-            )
-
-        try:
-            controller = _resolve_speak_controller()
-        except CameraAudioConfigError as exc:
-            return _json_error(str(exc), 403)
-
-        file_path = body.get("file")
-        if file_path is not None and not isinstance(file_path, str):
-            return _json_error("'file' phải là chuỗi đường dẫn.", 400)
-
-        try:
-            if file_path:
-                result = controller.speak_file(file_path)
-            else:
-                tone_hz = body.get("tone_hz", DEFAULT_TONE_HZ)
-                duration = body.get("duration", DEFAULT_TONE_DURATION_S)
-                result = controller.speak_tone(tone_hz, duration)
-        except CameraAudioInputError as exc:
-            return _json_error(str(exc), 400)
-        except CameraAudioBusy as exc:
-            return _json_error(str(exc), 409)
-        except CameraAudioUnavailable as exc:
-            return _json_error(str(exc), 503)
-        except CameraAudioError as exc:
-            return _json_error(str(exc), 502)
-
-        payload = {"ok": True, "message": "Đã phát tiếng ra loa camera."}
-        payload.update(result.as_dict())
-        return jsonify(payload)
-
-    @app.get("/api/voice")
-    def api_voice() -> Response:
-        """JSON giọng đọc đang dùng + tình trạng từng giọng có sẵn.
-
-        Trả ``voice`` (mã đang chọn), ``voices`` (mỗi giọng: nhãn, thư mục,
-        câu nào đã có bản thu, thiếu câu nào) và ``fallbacks`` (câu nào đang
-        phải tạm dùng giọng khác vì thiếu bản thu). ``available: false`` khi
-        phiên chạy không có loa cảnh báo — trang vẫn mở bình thường.
-        """
-        if speaker is None:
-            return jsonify(
-                {
-                    "ok": True,
-                    "available": False,
-                    "voice": None,
-                    "voices": {},
-                    "fallbacks": {},
-                    "message": SPEAKER_DISABLED_MESSAGE,
-                }
-            )
-        try:
-            report = speaker.voice_report()
-        except Exception as exc:  # noqa: BLE001 - web không được sập vì loa
-            _logger.error("Không đọc được trạng thái giọng đọc: %s", exc)
-            return _json_error("Không đọc được trạng thái giọng đọc.", 503)
-        payload = {"ok": True, "available": True}
-        payload.update(report)
-        return jsonify(payload)
-
-    @app.post("/api/voice")
-    def api_voice_set() -> Response:
-        """Đổi giọng đọc: ``{"voice": "nam"|"nu"|"espeak"}``.
-
-        Đổi xong thì lần cảnh báo **kế tiếp** đã dùng giọng mới và lựa chọn
-        được ghi xuống ``audio_dir/voice.json`` để lần chạy sau vẫn nhớ. Trả
-        200 kèm báo cáo mới; giọng lạ 400; chưa nối dây loa 503.
-        """
-        if speaker is None:
-            return _json_error(SPEAKER_DISABLED_MESSAGE, 503)
-        body = request.get_json(silent=True)
-        if not isinstance(body, Mapping):
-            return _json_error(
-                "Thân request phải là một đối tượng JSON dạng "
-                '{"voice": "nam"|"nu"|"espeak"}.',
-                400,
-            )
-        requested = body.get("voice")
-        if not isinstance(requested, str) or not requested.strip():
-            return _json_error("Thiếu khóa 'voice' (chuỗi) trong request.", 400)
-        from ..voice_library import VOICE_LABELS, VOICES  # noqa: PLC0415
-
-        if requested.strip().lower() not in VOICES:
-            return _json_error(
-                f"Giọng '{requested}' không hợp lệ; chọn một trong "
-                f"{', '.join(VOICE_LABELS[v] for v in VOICES)}.",
-                400,
-            )
-        try:
-            report = speaker.set_voice(requested)
-        except Exception as exc:  # noqa: BLE001 - web không được sập vì loa
-            _logger.error("Không đổi được giọng đọc: %s", exc)
-            return _json_error("Không đổi được giọng đọc.", 503)
-        payload = {
-            "ok": True,
-            "available": True,
-            "message": f"Đã đổi sang {VOICE_LABELS[report['voice']].lower()}.",
-        }
-        payload.update(report)
-        return jsonify(payload)
-
-    @app.post("/api/ptz")
-    def api_ptz() -> Response:
-        """Xoay camera theo một hướng trong một khoảng ngắn.
-
-        Thân JSON: ``{"direction": "left"|"right"|"up"|"down",
-        "duration": <giây, tuỳ chọn>}``. Giá trị âm hoặc không phải số bị trả
-        400 ngay; giá trị quá lớn được ``camera_control`` ép về chặn trên của
-        nó (không phải lỗi: UI bấm giữ cũng chỉ cần xoay ngắn), và câu trả lời
-        chứa ``duration`` **thực tế** đã xoay.
-
-        Luôn trả JSON. Lỗi cấu hình/thiếu thư viện/camera không hỗ trợ được
-        quy về mã HTTP tương ứng và thông điệp tiếng Việt; mật khẩu camera
-        không bao giờ đi qua đây (xem ``camera_control``).
-        """
-        body = request.get_json(silent=True)
-        if not isinstance(body, Mapping):
-            return _json_error(
-                "Thân request phải là JSON dạng "
-                '{"direction": "left"|"right"|"up"|"down"}.',
-                400,
-            )
-
-        direction = body.get("direction")
-        if not isinstance(direction, str) or direction.strip().lower() not in (
-            PTZ_DIRECTIONS
-        ):
-            return _json_error(
-                "Hướng xoay phải là 'left', 'right', 'up' hoặc 'down'.",
-                400,
-            )
-        direction = direction.strip().lower()
-
-        duration = body.get("duration", PTZ_DEFAULT_DURATION_S)
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)):
-            return _json_error("Thời gian xoay phải là một số (giây).", 400)
-        if float(duration) < 0:
-            return _json_error("Thời gian xoay không được âm.", 400)
-
-        try:
-            controller = _get_ptz()
-            moved_s = controller.move_direction(direction, float(duration))
-        except camera_control.PtzError as exc:
-            return _json_error(str(exc), int(getattr(exc, "status", 503)))
-        except Exception:  # noqa: BLE001 - web không được sập vì camera
-            _logger.exception("Lỗi không lường trước khi điều khiển PTZ.")
-            return _json_error(
-                "Không điều khiển được camera. Xem log để biết chi tiết.", 500
-            )
-
-        return jsonify(
-            {
-                "ok": True,
-                "direction": direction,
-                "duration": moved_s,
-                "message": f"Đã xoay camera sang {PTZ_DIRECTION_TEXT[direction]}.",
-            }
-        )
-
-    @app.get("/stream")
-    def stream() -> Response:
-        """MJPEG camera, phục vụ từ khung mới nhất **trong bộ nhớ**.
-
-        Khung hình đi thẳng ``DashboardState`` → trình duyệt: không ghi ra
-        đĩa, không lưu lịch sử ảnh (spec v2 §11.5 cấm *lưu/truyền* ảnh;
-        hiển thị trực tiếp trong LAN, không lưu, là việc khác). Bật/tắt bằng
-        ``web.stream_enabled``; tắt thì trả 403 kèm thông điệp tiếng Việt.
-        """
-        if not stream_enabled:
-            return _json_error(STREAM_DISABLED_MESSAGE, 403)
-        return Response(
-            _mjpeg(dashboard),
-            mimetype="multipart/x-mixed-replace; boundary=frame",
-        )
-
-    @app.get("/api/frame")
-    def api_frame() -> Response:
-        """Một khung JPEG rời, cho ứng dụng điện thoại tự tải lại theo nhịp.
-
-        Vì sao cần route này: iOS/React Native **không** render được
-        ``multipart/x-mixed-replace`` trong ``<Image>``, nên ``/stream`` không
-        dùng được cho app. Ứng dụng gọi route này theo nhịp của nó và nhận một
-        ảnh JPEG trọn vẹn mỗi lần.
-
-        Hành vi:
-
-        - ``web.stream_enabled`` tắt → 403 JSON, **cùng câu**
-          :data:`STREAM_DISABLED_MESSAGE` với ``/stream`` (một nguồn duy nhất,
-          không viết thông điệp thứ hai).
-        - Chưa có khung nào trong bộ nhớ → 503 JSON với
-          :data:`FRAME_MISSING_MESSAGE`. Không bao giờ trả 200 với thân rỗng:
-          app sẽ hiện ô ảnh trắng mà không biết vì sao.
-        - Có khung → 200, ``Content-Type: image/jpeg``, kèm
-          ``Cache-Control: no-store``. Header này bắt buộc: ảnh camera là dữ
-          liệu sống, cache của trình duyệt/proxy sẽ trả lại khung cũ và người
-          dùng thấy hình đứng trong khi phần số liệu vẫn chạy.
-
-        Chờ khung tối đa :data:`FRAME_WAIT_S` giây (``wait_frame``) để một
-        khung vừa tới kịp được trả, nhưng không giữ worker của Flask lâu hơn
-        thế. Nếu hết thời gian mà vẫn chưa có khung nào thì trả 503 như trên.
-
-        Route **chỉ đọc**: lấy byte từ ``DashboardState`` trong bộ nhớ rồi trả
-        thẳng. Không mở camera, không giải mã, không ghi đĩa, không lưu ảnh
-        (spec v2 §11.5). Nhờ vậy gọi route này bao nhiêu lần cũng không tạo
-        thêm tải cho camera hay sinh tệp rác trên Pi.
-        """
-        if not stream_enabled:
-            return _json_error(STREAM_DISABLED_MESSAGE, 403)
-
-        # ``last_seq = -1``: khung nào đang có cũng tính là "mới" so với mốc
-        # này, nên nếu bộ nhớ đã có ảnh thì trả ngay, không chờ vô ích.
-        _seq, frame = dashboard.wait_frame(-1, timeout=FRAME_WAIT_S)
-        # Chặn cả ``None`` **và** ``b""``: băng rỗng cũng là "chưa có khung",
-        # không phải một khung JPEG rỗng (JPEG thật luôn có ít nhất SOI+EOI).
-        # Trả 200 với thân rỗng là bẫy tệ nhất cho client — app hiện ô ảnh
-        # trắng mà không có thông tin gì để phân biệt "chưa có ảnh" với "ảnh
-        # hỏng".
-        #
-        # KHÔNG viết ``if not frame:``: nếu vòng lặp chính đặt một mảng numpy,
-        # ``not array`` ném ``ValueError: truth value of an array ... is
-        # ambiguous`` và route sập 500 thay vì trả lời. Đo được khi viết bài
-        # ``test_frame_numpy_buffer_duoc_gui_nguyen_ven``. Đếm độ dài là phép
-        # thử đúng cho cả ``None``, ``bytes``, ``bytearray`` và mảng numpy.
-        if frame is None or len(frame) == 0:
-            return _json_error(FRAME_MISSING_MESSAGE, 503)
-
-        response = Response(frame, mimetype="image/jpeg")
-        response.headers["Cache-Control"] = "no-store"
-        return response
-
-    # ------------------------------------------------------------------
-    # Người học (spec v3 §5.16). Mọi route dưới đây đều đi qua một lớp
-    # chuyển đổi lỗi chung: lỗi nghiệp vụ -> 400, lỗi hệ thống -> 503.
-    # Không route nào trả embedding (spec §5.13.1, §8.3).
-    # ------------------------------------------------------------------
-    def _people_unavailable() -> Response:
-        """503 khi phiên chạy không được tiêm dịch vụ người học."""
-        return _json_error(PEOPLE_DISABLED_MESSAGE, 503)
-
-    def _people_call(call: Callable[[], Any]) -> tuple[bool, Any]:
-        """Gọi dịch vụ; trả ``(True, kết_quả)`` hoặc ``(False, response_lỗi)``.
-
-        ``PeopleServiceError`` là lỗi người dùng sửa được (tên rỗng, không
-        tìm thấy người…) nên thành 400. Mọi lỗi khác là sự cố hệ thống: ghi
-        log đầy đủ ở phía máy chủ nhưng chỉ trả câu tiếng Việt chung — traceback
-        không bao giờ đi ra client.
-        """
-        try:
-            return True, call()
-        except PeopleServiceError as exc:
-            return False, _json_error(str(exc), 400)
-        except Exception:  # noqa: BLE001 - web không được sập vì dịch vụ
-            _logger.exception("Lỗi không lường trước từ dịch vụ người học.")
-            return False, _json_error(
-                "Dịch vụ người học đang gặp sự cố. Xem log để biết chi tiết.",
-                503,
-            )
-
-    @app.get("/api/people")
-    def api_people() -> Response:
-        """Danh sách người đã đăng ký + ai đang được chọn cho phiên này."""
-        if people is None:
-            return _people_unavailable()
-        ok, result = _people_call(
-            lambda: (
-                [_public_person(item) for item in people.list_people()],
-                people.selected_person(),
-            )
-        )
-        if not ok:
-            return result
-        directory, selected = result
-        return jsonify({"people": directory, "selected": selected})
-
-    @app.post("/api/people")
-    def api_people_add() -> Response:
-        """Bắt đầu đăng ký một người mới: ``{"name": "..."}`` → 201."""
-        if people is None:
-            return _people_unavailable()
-        body = request.get_json(silent=True)
-        if not isinstance(body, Mapping):
-            return _json_error('Thân request phải là JSON dạng {"name": "..."}.', 400)
-        name = body.get("name")
-        if not isinstance(name, str):
-            return _json_error("Tên người học phải là chữ.", 400)
-        name = name.strip()
-        if not name:
-            return _json_error("Tên người học không được để trống.", 400)
-
-        ok, result = _people_call(lambda: people.start_enroll(name))
-        if not ok:
-            return result
-        payload = {"ok": True, "name": name}
-        payload.update(result)
-        return jsonify(payload), 201
-
-    @app.delete("/api/people/<person_id>")
-    def api_people_delete(person_id: str) -> Response:
-        """Xoá một người học (bản ghi + vector); 404 nếu không tồn tại."""
-        if people is None:
-            return _people_unavailable()
-        ok, result = _people_call(lambda: people.delete_person(person_id))
-        if not ok:
-            return result
-        if not result:
-            return _json_error(f"Không tìm thấy người học có mã {person_id!r}.", 404)
-        return jsonify({"ok": True, "message": "Đã xoá người học."})
-
-    @app.get("/api/enroll/<enroll_id>")
-    def api_enroll_status(enroll_id: str) -> Response:
-        """Tiến độ một phiên đăng ký: bước hiện tại, số mẫu, lỗi (nếu có)."""
-        if people is None:
-            return _people_unavailable()
-        ok, result = _people_call(lambda: people.enroll_status(enroll_id))
-        if not ok:
-            return result
-        return jsonify({"ok": True, "enroll_id": enroll_id, **dict(result)})
-
-    @app.post("/api/enroll/<enroll_id>/cancel")
-    def api_enroll_cancel(enroll_id: str) -> Response:
-        """Huỷ phiên đăng ký; không ghi gì thêm."""
-        if people is None:
-            return _people_unavailable()
-        ok, result = _people_call(lambda: people.cancel_enroll(enroll_id))
-        if not ok:
-            return result
-        if not result:
-            return _json_error(
-                f"Không có phiên đăng ký nào đang chạy với mã {enroll_id!r}.",
-                404,
-            )
-        return jsonify({"ok": True, "message": "Đã huỷ phiên đăng ký."})
-
-    @app.post("/api/select")
-    def api_select() -> Response:
-        """Chọn người đang học cho phiên này; ``person_id: null`` = bỏ chọn."""
-        if people is None:
-            return _people_unavailable()
-        body = request.get_json(silent=True)
-        if not isinstance(body, Mapping) or "person_id" not in body:
-            return _json_error(
-                'Thân request phải có khóa "person_id" (chuỗi hoặc null).',
-                400,
-            )
-        person_id = body["person_id"]
-        if person_id is not None and not isinstance(person_id, str):
-            return _json_error('"person_id" phải là chuỗi hoặc null.', 400)
-
-        ok, result = _people_call(lambda: people.select_person(person_id))
-        if not ok:
-            return result
-        if not result:
-            return _json_error(f"Không tìm thấy người học có mã {person_id!r}.", 404)
-        message = (
-            "Đã bỏ chọn người đang học."
-            if person_id is None
-            else "Đã chọn người đang học."
-        )
-        return jsonify({"ok": True, "selected": person_id, "message": message})
-
-    @app.get("/api/signals")
-    def api_signals() -> Response:
-        """Tín hiệu thô gần nhất (presence/phone/identity) + tuổi tín hiệu.
-
-        Dịch vụ đã hứa không trả embedding; lớp này soát lại lần nữa để một
-        lần nối dây lơ đãng không biến dashboard thành đường rò vector.
-        """
-        if people is None:
-            return _people_unavailable()
-        ok, result = _people_call(lambda: people.signals())
-        if not ok:
-            return result
-        return jsonify(_scrub_biometrics(dict(result)))
-
-    @app.get("/api/schedule")
-    def api_schedule_get() -> Response:
-        """Khung giờ học hiện tại."""
-        if people is None:
-            return _people_unavailable()
-        ok, result = _people_call(lambda: people.get_schedule())
-        if not ok:
-            return result
-        return jsonify({"ok": True, "schedule": result})
-
-    @app.put("/api/schedule")
-    def api_schedule_put() -> Response:
-        """Ghi khung giờ học; dịch vụ kiểm tra và báo lỗi tiếng Việt."""
-        if people is None:
-            return _people_unavailable()
-        body = request.get_json(silent=True)
-        if not isinstance(body, Mapping):
-            return _json_error(
-                "Thân request phải là một đối tượng JSON mô tả giờ học.", 400
-            )
-        ok, result = _people_call(lambda: people.put_schedule(dict(body)))
-        if not ok:
-            return result
-        return jsonify({"ok": True, "schedule": result})
+    ctx = WebContext(
+        app=app,
+        config=config,
+        dashboard=dashboard,
+        storage=storage,
+        stream_enabled=stream_enabled,
+        min_distance=min_distance,
+        people=people,
+        speaker=speaker,
+        study_session=study_session,
+        logs_buffer_provider=logs_provider,
+        _speak_controller=speak_controller,
+    )
+    register_all_routes(app, ctx)
 
     @app.errorhandler(404)
-    def not_found(error):  # pragma: no cover - Flask tự lo phần HTML
+    def not_found(error):  # pragma: no cover
         if request.path.startswith("/api/"):
-            return _json_error("Không có API này.", 404)
+            return json_error("Không có API này.", 404)
         return error
 
     return app
 
 
-@functools.lru_cache(maxsize=1)
-def _placeholder_jpeg() -> bytes:
-    """Ảnh JPEG xám 320x240 để lấp chỗ khi camera chưa gửi khung nào.
-
-    Phải là **JPEG thật**: luồng ``multipart/x-mixed-replace`` chỉ được chứa
-    một kiểu ``Content-Type``. Bản cũ chèn ``text/plain`` vào giữa luồng, và
-    trình duyệt coi đó là ảnh hỏng — ảnh trắng cho tới lần nối lại, đúng hiện
-    tượng "cứ một tí lại mất hình".
-
-    Sinh một lần rồi cache: mỗi vòng chờ không phải mã hoá lại một ảnh tĩnh.
-    Nếu OpenCV không mã hoá được (gần như không xảy ra), rơi về ``None`` và
-    luồng chỉ chờ, không gửi gì.
-    """
-    import cv2  # noqa: PLC0415 - chỉ cần ở đây, không kéo vào lúc import module
-    import numpy as np  # noqa: PLC0415
-
-    frame = np.full((240, 320, 3), 32, dtype=np.uint8)
-    ok, buffer = cv2.imencode(".jpg", frame)
-    return buffer.tobytes() if ok else None
-
-
-def _mjpeg(dashboard: DashboardState):
-    """Sinh luồng MJPEG từ khung mới nhất của vòng lặp chính.
-
-    Khi chưa có khung mới trong ``STREAM_WAIT_S`` giây, **giữ nguyên khung
-    cuối** thay vì chèn placeholder chữ: mọi phần tử trong ``multipart/
-    x-mixed-replace`` phải cùng kiểu ``image/jpeg``. Trộn một phần tử
-    ``text/plain`` vào là trình duyệt gặp phần không vẽ được và **trắng ảnh**
-    cho tới lần kết nối lại — đúng hiện tượng "cứ một tí lại mất hình".
-
-    Trước khi có khung đầu tiên, gửi :func:`_placeholder_jpeg` để thẻ ``<img>``
-    có nội dung vẽ được ngay (``load`` bắn ra, ảnh không bị ẩn). Đếm
-    ``STREAM_STALE_WARN_S`` giây không có khung mới thì ghi log **một lần**
-    cho người vận hành biết camera đã đứt.
-    """
-    boundary = b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
-    seq = 0
-    last_jpeg: bytes | None = None
-    #: Lúc nhận khung mới nhất, tính bằng ``time.monotonic()``. Phải đếm thời
-    #: gian thật: ``wait_frame`` chỉ chờ ``STREAM_WAIT_S`` (2 s) mỗi vòng, nên
-    #: "hết một vòng chờ" **không** đồng nghĩa với "đã cũ
-    #: ``STREAM_STALE_WARN_S``". Dùng số vòng chờ làm đồng hồ sẽ cảnh báo ở
-    #: giây thứ 2 thay vì giây thứ 5.
-    last_at = time.monotonic()
-    warned_empty = False
-    warned_stale = False
-    while True:
-        new_seq, frame = dashboard.wait_frame(seq)
-        if frame is not None and new_seq != seq:
-            seq = new_seq
-            last_jpeg = frame
-            last_at = time.monotonic()
-            warned_empty = False
-            warned_stale = False
-        if last_jpeg is None:
-            # Chưa từng có khung nào: gửi ảnh xám giữ chỗ để ``<img>`` có gì
-            # vẽ. Không chèn chữ: sai kiểu MIME là hỏng cả luồng.
-            if not warned_empty:
-                warned_empty = True
-                _logger.info(
-                    "Luồng xem đang chờ khung đầu tiên từ camera; đang gửi ảnh "
-                    "giữ chỗ, sẽ thay bằng hình thật ngay khi có khung."
-                )
-            placeholder = _placeholder_jpeg()
-            if placeholder is not None:
-                yield boundary + placeholder + b"\r\n"
-            continue
-        if not warned_stale and time.monotonic() - last_at >= STREAM_STALE_WARN_S:
-            warned_stale = True
-            _logger.warning(
-                "Không có khung mới trong %.0f giây; luồng xem đang lặp lại "
-                "khung cuối. Kiểm tra camera/kết nối RTSP.",
-                STREAM_STALE_WARN_S,
-            )
-        yield boundary + last_jpeg + b"\r\n"
-
-
-def _public_person(item: Mapping[str, Any]) -> dict[str, Any]:
-    """Lọc một bản ghi người học xuống đúng ba khóa công khai.
-
-    Danh sách trắng chứ không phải danh sách đen: thêm một trường nội bộ vào
-    dịch vụ (embedding, đường dẫn ảnh…) không tự động rò ra HTTP. Đây là lớp
-    chặn §8.3 "không route nào trả vector", độc lập với việc dịch vụ có giữ
-    lời hứa hay không.
-    """
-    return {key: item.get(key) for key in PUBLIC_PERSON_FIELDS}
-
-
-#: Tên khóa mang dữ liệu sinh trắc học; so khớp không phân biệt hoa thường và
-#: ở mọi cấp lồng, vì một dict lồng sai vẫn là rò rỉ.
-_BIOMETRIC_KEYS = ("embedding", "embeddings", "vector", "vectors", "feature")
-
-
-def _scrub_biometrics(value: Any) -> Any:
-    """Bỏ mọi khóa sinh trắc học khỏi cấu trúc JSON trước khi trả cho client."""
-    if isinstance(value, Mapping):
-        return {
-            key: _scrub_biometrics(item)
-            for key, item in value.items()
-            if str(key).lower() not in _BIOMETRIC_KEYS
-        }
-    if isinstance(value, (list, tuple)):
-        return [_scrub_biometrics(item) for item in value]
-    return value
-
-
-def _json_error(message: str, status: int) -> Response:
-    """Lỗi dạng JSON kèm thông báo tiếng Việt cho UI hiện lên."""
-    response = jsonify({"ok": False, "message": message})
-    response.status_code = status
-    return response
-
-
-def _static_version() -> str:
-    """Dấu phiên bản của CSS/JS, gắn vào URL để trình duyệt tải bản mới.
-
-    Một lỗi thật đã gặp: sửa ``style.css`` rồi chạy lại, trang vẫn hiện giao
-    diện cũ. Nguyên nhân là trình duyệt dùng bản trong cache — rất khó đoán
-    với người đang phát triển, vì mã nguồn trên đĩa và HTML đều đã đúng.
-
-    Dấu này là mốc sửa đổi mới nhất của các tệp tĩnh, nên mỗi lần sửa CSS/JS
-    là URL đổi theo và trình duyệt buộc phải tải lại. Không đọc nội dung tệp
-    (không cần băm): mốc thời gian là đủ, và rẻ hơn nhiều cho Pi.
-
-    Không bao giờ ném: thiếu tệp (ví dụ khi đóng gói thiếu static) thì trả
-    ``"0"`` — trang vẫn chạy, chỉ là mất tác dụng chống cache.
-    """
-    static_dir = Path(__file__).resolve().parent / "static"
-    newest = 0.0
-    try:
-        for name in ("style.css", "app.js", "fonts.css"):
-            try:
-                newest = max(newest, (static_dir / name).stat().st_mtime)
-            except OSError:
-                continue
-    except Exception:  # noqa: BLE001 - không được làm sập trang chủ
-        return "0"
-    return str(int(newest)) if newest else "0"
-
-
-def run_server(app: Flask, config=None, **kwargs) -> None:
-    """Chạy server theo ``config.web.host`` / ``config.web.port``.
-
-    Chỉ dùng ``threaded=True`` (mặc định của Flask dev server) để trang web
-    không chặn vòng lặp chính khi cùng tiến trình. Đây là server phát triển;
-    trong LAN gia đình là đủ, không dùng để mở ra Internet (spec §5.10).
-    """
+def run_server(app: Flask, config: Any = None, **kwargs: Any) -> None:
+    """Chạy server phát triển theo ``config.web.host`` / ``config.web.port``."""
     web_cfg = getattr(config, "web", None)
     host = str(getattr(web_cfg, "host", "0.0.0.0"))
     port = int(getattr(web_cfg, "port", 8000))
@@ -1459,3 +123,36 @@ def run_server(app: Flask, config=None, **kwargs) -> None:
         port,
     )
     app.run(host=host, port=port, **kwargs)
+
+
+__all__ = [
+    "DashboardState",
+    "FRAME_MISSING_MESSAGE",
+    "FRAME_WAIT_S",
+    "LABEL_ORDER",
+    "LABEL_TEXT",
+    "LOGS_DEFAULT_LIMIT",
+    "LOGS_MAX_LIMIT",
+    "PEOPLE_DISABLED_MESSAGE",
+    "PTZ_DEFAULT_DURATION_S",
+    "PTZ_DIRECTIONS",
+    "PTZ_DIRECTION_TEXT",
+    "PUBLIC_PERSON_FIELDS",
+    "SPEAKER_DISABLED_MESSAGE",
+    "STALE_AFTER_S",
+    "STATE_TEXT",
+    "STREAM_DISABLED_MESSAGE",
+    "STREAM_POLL_S",
+    "STREAM_STALE_WARN_S",
+    "STREAM_WAIT_S",
+    "VIOLATIONS_DEFAULT_LIMIT",
+    "VIOLATIONS_MAX_LIMIT",
+    "VIOLATION_KINDS",
+    "VIOLATION_KIND_TEXT",
+    "_mjpeg",
+    "_placeholder_jpeg",
+    "_public_person",
+    "_scrub_biometrics",
+    "create_app",
+    "run_server",
+]

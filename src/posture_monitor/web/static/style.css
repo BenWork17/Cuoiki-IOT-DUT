@@ -302,10 +302,6 @@ h1 {
   color: var(--text-soft);
 }
 
-.bar__sep {
-  color: #b9bfc7;
-}
-
 .bar__actions {
   display: flex;
   align-items: center;
@@ -639,22 +635,6 @@ h1 {
   flex-direction: column;
   gap: 10px;
   padding: 13px var(--pad) 15px;
-}
-
-.session__eyebrow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.session__eyebrow-text {
-  font-size: 11px;
-  line-height: 15px;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: var(--muted);
 }
 
 .session__left {
@@ -1006,24 +986,6 @@ h1 {
   color: var(--muted);
 }
 
-.people__empty {
-  font-size: var(--fs-small);
-  line-height: 20px;
-  color: var(--muted);
-  padding: 10px 12px;
-  border-radius: var(--radius-control);
-  background: var(--raise);
-}
-
-.people__list-wrap {
-  margin-top: 10px;
-}
-
-.people__list {
-  list-style: none;
-  padding: 0;
-}
-
 .people__item {
   display: flex;
   align-items: center;
@@ -1033,28 +995,6 @@ h1 {
 
 .people__item + .people__item {
   box-shadow: 0 -1px 0 var(--sunken);
-}
-
-.people__name {
-  flex: 1;
-  min-width: 0;
-  font-size: 14px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
-}
-
-.people__item .btn {
-  height: 30px;
-  padding: 0 10px;
-  font-size: 12px;
-}
-
-.people__delete {
-  color: var(--negative);
-}
-
-.people__delete:hover:not(:disabled) {
-  background: var(--negative-wash);
 }
 
 /* --------------------------------------------------------------------------
@@ -1169,42 +1109,8 @@ h1 {
 }
 
 /* --------------------------------------------------------------------------
- * Ghi chú + chân trang
+ * Chân trang
  * ----------------------------------------------------------------------- */
-
-.notes {
-  padding: 0;
-}
-
-.notes summary {
-  padding: 13px var(--pad);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  list-style-position: inside;
-}
-
-.notes summary::marker {
-  color: var(--muted);
-}
-
-.notes ul {
-  padding: 0 var(--pad) 15px 34px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.notes li {
-  font-size: 12px;
-  line-height: 19px;
-  color: var(--muted);
-}
-
-.notes strong {
-  color: var(--text-soft);
-  font-weight: 600;
-}
 
 .foot {
   padding: 2px;

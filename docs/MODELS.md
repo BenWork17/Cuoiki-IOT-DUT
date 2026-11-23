@@ -17,25 +17,27 @@ ngày tải: **2026-10-29**. Giấy phép của opencv_zoo: Apache-2.0.
 
 ## Tải về
 
-Đặt ở **gốc repo** — đường dẫn trong `config.yaml` (`face.detector`,
-`face.recognizer`) là tương đối so với gốc repo:
+Đặt trong thư mục **`models/`** ở gốc repo — đường dẫn mặc định trong `config.yaml`
+(`face.detector: models/yunet.onnx`, `face.recognizer: models/sface.onnx`) trỏ vào đây
+(và bộ nạp vẫn tự động fallback về gốc repo nếu máy cũ đặt tệp ở ngoài):
 
 ```bash
 cd /path/to/repo
-curl -sSL --fail -o yunet.onnx \
+mkdir -p models
+curl -sSL --fail -o models/yunet.onnx \
   https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
-curl -sSL --fail -o sface.onnx \
+curl -sSL --fail -o models/sface.onnx \
   https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
 ```
 
 ## Kiểm chứng
 
 ```bash
-sha256sum yunet.onnx sface.onnx   # khớp bảng trên
-pytest tests/test_models_present.py -v
+sha256sum models/yunet.onnx models/sface.onnx   # khớp bảng trên
+pytest tests/vision/test_models_present.py -v
 ```
 
-`tests/test_models_present.py` **bỏ qua** khi tệp thiếu (vì tệp không nằm trong
+`tests/vision/test_models_present.py` **bỏ qua** khi tệp thiếu (vì tệp không nằm trong
 git) và **fail** khi tệp có mặt nhưng OpenCV không parse được — một tệp rác đặt
 đúng tên sẽ bị bắt, không lọt qua.
 

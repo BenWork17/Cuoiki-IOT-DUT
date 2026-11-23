@@ -25,7 +25,7 @@ _SRC = _REPO_ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from posture_monitor.capture import (  # noqa: E402
+from posture_monitor.camera.capture import (  # noqa: E402
     _is_linux,  # noqa: PLC2701 - script chẩn đoán cần biết nền tảng
     list_capture_devices,
     probe_cameras,

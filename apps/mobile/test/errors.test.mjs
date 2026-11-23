@@ -94,6 +94,16 @@ test('messageForStatus: 503 ở /api/ptz nhắc camera, không phải lỗi chun
   assert.match(text, /Camera không hỗ trợ PTZ/);
 });
 
+test('messageForStatus: /api/voice và /api/violations có gợi ý riêng khi thiếu message', () => {
+  assert.match(messageForStatus(503, null, '/api/voice'), /Loa cảnh báo chưa được bật/);
+  assert.match(messageForStatus(404, null, '/api/voice'), /\/api\/voice/);
+  assert.match(messageForStatus(400, null, '/api/voice'), /Giọng đọc/);
+  assert.match(messageForStatus(503, null, '/api/violations'), /Chưa bật lưu trữ/);
+  assert.match(messageForStatus(404, null, '/api/violations'), /\/api\/violations/);
+  // Kèm query (?limit=200) vẫn khớp gợi ý qua httpError + routeKey.
+  assert.match(httpError(503, null, '/api/violations?limit=200').message, /Chưa bật lưu trữ/);
+});
+
 test('messageForStatus: route không có gợi ý thì rơi về câu chung của mã', () => {
   assert.equal(messageForStatus(404, null, '/api/khong-co'), httpStatusMessage(404));
 });

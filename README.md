@@ -83,16 +83,17 @@ pip install -r requirements.txt
 > `picamera2` và `lgpio` của hệ thống, và `import picamera2` sẽ thất bại dù
 > đã cài apt.
 
-### 3. Mô hình phải có sẵn
+### 3. Mô hình phải có sẵn trong `models/`
 
-Ba tệp mô hình **không nằm trong git** (quá lớn):
+Các tệp mô hình **không nằm trong git** (quá lớn, `.gitignore` chỉ giữ `models/.gitkeep`).
+Hệ thống ưu tiên tìm trong thư mục `models/` trước rồi tự động fallback về gốc repo để tương thích ngược:
 
-| Tệp | Dùng cho | Cách lấy |
+| Tệp trong `models/` | Dùng cho | Cách lấy |
 | --- | --- | --- |
-| `yolo11n-pose.pt` + `yolo11n-pose_ncnn_model/` | Nhận diện người, điện thoại | Ultralytics tự tải lần đầu, hoặc export NCNN |
-| `yolo11n.pt` + `yolo11n_ncnn_model/` | Dò điện thoại (lớp `cell phone`) | Như trên |
-| `yunet.onnx` (228 KB) | Phát hiện khuôn mặt | [`docs/MODELS.md`](docs/MODELS.md) |
-| `sface.onnx` (37 MB) | Đặc trưng khuôn mặt | [`docs/MODELS.md`](docs/MODELS.md) |
+| `models/yolo11n-pose.pt` + `models/yolo11n-pose_ncnn_model/` | Nhận diện người, khung xương | Ultralytics tự tải lần đầu, hoặc export NCNN |
+| `models/yolo11n.pt` + `models/yolo11n_ncnn_model/` | Dò điện thoại (lớp `cell phone`) | Như trên |
+| `models/yunet.onnx` (228 KB) | Phát hiện khuôn mặt | [`docs/MODELS.md`](docs/MODELS.md) |
+| `models/sface.onnx` (37 MB) | Đặc trưng khuôn mặt | [`docs/MODELS.md`](docs/MODELS.md) |
 
 Xem [`docs/MODELS.md`](docs/MODELS.md) để có link tải và cách kiểm chứng.
 
@@ -165,7 +166,7 @@ Cờ đáng chú ý của `run`:
 
 ## Ứng dụng điện thoại (Expo Go)
 
-Ngoài dashboard web, có app React Native (TypeScript, Expo SDK 54) trong
+Ngoài dashboard web, có app React Native (TypeScript, Expo SDK 58) trong
 [`apps/mobile/`](apps/mobile/README.md) để xem trạng thái, ảnh camera, phiên
 học, tín hiệu, điều khiển PTZ và giọng đọc ngay trên iPhone.
 
@@ -250,7 +251,7 @@ Thử bằng tai: `python -m posture_monitor speak-test --speed 0.85`
 python -m pytest tests/ -q
 ```
 
-**1492 passed, 4 skipped** (đo trên PC, Python 3.13).
+**1658 passed, 4 skipped** (đo trên PC, Python 3.13; cộng thêm **185 passed** của `apps/mobile`).
 
 Test chạy được trên PC, không cần camera thật: video giả tạo bằng
 `cv2.VideoWriter`, dịch vụ người học tiêm bằng bản giả trong bộ nhớ.
@@ -366,56 +367,38 @@ chúng vẫn mở được bằng `isOpened()`. Vì vậy script lọc theo tên
 ```
 .
 ├── README.md
-├── requirements.txt
-├── config.yaml
+├── pyproject.toml                # khai báo gói posture-monitor + cấu hình pytest
+├── requirements.txt              # khóa phiên bản cho Raspberry Pi 4 (Trixie aarch64)
+├── config.yaml                   # toàn bộ cấu hình & ngưỡng nghiệp vụ
+├── models/                       # nơi chứa model cục bộ (git chỉ giữ .gitkeep)
 ├── docs/
-│   ├── SPEC_V2.md            # đặc tả nền (tư thế, phần cứng)
-│   ├── SPEC_V3.md            # đặc tả hiện hành (người học, phiên học)
-│   ├── WEB_DASHBOARD.md      # dashboard: giao diện, API, PTZ
-│   ├── INTEGRATION_MOBILE.md # chạy app Expo Go trên iPhone + bảng route/mã lỗi
-│   ├── MODELS.md             # nguồn tải và cách kiểm chứng mô hình
-│   └── REUSE_AUDIT.md        # đánh giá tài nguyên tái sử dụng
-├── apps/mobile/              # app React Native (Expo Go) — xem README riêng
+│   ├── SPEC_V2.md                # đặc tả nền (tư thế, phần cứng)
+│   ├── SPEC_V3.md                # đặc tả hiện hành (người học, phiên học)
+│   ├── WEB_DASHBOARD.md          # dashboard: giao diện, API, PTZ
+│   ├── INTEGRATION_MOBILE.md     # chạy app Expo Go trên iPhone + bảng route/mã lỗi
+│   ├── MODELS.md                 # nguồn tải và cách kiểm chứng mô hình
+│   ├── REUSE_AUDIT.md            # đánh giá tài nguyên tái sử dụng
+│   └── archive/                  # tài liệu lịch sử các giai đoạn trước
+├── apps/mobile/                  # app React Native (Expo SDK 58) — xem README riêng
 ├── scripts/
-│   ├── camera_probe.py       # dò và in bảng thiết bị quay hình
-│   └── hw_selftest.py        # tự kiểm tra LED/buzzer/rung/siêu âm
+│   ├── camera_probe.py           # dò và in bảng thiết bị quay hình
+│   ├── hw_selftest.py            # tự kiểm tra LED/buzzer/rung/siêu âm
+│   ├── calibrate_reacquire.py    # đo phân bố ngưỡng bám lại track pose
+│   └── face_threshold_probe.py   # đo ngưỡng cosine nhận diện khuôn mặt trên camera thật
 ├── src/posture_monitor/
-│   ├── __main__.py           # CLI: run | calibrate | replay | benchmark | speak-test
-│   ├── config.py             # đọc + kiểm tra config.yaml
-│   ├── logging_setup.py      # logging dùng chung
-│   ├── capture.py            # OpenCVSource, PiCameraSource, FileSource, probe
-│   ├── pose.py               # nạp model + detect() → PoseResult
-│   ├── overlay.py            # vẽ 17 keypoint + xương
-│   ├── phone.py              # tín hiệu "đang dùng điện thoại"
-│   ├── phone_detector.py     # model detect COCO + bộ lọc báo nhầm
-│   ├── presence.py           # tín hiệu "có mặt / vắng mặt"
-│   ├── faces.py              # YuNet + SFace, kho vector, cosine
-│   ├── face_worker.py        # luồng nhận diện riêng
-│   ├── people_service.py     # phiên đăng ký, tín hiệu có tuổi
-│   ├── schedule.py           # khung giờ học, nhịp cảnh báo
-│   ├── study_session.py      # phiên học bấm tay (công tắc model AI)
-│   ├── camera_audio.py       # loa camera qua RTSP backchannel
-│   ├── speaker_alert.py      # chọn giọng, phát câu cảnh báo
-│   ├── voice_library.py      # quản lý bản thu giọng nam/nữ
-│   ├── camera_control.py     # PTZ qua ONVIF
-│   ├── features.py           # trích đặc trưng tư thế
-│   ├── calibration.py        # baseline ⇄ calibration.json
-│   ├── classifier.py         # gán nhãn tư thế
-│   ├── state.py              # máy trạng thái GOOD/WARN/BAD/ABSENT
-│   ├── alerts.py             # quyết định cảnh báo
-│   ├── sensors.py            # HC-SR04, cảm biến phụ
-│   ├── storage.py            # SQLite: phiên, sự kiện, thống kê phút
-│   ├── benchmark.py          # đo FPS/độ trễ/nhiệt/RAM/throttle
-│   ├── hardware/
-│   │   ├── base.py           # giao diện Hardware
-│   │   ├── gpio_mock.py      # MockFactory của gpiozero (chỉ log)
-│   │   └── gpio_real.py      # LED/buzzer/rung thật
-│   └── web/                  # dashboard Flask
-│       ├── app.py            # DashboardState, create_app, run_server
-│       ├── people_service.py # hợp đồng dịch vụ người học cho tầng web
-│       ├── templates/index.html
-│       └── static/           # style.css, app.js, font Geist nội bộ
-└── tests/                    # 53 tệp test
+│   ├── __main__.py               # điểm vào mỏng: python -m posture_monitor <lệnh>
+│   ├── benchmark.py              # điểm vào tương thích: python -m posture_monitor.benchmark
+│   ├── core/                     # config, credentials, labels, atomic_io, logging, log_buffer
+│   ├── camera/                   # capture (USB/RTSP/PiCamera/File), control (PTZ ONVIF), audio
+│   ├── vision/                   # yolo_loader, pose, phone, phone_detector, faces, calibration, classifier, overlay
+│   ├── domain/                   # state, presence, schedule, study_session, enrollment, signal_board, people_service
+│   ├── alerts/                   # gpio_dispatcher, speaker_alert, espeak_synth, voice_library
+│   ├── hardware/                 # base, gpio_mock, gpio_real, sensors (HC-SR04)
+│   ├── storage/                  # sqlite_store (WAL, gom nhóm phút/giờ/ngày)
+│   ├── web/                      # Flask app, context, state, streaming, privacy, routes/*, static/, templates/
+│   └── cli/                      # parser, MonitorRunner, dashboard_host, cmd_*, benchmark/*
+├── tests/                        # 10 thư mục con khớp 1-1 với kiến trúc src/ + tests/data/
+└── BaoCao/                       # mã nguồn báo cáo đồ án (.md, figures/, scripts sinh .docx)
 ```
 
 ---

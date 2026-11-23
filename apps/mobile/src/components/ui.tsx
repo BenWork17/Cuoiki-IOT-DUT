@@ -119,11 +119,11 @@ export function toneColor(tone: Tone): string {
 export function toneSurface(tone: Tone): string {
   switch (tone) {
     case 'good':
-      return 'rgba(95,224,176,0.12)';
+      return 'rgba(52,211,153,0.14)';
     case 'warn':
-      return 'rgba(240,180,41,0.14)';
+      return 'rgba(251,191,36,0.14)';
     case 'bad':
-      return 'rgba(255,107,94,0.14)';
+      return 'rgba(248,113,113,0.14)';
     default:
       return colors.surfaceRaised;
   }
@@ -150,14 +150,14 @@ export function Chip({
 }
 
 /** Viền chip rõ hơn nền một chút, để chip không "dính" vào thẻ. */
-function toneBorder(tone: Tone): string {
+export function toneBorder(tone: Tone): string {
   switch (tone) {
     case 'good':
-      return 'rgba(95,224,176,0.35)';
+      return 'rgba(52,211,153,0.36)';
     case 'warn':
-      return 'rgba(240,180,41,0.38)';
+      return 'rgba(251,191,36,0.38)';
     case 'bad':
-      return 'rgba(255,107,94,0.38)';
+      return 'rgba(248,113,113,0.38)';
     default:
       return colors.border;
   }
@@ -365,6 +365,38 @@ export function Divider(): React.ReactElement {
   return <View style={styles.divider} />;
 }
 
+/** Hướng dẫn dùng chung khi chưa lưu địa chỉ máy chủ. */
+export function UnconfiguredNotice({
+  body = 'Mở tab Kết nối, nhập IP LAN của máy chạy dashboard (ví dụ http://192.168.x.x:8000) rồi lưu lại.',
+}: {
+  body?: string;
+} = {}): React.ReactElement {
+  return <Notice title="Chưa cấu hình máy chủ" body={body} tone="warn" />;
+}
+
+/** Thẻ quay chờ phản hồi lần đầu từ máy chủ. */
+export function LoadingCard({
+  label = 'Đang hỏi máy chủ…',
+}: {
+  label?: string;
+} = {}): React.ReactElement {
+  return (
+    <Card style={styles.loadingCard}>
+      <ActivityIndicator color={colors.accent} />
+      <Text style={[typo.caption, styles.loadingLabel]}>{label}</Text>
+    </Card>
+  );
+}
+
+/** Dải xác nhận thao tác thành công (tắt tiếng, PTZ, phiên học, giọng đọc). */
+export function SuccessBanner({ message }: { message: string }): React.ReactElement {
+  return (
+    <View style={styles.successBanner}>
+      <Text style={[typo.body, { color: colors.good }]}>{message}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -426,10 +458,10 @@ const styles = StyleSheet.create({
     opacity: 0.75,
   },
   errorBanner: {
-    backgroundColor: 'rgba(255,107,94,0.10)',
+    backgroundColor: 'rgba(248,113,113,0.10)',
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255,107,94,0.40)',
+    borderColor: 'rgba(248,113,113,0.40)',
     padding: spacing.lg,
     gap: spacing.md,
   },
@@ -472,5 +504,19 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: colors.border,
     marginVertical: spacing.xs,
+  },
+  loadingCard: {
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  loadingLabel: {
+    color: colors.textMuted,
+  },
+  successBanner: {
+    backgroundColor: 'rgba(52,211,153,0.10)',
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(52,211,153,0.35)',
+    padding: spacing.lg,
   },
 });
