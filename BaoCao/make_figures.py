@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Sinh toàn bộ hình cho báo cáo đồ án (matplotlib, tiếng Việt).
+"""Sinh toàn bộ 9 hình sơ đồ & biểu đồ cho báo cáo đồ án (chuẩn in A4 rõ chữ).
+
+Nguyên tắc tỉ lệ chữ cho trang in A4 (vùng in ngang 15,5 cm ≈ 6,10 inch):
+- Đặt chiều rộng ``figsize`` trong khoảng 7,8 - 8,2 inch (hệ số co khi vào Word ≈ 0,76 - 0,78)
+  ở độ phân giải 260 DPI (~2.100 px ngang).
+- Mọi cỡ chữ nội dung đặt từ 10,8 pt đến 13,5 pt (tiêu đề khối 12 - 14 pt Bold), đảm bảo khi in
+  ra giấy A4 hoặc xem 100% trong Word chữ đạt kích thước thực 8,5 - 11,0 pt, rõ nét tuyệt đối.
+- Chuyển các sơ đồ dàn ngang quá nhiều cột nhỏ sang bố cục phân tầng dọc / lưới 2x2 thoáng đãng.
 
 Chạy:  python BaoCao/make_figures.py
 Kết quả: BaoCao/figures/*.png
-
-Mọi con số trong hình đều lấy từ tài liệu của dự án:
-  - docs/SPEC_V2.md  §14  (bảng phân vị p50; 8 lần đo FPS pipeline)
-  - docs/SPEC_V3.md  §4.2 / §4.3  (chi phí từng model, ngân sách FPS)
-  - docs/SPEC_V3.md  §16  (hiện trạng đo trên Pi 4)
 """
 
 from __future__ import annotations
@@ -27,7 +29,6 @@ FIG = HERE / "figures"
 FIG.mkdir(parents=True, exist_ok=True)
 
 
-# ---------------------------------------------------------------- font tiếng Việt
 def _pick_font() -> str:
     for path in (
         r"C:\Windows\Fonts\segoeui.ttf",
@@ -44,84 +45,146 @@ VI_FONT = _pick_font()
 plt.rcParams.update(
     {
         "font.family": VI_FONT,
-        "font.size": 10,
+        "font.size": 11.5,
         "axes.unicode_minus": False,
-        "figure.dpi": 200,
-        "savefig.dpi": 200,
+        "figure.dpi": 260,
+        "savefig.dpi": 260,
         "savefig.bbox": "tight",
+        "savefig.pad_inches": 0.08,
         "savefig.facecolor": "white",
     }
 )
 
-C_BLUE, C_BLUE_L = "#1877f2", "#dce9fc"
-C_GREEN, C_GREEN_L = "#1f7a4d", "#dbf0e4"
-C_AMBER, C_AMBER_L = "#a8681a", "#fbeed6"
-C_RED, C_RED_L = "#b3261e", "#fadedb"
-C_GREY, C_GREY_L = "#4a5568", "#eceff4"
-C_INK = "#16202f"
+C_BLUE, C_BLUE_L = "#1d4ed8", "#dbeafe"
+C_GREEN, C_GREEN_L = "#15803d", "#dcfce7"
+C_AMBER, C_AMBER_L = "#b45309", "#fef3c7"
+C_RED, C_RED_L = "#b91c1c", "#fee2e2"
+C_GREY, C_GREY_L = "#334155", "#f1f5f9"
+C_INK = "#0f172a"
 C_BAND = "#f8fafc"
 
 
-# ------------------------------------------------------------------- primitives
-def _blank(figsize, *, top=0.88):
+def _blank(figsize: tuple[float, float]):
     fig, ax = plt.subplots(figsize=figsize)
-    fig.subplots_adjust(left=0.012, right=0.988, bottom=0.03, top=top)
+    fig.subplots_adjust(left=0.01, right=0.99, bottom=0.01, top=0.99)
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
     ax.axis("off")
     return fig, ax
 
 
-def _title(fig, text, sub=None):
-    """Vẽ tiêu đề; khoảng cách dòng tính theo inch nên không chồng ở hình thấp."""
-    height_in = fig.get_size_inches()[1]
-    top = 0.988
-    fig.text(0.012, top, text, ha="left", va="top", fontsize=15,
-             fontweight="bold", color=C_INK)
-    if sub:
-        # 15 pt ≈ 0,208 in; cộng 0,12 in thở
-        sub_y = top - (0.208 + 0.115) / height_in
-        fig.text(0.012, sub_y, sub, ha="left", va="top", fontsize=9.6,
-                 color=C_GREY)
-        return sub_y - (0.135 + 0.10) / height_in
-    return top - (0.208 + 0.10) / height_in
-
-
-def _box(ax, x, y, w, h, text, *, fc=C_GREY_L, ec=C_GREY, fs=9, weight="normal",
-         color=C_INK, lw=1.2, ls="-", zorder=3):
+def _box(
+    ax,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    text: str,
+    *,
+    fc: str = C_GREY_L,
+    ec: str = C_GREY,
+    fs: float = 11.5,
+    weight: str = "normal",
+    color: str = C_INK,
+    lw: float = 1.6,
+    ls: str = "-",
+    zorder: int = 3,
+    linespacing: float = 1.38,
+) -> None:
     ax.add_patch(
         FancyBboxPatch(
-            (x, y), w, h,
-            boxstyle="round,pad=0.004,rounding_size=0.012",
-            linewidth=lw, facecolor=fc, edgecolor=ec,
-            linestyle=ls, zorder=zorder,
+            (x, y),
+            w,
+            h,
+            boxstyle="round,pad=0.004,rounding_size=0.014",
+            linewidth=lw,
+            facecolor=fc,
+            edgecolor=ec,
+            linestyle=ls,
+            zorder=zorder,
         )
     )
     if text:
-        ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=fs,
-                color=color, fontweight=weight, zorder=zorder + 1, linespacing=1.5)
+        ax.text(
+            x + w / 2,
+            y + h / 2,
+            text,
+            ha="center",
+            va="center",
+            fontsize=fs,
+            color=color,
+            fontweight=weight,
+            zorder=zorder + 1,
+            linespacing=linespacing,
+        )
 
 
-def _band(ax, y, h, label, *, fc=C_BAND, ec="#cbd5e1"):
-    """Dải nền cho một tầng, kèm nhãn ở góc trên trái."""
+def _band(ax, y: float, h: float, label: str, *, fc: str = C_BAND, ec: str = "#94a3b8", label_color: str = C_INK) -> None:
     ax.add_patch(
         FancyBboxPatch(
-            (0.0, y), 1.0, h,
-            boxstyle="round,pad=0.0,rounding_size=0.012",
-            linewidth=1.0, facecolor=fc, edgecolor=ec, zorder=1,
+            (0.005, y),
+            0.99,
+            h,
+            boxstyle="round,pad=0.0,rounding_size=0.014",
+            linewidth=1.3,
+            facecolor=fc,
+            edgecolor=ec,
+            zorder=1,
         )
     )
-    ax.text(0.014, y + h - 0.030, label, ha="left", va="center", fontsize=9.2,
-            color=C_GREY, fontweight="bold", zorder=2)
+    ax.text(
+        0.022,
+        y + h - 0.026,
+        label,
+        ha="left",
+        va="center",
+        fontsize=12.0,
+        color=label_color,
+        fontweight="bold",
+        zorder=2,
+    )
 
 
-def _arrow(ax, p_from, p_to, *, color=C_GREY, lw=1.5, ls="-", rad=0.0, zorder=2):
+def _arrow(
+    ax,
+    p_from: tuple[float, float],
+    p_to: tuple[float, float],
+    *,
+    color: str = C_GREY,
+    lw: float = 2.0,
+    ls: str = "-",
+    rad: float = 0.0,
+    zorder: int = 4,
+) -> None:
     ax.add_patch(
         FancyArrowPatch(
-            p_from, p_to, arrowstyle="-|>", mutation_scale=14, linewidth=lw,
-            color=color, linestyle=ls, zorder=zorder,
-            connectionstyle=f"arc3,rad={rad}", shrinkA=1, shrinkB=1,
+            p_from,
+            p_to,
+            arrowstyle="-|>",
+            mutation_scale=16,
+            linewidth=lw,
+            color=color,
+            linestyle=ls,
+            zorder=zorder,
+            connectionstyle=f"arc3,rad={rad}",
+            shrinkA=2,
+            shrinkB=2,
         )
+    )
+
+
+def _pill_label(ax, x: float, y: float, text: str, *, color: str = C_INK, ec: str = "#cbd5e1", fs: float = 10.6) -> None:
+    ax.text(
+        x,
+        y,
+        text,
+        ha="center",
+        va="center",
+        fontsize=fs,
+        fontweight="bold",
+        color=color,
+        zorder=6,
+        bbox=dict(boxstyle="round,pad=0.28", fc="white", ec=ec, lw=1.0),
     )
 
 
@@ -131,189 +194,186 @@ def _save(fig, name: str) -> None:
     print("  ghi figures/" + name)
 
 
-# ============================================================ 1. Kiến trúc tổng thể
+# ============================================================ 1. Kiến trúc tổng thể 4 tầng
 def fig_architecture() -> None:
-    fig, ax = _blank((11.6, 7.6), top=0.90)
-    _title(fig, "Kiến trúc tổng thể hệ thống",
-           "Bốn tầng: phần cứng · model AI · điều phối và web backend · giao diện người dùng")
+    fig, ax = _blank((8.2, 8.6))
 
-    BH = 0.108          # chiều cao hộp trong một dải
-    GAP = 0.050         # khe giữa hai dải (đủ chỗ cho mũi tên + nhãn)
-    H = 0.196           # chiều cao một dải
-    Y4 = 0.055
+    H = 0.205
+    GAP = 0.052
+    Y4 = 0.012
     Y3 = Y4 + H + GAP
     Y2 = Y3 + H + GAP
     Y1 = Y2 + H + GAP
 
-    # ---- tầng 1
-    _band(ax, Y1, H, "TẦNG 1 — PHẦN CỨNG")
-    cells = [
-        (0.02, 0.225, "Camera IP (RTSP)\nluồng phụ 704×576 @ 20 fps\nHEVC · có PTZ · có loa"),
-        (0.26, 0.225, "Raspberry Pi 4 Model B\n4 GB RAM · Trixie aarch64\nPython 3.13.5"),
-        (0.50, 0.225, "GPIO qua gpiozero\n3 LED · buzzer · mô-tơ rung"),
-        (0.74, 0.24, "Thẻ nhớ / đĩa\nSQLite — không lưu ảnh, video"),
+    BH = 0.135
+
+    # Tầng 1: Phần cứng
+    _band(ax, Y1, H, "TẦNG 1: PHẦN CỨNG & LƯU TRỮ BIÊN", label_color=C_BLUE)
+    t1 = [
+        (0.02, 0.31, "Camera IP (RTSP / ONVIF)\nLuồng phụ 704×576 @ 20 fps\nHEVC · Loa tích hợp · PTZ"),
+        (0.345, 0.31, "Raspberry Pi 4 Model B\n4 GB RAM · Trixie aarch64\nPython 3.13.5 (không GPU)"),
+        (0.67, 0.31, "Ngoại vi & Thẻ nhớ\nGPIO (3 LED, còi, rung)\nSQLite WAL (không lưu ảnh)"),
     ]
-    for x, w, t in cells:
-        _box(ax, x, Y1 + 0.016, w, BH, t, fc=C_BLUE_L, ec=C_BLUE, fs=8.4)
+    for x, w, txt in t1:
+        _box(ax, x, Y1 + 0.015, w, BH, txt, fc=C_BLUE_L, ec=C_BLUE, fs=11.0, weight="bold")
 
-    # ---- tầng 2
-    _band(ax, Y2, H, "TẦNG 2 — MODEL AI (chạy trên Pi, không GPU)")
-    cells = [
-        (0.02, 0.245, "YOLO11n-pose · NCNN · imgsz 320\n17 keypoint COCO + track id\n→ PoseResult"),
-        (0.28, 0.245, "YOLO11n detect · NCNN\nlớp 67 “cell phone”\n→ PhoneDetector"),
-        (0.54, 0.22, "YuNet 228 KB\nphát hiện khuôn mặt"),
-        (0.78, 0.20, "SFace 37 MB\nembedding 128 chiều\n→ MATCH / MISMATCH / UNKNOWN"),
+    # Tầng 2: Model AI
+    _band(ax, Y2, H, "TẦNG 2: MÔ HÌNH AI PRETRAINED TRÊN CPU BIÊN", label_color=C_GREEN)
+    t2 = [
+        (0.02, 0.305, "YOLO11n-pose (NCNN @320)\n17 khớp xương + track id\nChạy mỗi khung hình", 10.8),
+        (0.34, 0.305, "YOLO11n detect (NCNN @320)\nLớp 67 'cell phone'\nChạy 1/2 khung + lọc vai", 10.8),
+        (0.66, 0.32, "YuNet + SFace (ONNX)\nVector 128 chiều (mỗi 2 s)\nMATCH · MISMATCH · UNKNOWN", 10.2),
     ]
-    for x, w, t in cells:
-        _box(ax, x, Y2 + 0.016, w, BH, t, fc=C_GREEN_L, ec=C_GREEN, fs=8.4)
+    for x, w, txt, fsize in t2:
+        _box(ax, x, Y2 + 0.015, w, BH, txt, fc=C_GREEN_L, ec=C_GREEN, fs=fsize, weight="bold")
 
-    # ---- tầng 3
-    _band(ax, Y3, H, "TẦNG 3 — ĐIỀU PHỐI VÀ WEB BACKEND (Flask 3.1.3)")
-    cells = [
-        (0.02, 0.175, "Hợp tín hiệu\npresence · phone\nidentity"),
-        (0.21, 0.175, "Phiên học\nStudySession\n+ schedule"),
-        (0.40, 0.175, "SpeakerAlerter\nloa camera\nPCMA 8 kHz"),
-        (0.59, 0.155, "Storage\nSQLite 3 bảng\n+ faces.json"),
-    ]
-    for x, w, t in cells:
-        _box(ax, x, Y3 + 0.016, w, BH, t, fc=C_AMBER_L, ec=C_AMBER, fs=8.4)
-    _box(ax, 0.76, Y3 + 0.016, 0.22, BH,
-         "DashboardState\nkhe hẹp duy nhất\ngiữa vòng lặp và web",
-         fc=C_RED_L, ec=C_RED, fs=8.4)
+    # Tầng 3: Điều phối miền & Khe hẹp
+    _band(ax, Y3, H, "TẦNG 3: ĐIỀU PHỐI NGHIỆP VỤ & KHE HẸP TRẠNG THÁI", label_color=C_AMBER)
+    _box(
+        ax, 0.02, Y3 + 0.015, 0.32, BH,
+        "Nghiệp vụ (domain/)\nPresence · Phiên học 2 lớp\nPeopleService · SignalBoard",
+        fc=C_AMBER_L, ec=C_AMBER, fs=11.0, weight="bold",
+    )
+    _box(
+        ax, 0.355, Y3 + 0.015, 0.29, BH,
+        "Cảnh báo (alerts/)\nLoa camera PCMA 8 kHz\n3 tầng giọng đọc + GPIO",
+        fc=C_AMBER_L, ec=C_AMBER, fs=11.0, weight="bold",
+    )
+    _box(
+        ax, 0.66, Y3 + 0.015, 0.32, BH,
+        "DashboardState (RAM)\nKhe hẹp đồng bộ duy nhất\ngiữa vòng lặp AI & Flask",
+        fc=C_RED_L, ec=C_RED, fs=11.0, weight="bold",
+    )
 
-    # ---- tầng 4
-    _band(ax, Y4, H, "TẦNG 4 — GIAO DIỆN NGƯỜI DÙNG (LAN)")
-    cells = [
-        (0.02, 0.29, "Dashboard “/”\nMJPEG /stream · 3 thẻ tín hiệu\nthẻ phiên học · 4 nút PTZ"),
-        (0.325, 0.29, "JSON API (22 route)\n/api/status · /api/signals\n/api/people · /api/session …"),
-        (0.63, 0.35, "Điện thoại trong WiFi\nTắt tiếng · hiệu chỉnh · thêm người\nchọn người · chọn giọng đọc"),
-    ]
-    for x, w, t in cells:
-        _box(ax, x, Y4 + 0.016, w, BH, t, fc=C_GREY_L, ec=C_GREY, fs=8.4)
+    # Tầng 4: Giao diện người dùng LAN
+    _band(ax, Y4, H, "TẦNG 4: DỊCH VỤ FLASK :8000 & ĐA GIAO DIỆN MẠNG LAN", label_color=C_GREY)
+    _box(
+        ax, 0.02, Y4 + 0.015, 0.465, BH,
+        "Web Dashboard (HTML/JS Offline-first)\nLuồng MJPEG /stream · 24 route HTTP\nQuét 5 góc mặt · Phiên học · PTZ",
+        fc=C_GREY_L, ec=C_GREY, fs=11.0, weight="bold",
+    )
+    _box(
+        ax, 0.505, Y4 + 0.015, 0.475, BH,
+        "Ứng dụng Di động (React Native / Expo 58)\nNocturne Telemetry · 6 tab điều hướng\nTab Camera gộp 3 Tín hiệu + Tư thế",
+        fc=C_GREY_L, ec=C_GREY, fs=11.0, weight="bold",
+    )
 
-    # ---- mũi tên giữa các tầng
-    gap1 = (Y1, Y2 + H)
-    mid = (gap1[0] + gap1[1]) / 2
-    _arrow(ax, (0.255, gap1[0]), (0.255, gap1[1]), color=C_BLUE, lw=1.8)
-    ax.text(0.266, mid, "khung BGR 640×480 · xả đệm, giữ khung mới nhất",
-            fontsize=7.6, color=C_BLUE, va="center")
+    # Mũi tên giữa các tầng (rõ ràng, không đè chữ)
+    m12 = (Y1 + Y2 + H) / 2
+    _arrow(ax, (0.18, Y1), (0.18, Y2 + H), color=C_BLUE, lw=2.2)
+    _pill_label(ax, 0.52, m12, "Khung BGR 704×576 (xả đệm 30 ms, giữ khung mới nhất)", color=C_BLUE, ec=C_BLUE)
 
-    gap2 = (Y2, Y3 + H)
-    mid = (gap2[0] + gap2[1]) / 2
-    for x in (0.36, 0.60, 0.86):
-        _arrow(ax, (x, gap2[0]), (x, gap2[1]), color=C_GREEN, lw=1.4)
-    ax.text(0.03, mid, "keypoint · hộp điện thoại · embedding (không phải ảnh)",
-            fontsize=7.4, color=C_GREEN, va="center")
+    m23 = (Y2 + Y3 + H) / 2
+    _arrow(ax, (0.18, Y2), (0.18, Y3 + H), color=C_GREEN, lw=2.2)
+    _arrow(ax, (0.82, Y2), (0.82, Y3 + H), color=C_GREEN, lw=2.2)
+    _pill_label(ax, 0.50, m23, "Tọa độ khớp xương · Hộp điện thoại · Vector 128D", color=C_GREEN, ec=C_GREEN)
 
-    gap3 = (Y3, Y4 + H)
-    mid = (gap3[0] + gap3[1]) / 2
-    _arrow(ax, (0.87, gap3[0]), (0.87, gap3[1]), color=C_RED, lw=1.8)
-    ax.text(0.884, mid, "JSON + JPEG", fontsize=7.4, color=C_RED, va="center")
-    _arrow(ax, (0.62, gap3[1]), (0.80, gap3[0]), color=C_RED, lw=1.3, ls="--", rad=-0.25)
-    ax.text(0.30, mid, "lệnh: bắt đầu / dừng phiên · PTZ · tắt tiếng · thêm người",
-            fontsize=7.4, color=C_RED, va="center")
+    m34 = (Y3 + Y4 + H) / 2
+    _arrow(ax, (0.82, Y3), (0.82, Y4 + H), color=C_RED, lw=2.2)
+    _arrow(ax, (0.18, Y4 + H), (0.18, Y3), color=C_RED, lw=2.0, ls="--")
+    _pill_label(ax, 0.50, m34, "JSON + MJPEG / JPEG  ↔  Lệnh phiên học, PTZ, tắt tiếng", color=C_RED, ec=C_RED)
 
     _save(fig, "01-kien-truc-tong-the.png")
 
 
-# ============================================================ 2. Luồng xử lý AI
+# ============================================================ 2. Luồng xử lý AI (Bố cục dọc 3 nhánh lớn)
 def fig_ai_pipeline() -> None:
-    fig, ax = _blank((11.6, 5.6), top=0.86)
-    _title(fig, "Luồng xử lý một khung hình qua tầng AI",
-           "Mỗi model có chu kỳ riêng để giữ ngân sách thời gian; kết quả là ba tín hiệu, không phải ảnh")
+    fig, ax = _blank((8.2, 7.4))
 
-    yc = 0.55
-    row = 0.20
+    # Hàng 1: Nguồn khung hình
+    _box(
+        ax, 0.04, 0.855, 0.92, 0.125,
+        "Luồng thu nhận RTSP (camera/capture.py)\nKhung thật 704×576 @ 20 fps · Vòng xả grab() > 30 ms giữ khung mới nhất",
+        fc=C_BLUE_L, ec=C_BLUE, fs=11.4, weight="bold",
+    )
 
-    _box(ax, 0.010, yc - 0.145, 0.145, 0.29,
-         "CaptureThread\n(RTSP)\n\nxả đệm,\ngiữ khung\nmới nhất",
-         fc=C_BLUE_L, ec=C_BLUE, fs=8.2)
-
-    models = [
-        (yc + row, "PoseEstimator\nYOLO11n-pose · NCNN\nchạy MỖI khung"),
-        (yc, "PhoneDetector\nYOLO11n detect · NCNN\nchạy 1/2 khung"),
-        (yc - row, "FaceWorker\nYuNet + SFace\nluồng riêng, mỗi 2 s"),
+    # Hàng 2: 3 Nhánh AI song song (mỗi cột rộng 30.5% -> chữ rất to!)
+    cols = [
+        (0.02, "PoseEstimator\nYOLO11n-pose (NCNN)\nChạy MỖI KHUNG",
+         "Kiểm tra hiện diện\n≥ 2/7 khớp thân trên\n+ khóa track id (120 s)"),
+        (0.347, "PhoneDetector\nYOLO11n detect (NCNN)\nChạy 1/2 KHUNG (TTL 0,5s)",
+         "Lọc nhầm gọng kính\nKhoảng cách cổ tay\n≤ 1,0 × bề rộng vai"),
+        (0.674, "FaceProcessor\nYuNet + SFace (ONNX)\nChạy MỖI 2,0 GIÂY",
+         "So khớp Cosine 128D\n3 trạng thái: MATCH /\nMISMATCH / UNKNOWN"),
     ]
-    for y, t in models:
-        _box(ax, 0.185, y - 0.072, 0.165, 0.144, t, fc=C_GREEN_L, ec=C_GREEN, fs=8.2)
+    for x, m_txt, r_txt in cols:
+        _box(ax, x, 0.625, 0.306, 0.155, m_txt, fc=C_GREEN_L, ec=C_GREEN, fs=11.2, weight="bold")
+        _box(ax, x, 0.415, 0.306, 0.155, r_txt, fc=C_GREY_L, ec=C_GREY, fs=11.0, weight="bold")
+        cx = x + 0.153
+        _arrow(ax, (0.50, 0.855), (cx, 0.782), color=C_BLUE, lw=2.0)
+        _arrow(ax, (cx, 0.625), (cx, 0.572), color=C_GREEN, lw=2.0)
+        _arrow(ax, (cx, 0.415), (0.50, 0.342), color=C_AMBER, lw=2.0)
 
-    outs = [
-        (yc + row, "Đặc trưng hình học\nvai · mũi · tai · hướng đầu"),
-        (yc, "Quy tắc “chạm”\ncổ tay 9/10 trong hộp lớp 67"),
-        (yc - row, "FaceMatcher\ncosine với gallery"),
-    ]
-    for y, t in outs:
-        _box(ax, 0.375, y - 0.072, 0.185, 0.144, t, fc=C_GREY_L, ec=C_GREY, fs=8.2)
+    # Hàng 3: Bảng hợp nhất tín hiệu + Cổng 2 lớp
+    _box(
+        ax, 0.04, 0.20, 0.44, 0.14,
+        "SignalBoard (Hợp nhất 3 tín hiệu)\nCó mặt · Điện thoại · Danh tính\n(Kèm tuổi dữ liệu age_s & cờ fresh)",
+        fc=C_AMBER_L, ec=C_AMBER, fs=11.2, weight="bold",
+    )
+    _box(
+        ax, 0.52, 0.20, 0.44, 0.14,
+        "Cổng phiên học hai lớp (AND)\n1) StudySession == running\n2) Trong khung giờ schedule",
+        fc=C_RED_L, ec=C_RED, fs=11.2, weight="bold",
+    )
+    _arrow(ax, (0.482, 0.27), (0.518, 0.27), color=C_RED, lw=2.2)
 
-    _box(ax, 0.585, yc - 0.145, 0.155, 0.29,
-         "Hợp tín hiệu\n\ncó mặt / vắng mặt\nđang dùng điện thoại\nđúng người / người lạ",
-         fc=C_AMBER_L, ec=C_AMBER, fs=8.2)
-
-    _box(ax, 0.765, yc - 0.145, 0.10, 0.29,
-         "Cổng\nhai lớp\n\n1) StudySession\n2) schedule",
-         fc=C_RED_L, ec=C_RED, fs=8.2)
-
-    _box(ax, 0.885, yc + 0.055, 0.10, 0.09, "Loa camera\nPCMA", fc=C_RED_L, ec=C_RED, fs=8.2)
-    _box(ax, 0.885, yc - 0.145, 0.10, 0.09, "SQLite\nsự kiện", fc=C_RED_L, ec=C_RED, fs=8.2)
-
-    for y in (yc + row, yc, yc - row):
-        _arrow(ax, (0.156, yc), (0.185, y), color=C_BLUE, lw=1.3,
-               rad=0.12 if y != yc else 0.0)
-        _arrow(ax, (0.351, y), (0.375, y), color=C_GREEN, lw=1.3)
-        _arrow(ax, (0.561, y), (0.585, yc), color=C_AMBER, lw=1.3,
-               rad=0.10 if y > yc else (-0.10 if y < yc else 0.0))
-    _arrow(ax, (0.741, yc), (0.765, yc), color=C_RED, lw=1.5)
-    _arrow(ax, (0.866, yc + 0.06), (0.885, yc + 0.10), color=C_RED, lw=1.5)
-    _arrow(ax, (0.866, yc - 0.06), (0.885, yc - 0.10), color=C_RED, lw=1.5)
-
-    ax.text(0.5, 0.045,
-            "Chu kỳ khác nhau là quyết định thiết kế: pose cần tín hiệu tươi nhất; đường ống "
-            "khuôn mặt tốn 86,1 ms/lượt\nnên không thể chạy mỗi khung; detect điện thoại chạy "
-            "cách khung để tiết kiệm CPU.",
-            ha="center", va="center", fontsize=8.6, color=C_GREY,
-            bbox=dict(boxstyle="round,pad=0.5", fc=C_BAND, ec="#cbd5e1"))
+    # Hàng 4: Đầu ra
+    _box(
+        ax, 0.04, 0.02, 0.44, 0.12,
+        "Web Dashboard & App Di động\nCập nhật qua DashboardState (RAM)",
+        fc=C_BLUE_L, ec=C_BLUE, fs=11.2, weight="bold",
+    )
+    _box(
+        ax, 0.52, 0.02, 0.44, 0.12,
+        "Phát Loa Camera (PCMA 8 kHz)\n& Ghi lô SQLite WAL (10 giây)",
+        fc=C_RED_L, ec=C_RED, fs=11.2, weight="bold",
+    )
+    _arrow(ax, (0.26, 0.20), (0.26, 0.142), color=C_BLUE, lw=2.0)
+    _arrow(ax, (0.74, 0.20), (0.74, 0.142), color=C_RED, lw=2.0)
 
     _save(fig, "02-luong-xu-ly-ai.png")
 
 
 # ============================================================ 3. Ngân sách thời gian
 def fig_time_budget() -> None:
-    fig, ax = plt.subplots(figsize=(10.6, 4.6))
-    fig.subplots_adjust(left=0.36, right=0.97, bottom=0.20, top=0.82)
-    _title(fig, "Ngân sách thời gian một khung hình trên Raspberry Pi 4",
-           "Các cột là số ĐÃ ĐO (SPEC_V2 §14, SPEC_V3 §4.2); đường nét đứt 200 ms là ngưỡng để đạt 5 FPS")
+    fig, ax = plt.subplots(figsize=(8.0, 4.9))
+    fig.subplots_adjust(left=0.36, right=0.97, bottom=0.25, top=0.93)
 
     rows = [
-        ("Capture RTSP\n(khung thật 704×576)", 65.93, C_BLUE, "đo · p50"),
-        ("Pose — trọn đường ống\n(suy luận bên trong: 100,51 ms)", 133.32, C_GREEN, "đo · p50"),
-        ("Đường ống khuôn mặt\n(thu nhỏ + CLAHE + YuNet + SFace)", 86.1, C_AMBER, "đo · mỗi lượt"),
-        ("Detect điện thoại\n(một lần suy luận)", 98.6, C_RED, "đo trên khung tổng hợp"),
+        ("Đọc RTSP\n(khung 704×576)", 65.93, C_BLUE, "65,9 ms (ĐÃ ĐO)"),
+        ("Trọn nhánh Pose\n(suy luận: 100,5 ms)", 133.32, C_GREEN, "133,3 ms (ĐÃ ĐO)"),
+        ("Nhánh Khuôn mặt\n(YuNet + SFace)", 86.1, C_AMBER, "86,1 ms / lượt"),
+        ("Detect Điện thoại\n(NCNN @320)", 98.6, C_RED, "98,6 ms / lượt"),
     ]
 
-    ax.set_xlim(0, 275)
-    ax.set_ylim(-0.7, len(rows) - 0.3)
+    ax.set_xlim(0, 290)
+    ax.set_ylim(-0.6, len(rows) - 0.35)
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels([name for name, *_ in rows], fontsize=8.4)
-    ax.set_xlabel("thời gian (ms)", fontsize=9)
-    ax.grid(axis="x", color="#dde2e9", lw=0.8)
+    ax.set_yticklabels([name for name, *_ in rows], fontsize=11.5, fontweight="bold", color=C_INK)
+    ax.tick_params(axis="x", labelsize=11.2)
+    ax.set_xlabel("Thời gian xử lý (ms)", fontsize=12.0, fontweight="bold", color=C_INK)
+    ax.grid(axis="x", color="#cbd5e1", lw=0.9)
     ax.set_axisbelow(True)
     for spine in ("top", "right", "left"):
         ax.spines[spine].set_visible(False)
 
-    for i, (name, value, color, tag) in enumerate(rows):
-        ax.barh(i, value, height=0.5, color=color, alpha=0.85)
-        ax.text(value + 3, i, f"{value:.1f} ms · {tag}", va="center", fontsize=8.2,
-                color=C_INK)
+    for i, (_, value, color, tag) in enumerate(rows):
+        ax.barh(i, value, height=0.54, color=color, alpha=0.90)
+        ax.text(value + 4, i, tag, va="center", fontsize=11.0, fontweight="bold", color=C_INK)
 
-    ax.axvline(200, color=C_RED, ls="--", lw=1.4)
-    ax.text(203, len(rows) - 0.62, "ngân sách 200 ms → 5 FPS", color=C_RED,
-            fontsize=8.2, va="center")
+    ax.axvline(200, color=C_RED, ls="--", lw=2.0)
+    ax.text(
+        205, len(rows) - 0.35, "Ngưỡng 200 ms\n(5,0 FPS)",
+        color=C_RED, fontsize=11.0, fontweight="bold", ha="left", va="top",
+        bbox=dict(boxstyle="round,pad=0.25", fc="white", ec=C_RED, lw=1.0),
+    )
 
-    fig.text(0.012, 0.055,
-             "Ghép ba dòng đầu (TÍNH TỪ ĐO): 65,93 + 133,32 + 49,3 = 248,55 ms → 4,02 FPS, tức CHƯA đạt 5 FPS.\n"
-             "Cấu hình ba model chạy đồng thời vẫn CHƯA ĐO trọn một lần; phép đo pipeline thật duy nhất của dự án "
-             "là pose-only 5,02 FPS.",
-             fontsize=8.0, color=C_GREY, va="bottom", linespacing=1.6)
+    fig.text(
+        0.02, 0.02,
+        "• Chỉ bật Pose (ĐÃ ĐO): 65,93 + 133,32 = 199,25 ms → 5,02 FPS.\n"
+        "• Ghép thêm Detect 1/2 khung (TÍNH TỪ ĐO): 199,25 + 49,30 = 248,55 ms → 4,02 FPS (chưa đạt 5 FPS).",
+        fontsize=10.6, fontweight="bold", color=C_GREY, va="bottom", linespacing=1.45,
+    )
 
     _save(fig, "03-ngan-sach-thoi-gian.png")
 
@@ -323,190 +383,334 @@ def fig_fps_runs() -> None:
     labels = ["12 s", "20 s", "20 s", "30 s", "40 s", "45 s", "60 s", "60 s"]
     values = [5.006, 5.085, 4.985, 5.015, 3.929, 3.833, 4.207, 5.019]
 
-    fig, ax = plt.subplots(figsize=(8.8, 4.2))
-    fig.subplots_adjust(left=0.09, right=0.98, bottom=0.16, top=0.80)
-    _title(fig, "Tám lần đo FPS pipeline trên Raspberry Pi 4 (chỉ pose)",
-           "Cùng build, cùng camera, ngày 28/10/2026 — nguồn: docs/SPEC_V2.md §14")
+    fig, ax = plt.subplots(figsize=(8.0, 4.6))
+    fig.subplots_adjust(left=0.10, right=0.98, bottom=0.22, top=0.92)
 
-    colors = [C_GREEN if v >= 5 else C_AMBER for v in values]
-    bars = ax.bar(range(len(values)), values, color=colors, width=0.6)
-    ax.axhline(5.0, color=C_RED, ls="--", lw=1.4)
-    ax.text(3.9, 5.17, "mục tiêu 5 FPS (đường nét đứt)", color=C_RED, fontsize=8.4,
-            ha="left", va="center")
+    colors = [C_GREEN if v >= 5.0 else C_AMBER for v in values]
+    bars = ax.bar(range(len(values)), values, color=colors, width=0.58)
+    ax.axhline(5.0, color=C_RED, ls="--", lw=2.0)
+    ax.text(
+        4.35, 5.19, "Mục tiêu 5,0 FPS", color=C_RED, fontsize=11.5, fontweight="bold",
+        ha="center", va="center", bbox=dict(boxstyle="round,pad=0.22", fc="white", ec=C_RED, lw=1.0),
+    )
 
     for rect, v in zip(bars, values):
-        ax.text(rect.get_x() + rect.get_width() / 2, v + 0.03, f"{v:.2f}",
-                ha="center", fontsize=8.2, color=C_INK)
+        ax.text(
+            rect.get_x() + rect.get_width() / 2,
+            v + 0.035,
+            f"{v:.2f}".replace(".", ","),
+            ha="center",
+            fontsize=11.2,
+            fontweight="bold",
+            color=C_INK,
+        )
 
     ax.set_xticks(range(len(values)))
-    ax.set_xticklabels(labels, fontsize=9)
-    ax.set_xlabel("thời lượng mỗi lần chạy", fontsize=9, labelpad=4)
-    ax.set_ylabel("FPS", fontsize=9)
-    ax.set_ylim(3.4, 5.32)
-    ax.grid(axis="y", color="#dde2e9", lw=0.8)
+    ax.set_xticklabels(labels, fontsize=11.5, fontweight="bold")
+    ax.tick_params(axis="y", labelsize=11.2)
+    ax.set_xlabel("Thời lượng mỗi lượt đo trên Raspberry Pi 4", fontsize=11.8, fontweight="bold", labelpad=6)
+    ax.set_ylabel("Tốc độ (FPS)", fontsize=11.8, fontweight="bold")
+    ax.set_ylim(3.4, 5.38)
+    ax.grid(axis="y", color="#cbd5e1", lw=0.9)
     ax.set_axisbelow(True)
     for spine in ("top", "right"):
         ax.spines[spine].set_visible(False)
 
-    fig.text(0.09, 0.028,
-             "4/8 lần đạt ≥ 5 FPS · trung vị ≈ 4,96 FPS  →  kết luận trong tài liệu: chưa đạt ổn định",
-             fontsize=8.6, color=C_GREY)
+    fig.text(
+        0.50, 0.02,
+        "Kết quả: 4/8 lượt đạt ≥ 5,0 FPS · Trung vị ≈ 4,96 FPS (dao động sát biên 5 FPS)",
+        ha="center", fontsize=11.2, fontweight="bold", color=C_GREY,
+    )
 
     _save(fig, "04-fps-tam-lan-do.png")
 
 
-# ============================================================ 5. Kiến trúc web
+# ============================================================ 5. Kiến trúc tầng dịch vụ Web
 def fig_web() -> None:
-    fig, ax = _blank((11.4, 5.8), top=0.87)
-    _title(fig, "Kiến trúc tầng web: một khe hẹp giữa vòng lặp camera và Flask",
-           "DashboardState là cầu nối duy nhất — web không mở camera, vòng lặp không chạm Flask")
+    fig, ax = _blank((8.2, 6.8))
 
-    _box(ax, 0.010, 0.52, 0.215, 0.34,
-         "Trình duyệt\n(điện thoại / PC trong LAN)\n\n· thẻ <img> gắn /stream\n· fetch() JSON mỗi 1 giây",
-         fc=C_BLUE_L, ec=C_BLUE, fs=8.4)
+    # Hàng trên: Khách hàng LAN
+    _box(
+        ax, 0.02, 0.77, 0.45, 0.19,
+        "Trình duyệt Web (PC / Điện thoại)\nLuồng <img> /stream (MJPEG)\nFetch JSON mỗi 1,0 giây",
+        fc=C_BLUE_L, ec=C_BLUE, fs=11.4, weight="bold",
+    )
+    _box(
+        ax, 0.53, 0.77, 0.45, 0.19,
+        "Ứng dụng Di động (Expo SDK 58)\nWebView /stream + /api/frame (300 ms)\nusePoll 2,0 giây + AbortController",
+        fc=C_BLUE_L, ec=C_BLUE, fs=11.4, weight="bold",
+    )
 
-    _box(ax, 0.255, 0.52, 0.30, 0.34,
-         "Flask 3.1.3 — web/app.py\n\n"
-         "GET /  ·  GET /stream (MJPEG)\n"
-         "GET /api/status · /api/history · /api/signals\n"
-         "POST /api/session/start · /stop\n"
-         "GET·POST /api/people · /api/enroll · /api/select\n"
-         "GET·PUT /api/schedule · POST /api/ptz · /api/speak",
-         fc=C_GREEN_L, ec=C_GREEN, fs=7.8)
+    # Hàng giữa: Flask + DashboardState
+    _box(
+        ax, 0.02, 0.41, 0.52, 0.24,
+        "Máy chủ Flask 3.1.3 (web/routes/* - 24 route)\n"
+        "• core: /, /api/status, /api/mute, /api/history\n"
+        "• media: /stream, /api/frame  |  diagnostics: /ptz, /voice\n"
+        "• session: /api/session, /schedule, /violations\n"
+        "• people: /api/people, /enroll, /signals (scrub_biometrics)",
+        fc=C_GREEN_L, ec=C_GREEN, fs=10.6, weight="bold",
+    )
+    _box(
+        ax, 0.60, 0.41, 0.38, 0.24,
+        "DashboardState (RAM)\n(threading.Lock duy nhất)\n"
+        "• 1 khung JPEG mới nhất\n"
+        "• 7 khóa trạng thái + stale\n"
+        "• Cờ muted & hiệu chỉnh",
+        fc=C_RED_L, ec=C_RED, fs=11.2, weight="bold",
+    )
 
-    _box(ax, 0.585, 0.66, 0.40, 0.20,
-         "DashboardState (chỉ trong RAM)\nkhung JPEG mới nhất · trạng thái · muted\ncờ hiệu chỉnh · snapshot phiên học",
-         fc=C_RED_L, ec=C_RED, fs=8.2)
+    # Hàng dưới: MonitorRunner + SQLite
+    _box(
+        ax, 0.02, 0.05, 0.52, 0.23,
+        "Vòng lặp MonitorRunner (cli/monitor_runner.py)\n"
+        "Camera RTSP → Pose / Phone / Face → Loa PCMA\n"
+        "(Hoàn toàn không import Flask)",
+        fc=C_GREY_L, ec=C_GREY, fs=11.2, weight="bold",
+    )
+    _box(
+        ax, 0.60, 0.05, 0.38, 0.23,
+        "Lưu trữ bền vững trên đĩa\n"
+        "• SQLite WAL (3 bảng, lô 10 s)\n"
+        "• JSON nguyên tử: faces.json\n"
+        "  (Tuyệt đối không lưu ảnh)",
+        fc=C_AMBER_L, ec=C_AMBER, fs=11.0, weight="bold",
+    )
 
-    _box(ax, 0.585, 0.40, 0.40, 0.20,
-         "Storage (SQLite)\nsessions · events · minute_stats\npeople · face_embeddings",
-         fc=C_AMBER_L, ec=C_AMBER, fs=8.2)
+    # Mũi tên rõ ràng
+    _arrow(ax, (0.24, 0.77), (0.24, 0.652), color=C_BLUE, lw=2.0)
+    _arrow(ax, (0.75, 0.77), (0.44, 0.652), color=C_BLUE, lw=2.0)
+    _pill_label(ax, 0.34, 0.715, "HTTP / MJPEG (Mạng LAN)", color=C_BLUE, ec=C_BLUE)
 
-    _box(ax, 0.255, 0.07, 0.30, 0.34,
-         "Vòng lặp chính _monitor_loop\n(luồng riêng, ~5 FPS)\n\npose · detect điện thoại · khuôn mặt\nquyết định cảnh báo",
-         fc=C_GREY_L, ec=C_GREY, fs=8.4)
+    _arrow(ax, (0.542, 0.55), (0.598, 0.55), color=C_RED, lw=2.0)
+    _arrow(ax, (0.598, 0.50), (0.542, 0.50), color=C_RED, lw=2.0, ls="--")
 
-    _box(ax, 0.010, 0.07, 0.215, 0.34,
-         "Camera IP (RTSP)\n\ncapture + xả đệm\nluôn giữ khung mới nhất\n(không xếp hàng, không tăng trễ)",
-         fc=C_BLUE_L, ec=C_BLUE, fs=8.4)
+    _arrow(ax, (0.42, 0.282), (0.68, 0.408), color=C_RED, lw=2.2)
+    _pill_label(ax, 0.53, 0.345, "set_frame() · update()", color=C_RED, ec=C_RED)
 
-    _arrow(ax, (0.225, 0.72), (0.255, 0.72), color=C_GREY, lw=1.5)
-    _arrow(ax, (0.255, 0.64), (0.225, 0.64), color=C_GREY, lw=1.5)
-    ax.text(0.240, 0.775, "HTTP", fontsize=7.6, color=C_GREY, ha="center")
-
-    _arrow(ax, (0.555, 0.74), (0.585, 0.76), color=C_RED, lw=1.5)
-    _arrow(ax, (0.585, 0.70), (0.555, 0.68), color=C_RED, lw=1.5, ls="--")
-    ax.text(0.570, 0.700, "ghi/đọc", fontsize=7.4, color=C_RED, ha="center")
-
-    _arrow(ax, (0.555, 0.58), (0.585, 0.54), color=C_AMBER, lw=1.5)
-    ax.text(0.565, 0.545, "record()", fontsize=7.4, color=C_AMBER, ha="center")
-
-    _arrow(ax, (0.405, 0.41), (0.405, 0.52), color=C_GREEN, lw=1.8)
-    ax.text(0.415, 0.465, "set_frame() · update() · snapshot()", fontsize=7.6,
-            color=C_GREEN, va="center")
-
-    _arrow(ax, (0.225, 0.24), (0.255, 0.24), color=C_BLUE, lw=1.5)
-    ax.text(0.240, 0.28, "khung", fontsize=7.6, color=C_BLUE, ha="center")
-
-    ax.text(0.5, 0.012,
-            "Khung hình chỉ tồn tại trong RAM: không ghi đĩa, không lưu lịch sử, "
-            "không route nào trả ảnh hay vector khuôn mặt.",
-            ha="center", fontsize=8.6, color=C_GREY, style="italic")
+    _arrow(ax, (0.542, 0.165), (0.598, 0.165), color=C_AMBER, lw=2.0)
+    _arrow(ax, (0.79, 0.282), (0.46, 0.408), color=C_AMBER, lw=1.8, ls="--")
 
     _save(fig, "05-kien-truc-web.png")
 
 
-# ============================================================ 6. Luồng sử dụng web
+# ============================================================ 6. Vòng đời phiên học (Bố cục 2 hàng lớn)
 def fig_web_flow() -> None:
-    fig, ax = _blank((11.4, 4.4), top=0.84)
-    _title(fig, "Một vòng đời sử dụng trên dashboard",
-           "Mở trang → xem camera → bấm Bắt đầu học → theo dõi mỗi giây → dừng hoặc hết giờ")
+    fig, ax = _blank((8.2, 5.6))
 
-    steps = [
-        ("1 · Mở trang", "GET /\ntrả HTML + CSS/JS\nnội bộ, không CDN"),
-        ("2 · Xem camera", "GET /stream\nMJPEG từ khung\nmới nhất trong RAM"),
-        ("3 · Bắt đầu", "POST /api/session/start\n{\"minutes\": 60}\n→ model AI chạy"),
-        ("4 · Theo dõi", "GET /api/signals mỗi 1 s\ntuổi tín hiệu · cảnh báo\nloa tự phát"),
-        ("5 · Kết thúc", "POST /api/session/stop\nhoặc hết giờ → dừng\nmodel, ghi SQLite"),
+    # Hàng 1: Bước 1 -> 2 -> 3
+    row1 = [
+        (0.02, "1. Mở giao diện", "GET / hoặc mở App\nTải tài nguyên nội bộ\nkhông cần Internet"),
+        (0.355, "2. Chỉnh góc & Chọn người", "Xem /stream trực tiếp\nXoay PTZ · Nhận diện\nsẵn người ngồi (2 s/lần)"),
+        (0.69, "3. Bắt đầu phiên học", "POST /api/session/start\nBật cổng hai lớp → Kích\nhoạt Pose & Phone AI"),
     ]
-    w, gap = 0.172, 0.021
-    for i, (head, body) in enumerate(steps):
-        x = 0.014 + i * (w + gap)
-        _box(ax, x, 0.46, w, 0.32, f"{head}\n\n{body}", fc=C_BLUE_L, ec=C_BLUE, fs=8.0)
-        if i < len(steps) - 1:
-            _arrow(ax, (x + w + 0.004, 0.62), (x + w + gap - 0.004, 0.62), color=C_GREY)
+    for x, head, body in row1:
+        _box(ax, x, 0.60, 0.29, 0.34, f"{head}\n\n{body}", fc=C_BLUE_L, ec=C_BLUE, fs=11.2, weight="bold")
 
-    ax.text(0.5, 0.20,
-            "Hai cổng phải cùng mở thì cảnh báo mới phát: StudySession (bấm tay) VÀ schedule (khung giờ học).\n"
-            "Ngoài phiên, pose và dò điện thoại KHÔNG chạy — nhưng camera và nhận diện khuôn mặt vẫn chạy.",
-            ha="center", va="center", fontsize=8.6, color=C_GREY,
-            bbox=dict(boxstyle="round,pad=0.55", fc=C_BAND, ec="#cbd5e1"))
+    _arrow(ax, (0.312, 0.77), (0.353, 0.77), color=C_BLUE, lw=2.2)
+    _arrow(ax, (0.647, 0.77), (0.688, 0.77), color=C_BLUE, lw=2.2)
+
+    # Hàng 2: Bước 4 & Bước 5 + Ghi chú cổng 2 lớp
+    _box(
+        ax, 0.52, 0.16, 0.46, 0.32,
+        "4. Giám sát trong phiên\nHỏi /api/signals mỗi 1-2 giây · Đủ hold_s\n→ Phát loa camera PCMA & ghi SQLite",
+        fc=C_GREEN_L, ec=C_GREEN, fs=11.3, weight="bold",
+    )
+    _box(
+        ax, 0.02, 0.16, 0.44, 0.32,
+        "5. Kết thúc phiên học\nHết giờ (báo loa đúng 1 lần) hoặc bấm Dừng\n→ Tắt Pose/Phone AI, xóa sạch bộ đếm",
+        fc=C_AMBER_L, ec=C_AMBER, fs=11.3, weight="bold",
+    )
+    _arrow(ax, (0.835, 0.60), (0.835, 0.485), color=C_GREEN, lw=2.2)
+    _arrow(ax, (0.518, 0.32), (0.462, 0.32), color=C_AMBER, lw=2.2)
+
+    ax.text(
+        0.50, 0.055,
+        "Cổng hai lớp: Chỉ phát cảnh báo khi (StudySession đang mở) VÀ (nằm trong lịch học schedule).",
+        ha="center", va="center", fontsize=11.2, fontweight="bold", color=C_RED,
+        bbox=dict(boxstyle="round,pad=0.38", fc=C_RED_L, ec=C_RED, lw=1.2),
+    )
 
     _save(fig, "06-luong-su-dung-web.png")
 
 
-# ============================================================ 7. Sơ đồ đấu dây
+# ============================================================ 7. Sơ đồ đấu dây GPIO
 def fig_wiring() -> None:
-    fig, ax = _blank((10.8, 5.6), top=0.87)
-    _title(fig, "Nhóm GPIO mặc định (số chân BCM)",
-           "Kênh cảnh báo chính của đồ án là loa camera; nhóm này là kênh phụ, mặc định chỉ đổi LED")
+    fig, ax = _blank((8.2, 5.8))
 
-    _box(ax, 0.03, 0.14, 0.30, 0.66,
-         "Raspberry Pi 4\n40 chân GPIO\n\nlogic 3,3 V\n\n"
-         "CHÚ Ý: ECHO của HC-SR04\nlà 5 V — bắt buộc\nchia áp trước khi nối",
-         fc=C_GREEN_L, ec=C_GREEN, fs=8.8)
+    _box(
+        ax, 0.02, 0.14, 0.31, 0.82,
+        "Raspberry Pi 4\nHàng rào 40 chân\n(Logic 3,3 V)\n\n"
+        "Thư viện: gpiozero\n(+ MockFactory)\n\n"
+        "CẢNH BÁO ĐIỆN ÁP:\nChân ECHO là 5 V,\nbắt buộc chia áp\n1 kΩ + 2 kΩ!",
+        fc=C_GREEN_L, ec=C_GREEN, fs=11.4, weight="bold",
+    )
 
     pins = [
-        ("GPIO17", "LED xanh — GOOD", "điện trở 220–330 Ω", C_GREEN, 0.695),
-        ("GPIO27", "LED vàng — WARN", "điện trở 220–330 Ω", C_AMBER, 0.585),
-        ("GPIO22", "LED đỏ — BAD", "điện trở 220–330 Ω", C_RED, 0.475),
-        ("GPIO18", "Buzzer chủ động", "qua transistor NPN nếu dòng lớn", C_GREY, 0.365),
-        ("GPIO23", "Mô-tơ rung", "NPN + diode flyback", C_GREY, 0.255),
-        ("GPIO5 · GPIO6", "HC-SR04 TRIG · ECHO", "chia áp 5 V → 3,3 V", C_BLUE, 0.145),
+        ("GPIO 17", "LED Xanh (GOOD) · nối trở 220–330 Ω", C_GREEN, 0.84),
+        ("GPIO 27", "LED Vàng (WARN) · nối trở 220–330 Ω", C_AMBER, 0.70),
+        ("GPIO 22", "LED Đỏ (BAD) · nối trở 220–330 Ω", C_RED, 0.56),
+        ("GPIO 18", "Còi Buzzer chủ động (qua NPN)", C_GREY, 0.42),
+        ("GPIO 23", "Mô-tơ rung (NPN + diode chống ngược)", C_GREY, 0.28),
+        ("GPIO 5 · 6", "Siêu âm HC-SR04 (Chia áp ECHO 5V→3,3V)", C_BLUE, 0.14),
     ]
-    for pin, device, note, color, y in pins:
-        _box(ax, 0.40, y, 0.145, 0.075, pin, fc="white", ec=color, fs=8.4, lw=1.4)
-        _box(ax, 0.565, y, 0.215, 0.075, device, fc="white", ec=color, fs=8.4)
-        ax.text(0.792, y + 0.037, note, fontsize=7.8, color=C_GREY, va="center")
-        _arrow(ax, (0.331, 0.47), (0.40, y + 0.037), color=color, lw=1.2, rad=0.04)
+    for pin, desc, color, y in pins:
+        _box(ax, 0.39, y, 0.16, 0.105, pin, fc="white", ec=color, fs=11.2, weight="bold", lw=1.8, color=color)
+        _box(ax, 0.565, y, 0.415, 0.105, desc, fc=C_BAND, ec=color, fs=10.8, weight="bold")
+        _arrow(ax, (0.332, 0.55), (0.388, y + 0.052), color=color, lw=1.7)
 
-    ax.text(0.03, 0.075,
-            "I²C (tuỳ chọn): SDA = GPIO2 · SCL = GPIO3 — OLED SSD1306 địa chỉ 0x3C",
-            fontsize=8.2, color=C_GREY)
+    ax.text(
+        0.50, 0.045,
+        "Ghi chú: Loa tích hợp trên Camera IP (RTSP Backchannel) là kênh âm thanh chính; cụm GPIO là kênh phụ trợ.",
+        ha="center", va="center", fontsize=10.8, fontweight="bold", color=C_GREY,
+    )
 
     _save(fig, "07-so-do-dau-day.png")
 
 
-# ============================================================ 8. Bản đồ module
+# ============================================================ 8. Bản đồ phân hệ (Lưới 2x2 chữ cực rõ)
 def fig_modules() -> None:
-    fig, ax = _blank((11.4, 3.1), top=0.74)
-    _title(fig, "Bản đồ module theo bốn phần của báo cáo",
-           "Mỗi phần ứng với một nhóm tệp trong src/posture_monitor/ — dùng làm mục lục kỹ thuật")
+    fig, ax = _blank((8.2, 5.8))
 
-    groups = [
-        ("MODEL AI", "pose.py · phone.py\nphone_detector.py · presence.py\nfaces.py · face_worker.py\n"
-                     "overlay.py · features.py\nclassifier.py · calibration.py",
-         C_GREEN, C_GREEN_L, 0.012),
-        ("WEB FE / BE", "web/app.py · web/templates\nweb/static · people_service.py\n"
-                        "study_session.py · schedule.py\nstorage.py · alerts.py", C_BLUE, C_BLUE_L, 0.262),
-        ("PHẦN CỨNG", "capture.py · camera_control.py\ncamera_audio.py · speaker_alert.py\n"
-                      "voice_library.py · sensors.py\nhardware/ (gpio_real, gpio_mock)",
-         C_AMBER, C_AMBER_L, 0.512),
-        ("VẬN HÀNH", "__main__.py (CLI 5 lệnh)\nconfig.py · benchmark.py\n"
-                     "scripts/ (3 công cụ)\ntests/ (54 tệp, 1496 bài)", C_GREY, C_GREY_L, 0.762),
+    cards = [
+        (
+            0.02, 0.52, C_GREEN, C_GREEN_L,
+            "1. TẦNG NỀN TẢNG & THỊ GIÁC AI",
+            "• core/: config, labels, atomic_io,\n  credentials (che mật khẩu), log_buffer\n"
+            "• vision/: yolo_loader (NCNN→ONNX→PT),\n  pose, phone_detector, phone, faces,\n  features, classifier, overlay",
+        ),
+        (
+            0.51, 0.52, C_BLUE, C_BLUE_L,
+            "2. NGHIỆP VỤ MIỀN & WEB BACKEND",
+            "• domain/: presence, study_session,\n  schedule, state, enrollment,\n  signal_board, people_service\n"
+            "• web/: app, context, DashboardState,\n  streaming, privacy, 5 mô-đun routes/*",
+        ),
+        (
+            0.02, 0.03, C_AMBER, C_AMBER_L,
+            "3. CAMERA, PHẦN CỨNG & LƯU TRỮ",
+            "• camera/: capture (RTSP), control (PTZ),\n  audio (RTP/PCMA 8 kHz backchannel)\n"
+            "• alerts/: speaker_alert, espeak_synth,\n  voice_library, gpio_dispatcher\n"
+            "• hardware/ (gpiozero) · storage/ (SQLite)",
+        ),
+        (
+            0.51, 0.03, C_GREY, C_GREY_L,
+            "4. LẮP RÁP CLI, MOBILE & KIỂM THỬ",
+            "• cli/: parser, monitor_runner, cmd_*,\n  benchmark/ (3 hồ sơ đo hiệu năng)\n"
+            "• apps/mobile/: Expo SDK 58 (6 tab)\n"
+            "• tests/: 10 thư mục, 60 tệp (1.662 bài)\n  + Mobile test/ (189 bài Node & UI)",
+        ),
     ]
-    for head, body, ec, fc, x in groups:
-        _box(ax, x, 0.03, 0.226, 0.80, "", fc=fc, ec=ec, lw=1.4)
-        ax.text(x + 0.113, 0.78, head, ha="center", va="center", fontsize=10.5,
-                fontweight="bold", color=ec)
-        ax.text(x + 0.113, 0.42, body, ha="center", va="center", fontsize=7.9,
-                color=C_INK, linespacing=1.75)
+
+    for x, y, ec, fc, head, body in cards:
+        w, h = 0.47, 0.45
+        _box(ax, x, y, w, h, "", fc=fc, ec=ec, lw=1.8)
+        ax.text(x + w / 2, y + h - 0.055, head, ha="center", va="center",
+                fontsize=12.0, fontweight="bold", color=ec, zorder=4)
+        ax.text(x + 0.025, y + (h - 0.08) / 2, body, ha="left", va="center",
+                fontsize=10.8, fontweight="bold", color=C_INK, linespacing=1.45, zorder=4)
 
     _save(fig, "08-ban-do-module.png")
 
 
+# ============================================================ 11. Bố cục & Kiến trúc App di động
+def fig_mobile_stitch() -> None:
+    fig, ax = _blank((8.2, 8.6))
+
+    # Cột trái: Màn hình điện thoại Nocturne Telemetry (rộng 47%)
+    px, py, pw, ph = 0.015, 0.02, 0.475, 0.96
+    _box(ax, px, py, pw, ph, "", fc="#0f141a", ec="#334155", lw=2.2)
+
+    ax.text(px + 0.025, py + ph - 0.045, "Camera & Trạng thái",
+            ha="left", va="center", fontsize=12.2, fontweight="bold", color="#f8fafc", zorder=4)
+    _box(ax, px + pw - 0.145, py + ph - 0.068, 0.125, 0.045, "● LIVE",
+         fc="#1b222b", ec="#34d399", fs=10.5, weight="bold", color="#34d399", zorder=4)
+
+    # Khối 1: Khung Camera 4:3
+    cy = py + ph - 0.285
+    _box(
+        ax, px + 0.02, cy, pw - 0.04, 0.195,
+        "Khung Camera 4:3\n[Trực tiếp: /stream] | [Tĩnh: /api/frame]\n■ Luồng MJPEG trực tiếp · 0,2 s",
+        fc="#171c22", ec="#60a5fa", fs=10.6, weight="bold", color="#e2e8f0", zorder=4,
+    )
+
+    # Khối 2: Cụm 3 Tín hiệu người học Bento 2+1
+    sy = cy - 0.285
+    _box(ax, px + 0.02, sy, pw - 0.04, 0.265, "", fc="#1b222b", ec="#34d399", lw=1.8, zorder=4)
+    ax.text(px + 0.032, sy + 0.235, "● 3 TÍN HIỆU NGƯỜI HỌC (DƯỚI CAMERA)",
+            ha="left", va="center", fontsize=10.2, fontweight="bold", color="#34d399", zorder=5)
+
+    hw = (pw - 0.07) / 2
+    _box(ax, px + 0.03, sy + 0.112, hw, 0.095, "CÓ MẶT\n● Trong khung",
+         fc="#171c22", ec="#334155", fs=10.4, weight="bold", color="#34d399", zorder=5)
+    _box(ax, px + 0.04 + hw, sy + 0.112, hw, 0.095, "ĐIỆN THOẠI\n○ Không dùng",
+         fc="#171c22", ec="#334155", fs=10.4, weight="bold", color="#34d399", zorder=5)
+    _box(ax, px + 0.03, sy + 0.015, pw - 0.06, 0.082,
+         "NGƯỜI HỌC: Đúng người (Bảo) [Mới]",
+         fc="#171c22", ec="#334155", fs=10.5, weight="bold", color="#34d399", zorder=5)
+
+    # Khối 3: Trạng thái tư thế Bento 2x2
+    by = sy - 0.285
+    _box(ax, px + 0.02, by, pw - 0.04, 0.265, "", fc="#1b222b", ec="#475569", lw=1.4, zorder=4)
+    ax.text(px + 0.032, by + 0.235, "● TRẠNG THÁI: Tư thế tốt (Đúng tư thế)",
+            ha="left", va="center", fontsize=10.2, fontweight="bold", color="#34d399", zorder=5)
+    _box(ax, px + 0.03, by + 0.115, hw, 0.092, "ĐIỂM TƯ THẾ\n91,5 / 100",
+         fc="#171c22", ec="#334155", fs=10.2, weight="bold", color="#f8fafc", zorder=5)
+    _box(ax, px + 0.04 + hw, by + 0.115, hw, 0.092, "ĐÃ NGỒI\n42 phút",
+         fc="#171c22", ec="#334155", fs=10.2, weight="bold", color="#f8fafc", zorder=5)
+    _box(ax, px + 0.03, by + 0.014, hw, 0.088, "KHOẢNG CÁCH\n54 cm",
+         fc="#171c22", ec="#334155", fs=10.2, weight="bold", color="#60a5fa", zorder=5)
+    _box(ax, px + 0.04 + hw, by + 0.014, hw, 0.088, "LOA CẢNH BÁO\n● Đang bật",
+         fc="#171c22", ec="#34d399", fs=10.2, weight="bold", color="#34d399", zorder=5)
+
+    # Thanh 6 tab dưới đáy
+    _box(
+        ax, px + 0.018, py + 0.015, pw - 0.036, 0.085,
+        "Thanh 6 Tab điều hướng:\n[Camera*] · Phiên · Đ.Khiển · Giọng · Vi phạm · Kết nối",
+        fc="#0b0f14", ec="#60a5fa", fs=9.8, weight="bold", color="#60a5fa", zorder=5,
+    )
+
+    # Cột phải: 4 khối kiến trúc lớn (rộng 45.5%)
+    rx, rw = 0.53, 0.455
+    _box(
+        ax, rx, 0.755, rw, 0.215,
+        "1. Quản lý vòng đời (src/hooks/)\n"
+        "• usePoll: hỏi mỗi 2 s, tự gọi\n  AbortController.abort() khi rời tab\n"
+        "• useAsyncAction: hủy lệnh chồng",
+        fc=C_BLUE_L, ec=C_BLUE, fs=10.8, weight="bold",
+    )
+    _box(
+        ax, rx, 0.505, rw, 0.215,
+        "2. Tầng API thuần (src/api/)\n"
+        "• Không phụ thuộc react-native\n"
+        "• fresh=false → 'Chưa có dữ liệu mới'\n"
+        "• Hạn chờ JSON 5 s, ảnh tĩnh 10 s",
+        fc=C_GREEN_L, ec=C_GREEN, fs=10.8, weight="bold",
+    )
+    _box(
+        ax, rx, 0.255, rw, 0.215,
+        "3. Máy chủ Pi 4 (Flask :8000)\n"
+        "• Dùng chung 10 route với Web\n"
+        "• Thêm /api/frame (JPEG tĩnh)\n  & /api/violations (lịch sử lỗi)",
+        fc=C_AMBER_L, ec=C_AMBER, fs=10.8, weight="bold",
+    )
+    _box(
+        ax, rx, 0.02, rw, 0.20,
+        "4. Kiểm thử 2 tầng (189 bài PASS)\n"
+        "• 160 bài logic thuần (Node ≥ 22.18)\n"
+        "• 29 bài giao diện thật (jsdom)\n"
+        "• tsc --noEmit: 0 lỗi kiểu tĩnh",
+        fc=C_GREY_L, ec=C_GREY, fs=10.8, weight="bold",
+    )
+
+    _arrow(ax, (px + pw + 0.004, 0.86), (rx - 0.004, 0.86), color=C_BLUE, lw=2.2)
+    _arrow(ax, (rx + rw / 2, 0.755), (rx + rw / 2, 0.722), color=C_GREEN, lw=2.0)
+    _arrow(ax, (rx + rw / 2, 0.505), (rx + rw / 2, 0.472), color=C_AMBER, lw=2.0)
+
+    _save(fig, "11-bo-cuc-app-di-dong.png")
+
+
 def main() -> int:
-    print("Sinh hình cho báo cáo vào", FIG)
+    print("Sinh lại bộ 9 hình cỡ chữ lớn chuẩn in A4 vào", FIG)
     for fn in (
         fig_architecture,
         fig_ai_pipeline,
@@ -516,6 +720,7 @@ def main() -> int:
         fig_web_flow,
         fig_wiring,
         fig_modules,
+        fig_mobile_stitch,
     ):
         fn()
     print("Xong.")

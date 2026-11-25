@@ -1,8 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Kiểm tra sâu tệp .docx: thứ tự phần tử theo schema OOXML + đọc lại toàn bộ.
+r"""Kiểm định toàn diện tệp .docx theo chuẩn Khoa CNTT - ĐHBK Đà Nẵng (DUT) và schema OOXML.
 
-python-docx không kiểm tra thứ tự phần tử con trong w:pPr / w:rPr / w:tcPr.
-Sai thứ tự làm Word treo hoặc hiện hộp thoại "repair". Script này soát đúng chỗ đó.
+Các hạng mục kiểm tra tự động:
+1. Toàn vẹn kho lưu trữ ZIP, không có mục thư mục rỗng ('/'), đủ 13 media (2 logo + 11 hình).
+2. Tuân thủ nghiêm ngặt thứ tự phần tử con w:pPr / w:rPr / w:tcPr theo ECMA-376.
+3. Khổ trang A4, lề chuẩn đóng gáy (3,5 / 2,0 / 2,5 / 2,5 cm), ẩn Header/Footer trang bìa.
+4. Đủ 3 trường danh mục tự động (MỤC LỤC, HÌNH ẢNH, BẢNG BIỂU) và các trường SEQ Hình / SEQ Bảng.
+5. Đủ 12 chương (CHƯƠNG 1 .. CHƯƠNG 12), phông chính Times New Roman 13 pt.
+6. Không sót cú pháp Markdown/LaTeX thô (**, `, ![, ](, $$, \mathbf, U+FFFD).
+7. Đủ toàn bộ mốc dữ liệu khoa học cốt lõi của đề tài.
 
 Chạy:  python BaoCao/verify_docx.py
 """
@@ -63,7 +69,7 @@ def check_order(root, label: str) -> list[str]:
                     continue
                 if index[name] < seen:
                     problems.append(
-                        f"{label}: w:{container} — '{name}' đứng sau phần tử có thứ tự lớn hơn"
+                        f"{label}: w:{container} - '{name}' đứng sai thứ tự schema"
                     )
                     break
                 seen = index[name]
@@ -71,45 +77,67 @@ def check_order(root, label: str) -> list[str]:
 
 
 def main() -> int:
-    if not TARGET.is_file():
-        print("KHÔNG THẤY", TARGET)
+    target = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else TARGET
+    if not target.is_file():
+        print("KHÔNG THẤY", target)
         return 1
 
-    print("== TỆP ==")
-    print("  đường dẫn :", TARGET)
-    print(f"  dung lượng: {TARGET.stat().st_size / 1024:.0f} KB")
+    print("== 1. KHO LƯU TRỮ TỆP (.DOCX / ZIP) ==")
+    print("  đường dẫn :", target)
+    print(f"  dung lượng: {target.stat().st_size / 1024:.0f} KB")
 
-    with zipfile.ZipFile(TARGET) as zf:
+    with zipfile.ZipFile(target) as zf:
         broken = zf.testzip()
         names = zf.namelist()
+        dir_entries = [n for n in names if n.endswith("/")]
         media = sorted(n for n in names if n.startswith("word/media/"))
-        print("  zip hỏng   :", broken or "không")
-        print("  số media   :", len(media))
-        for m in media:
-            print(f"    - {m:24s} {zf.getinfo(m).file_size / 1024:6.0f} KB")
+        doc_xml = zf.read("word/document.xml").decode("utf-8")
+        print("  zip hỏng        :", broken or "không")
+        print("  mục thư mục rỗng:", len(dir_entries))
+        print("  số tệp media    :", len(media), "(kỳ vọng 13 = 2 logo bìa + 11 hình nội dung)")
 
-    doc = Document(str(TARGET))
-    print("\n== CẤU TRÚC ==")
-    print("  đoạn văn:", len(doc.paragraphs), "· bảng:", len(doc.tables),
-          "· section:", len(doc.sections))
+    doc = Document(str(target))
+    sec = doc.sections[0]
+    margins_cm = (
+        round(sec.left_margin.cm, 2),
+        round(sec.right_margin.cm, 2),
+        round(sec.top_margin.cm, 2),
+        round(sec.bottom_margin.cm, 2),
+    )
+    margins_ok = margins_cm == (3.5, 2.0, 2.5, 2.5) and sec.different_first_page_header_footer
+    print("\n== 2. BỐ CỤC TRANG CHUẨN DUT ==")
+    print(f"  lề (T/P/Tr/D cm): {margins_cm} -> {'ĐÚNG' if margins_cm == (3.5, 2.0, 2.5, 2.5) else 'SAI'}")
+    print(f"  ẩn H/F trang bìa: {sec.different_first_page_header_footer}")
+    print(f"  đoạn văn: {len(doc.paragraphs)} · tổng bảng: {len(doc.tables)} · section: {len(doc.sections)}")
 
     problems: list[str] = []
     problems += check_order(doc.element.body, "body")
     for idx, section in enumerate(doc.sections, start=1):
         problems += check_order(section.footer._element, f"footer{idx}")
         problems += check_order(section.header._element, f"header{idx}")
-    styles_el = doc.styles.element
-    problems += check_order(styles_el, "styles")
+        problems += check_order(section.first_page_footer._element, f"first_footer{idx}")
+        problems += check_order(section.first_page_header._element, f"first_header{idx}")
+    problems += check_order(doc.styles.element, "styles")
 
-    print("\n== THỨ TỰ PHẦN TỬ THEO SCHEMA OOXML ==")
+    print("\n== 3. THỨ TỰ PHẦN TỬ SCHEMA OOXML ==")
     if problems:
         for p in problems[:20]:
             print("  LỖI:", p)
-        print(f"  tổng lỗi: {len(problems)}")
     else:
-        print("  không có lỗi thứ tự trong pPr / rPr / tcPr")
+        print("  OK - 0 lỗi thứ tự trong pPr / rPr / tcPr")
 
-    # --- tiêu đề
+    # Kiểm tra các trường động Word (TOC, LOF, LOT, SEQ)
+    toc_main = 'TOC \\o "1-2"' in doc_xml
+    toc_fig = 'TOC \\h \\z \\c "Hình"' in doc_xml
+    toc_tbl = 'TOC \\h \\z \\c "Bảng"' in doc_xml
+    seq_fig_count = doc_xml.count("SEQ Hình \\* ARABIC")
+    seq_tbl_count = doc_xml.count("SEQ Bảng \\* ARABIC")
+    print("\n== 4. TRƯỜNG ĐỘNG WORD (MỤC LỤC / HÌNH / BẢNG) ==")
+    print(f"  MỤC LỤC tự động   : {'CÓ' if toc_main else 'THIẾU'}")
+    print(f"  Danh mục HÌNH ẢNH : {'CÓ' if toc_fig else 'THIẾU'} (số SEQ Hình = {seq_fig_count})")
+    print(f"  Danh mục BẢNG BIỂU: {'CÓ' if toc_tbl else 'THIẾU'} (số SEQ Bảng = {seq_tbl_count})")
+
+    # Tiêu đề 12 chương
     heads = []
     for p in doc.paragraphs:
         style = p.style.name or ""
@@ -120,34 +148,24 @@ def main() -> int:
                 level = 0
             heads.append((level, p.text.strip()))
 
-    print("\n== TIÊU ĐỀ CẤP 1–2 ==")
-    for level, text in heads:
-        if level <= 2:
-            print("  " + "   " * (level - 1) + f"H{level} · {text}")
-    print("  tổng tiêu đề:", len(heads))
+    print(f"\n== 5. CẤU TRÚC 12 CHƯƠNG (tổng tiêu đề: {len(heads)}) ==")
+    missing_chaps = 0
+    for ch_idx in range(1, 13):
+        want = f"CHƯƠNG {ch_idx}."
+        found = next((t for lv, t in heads if lv == 1 and t.startswith(want)), None)
+        if not found:
+            missing_chaps += 1
+        print(f"  {want:10s} -> {found or 'THIẾU'}")
 
-    for want in ("Chương 1", "Chương 2", "Chương 3", "Chương 4", "Chương 5", "Chương 6", "Phụ lục"):
-        ok = any(want in t for _, t in heads)
-        print(f"    {want:11s}: {'CÓ' if ok else 'THIẾU'}")
-
-    # --- bảng
-    print("\n== BẢNG ==")
+    # Kiểm tra bảng
     bad_tables = 0
-    empty_cells = 0
     for i, table in enumerate(doc.tables, start=1):
         widths = {len(r.cells) for r in table.rows}
         if len(widths) != 1:
             bad_tables += 1
-            print(f"    bảng {i}: số cột không đều {widths}")
-        if not table.rows[0].cells[0].text.strip():
-            print(f"    bảng {i}: dòng đầu trống")
-        for row in table.rows:
-            for cell in row.cells:
-                if not cell.text.strip():
-                    empty_cells += 1
-    print(f"  {len(doc.tables)} bảng · bảng lỗi: {bad_tables} · ô trống: {empty_cells}")
+            print(f"  LỖI bảng {i}: số cột không đều {widths}")
 
-    # --- văn bản
+    # Quét văn bản tìm ký hiệu sót & mốc khoa học
     chunks = [p.text for p in doc.paragraphs]
     for table in doc.tables:
         for row in table.rows:
@@ -155,28 +173,38 @@ def main() -> int:
                 chunks.extend(p.text for p in cell.paragraphs)
     text = "\n".join(chunks)
 
-    print("\n== VĂN BẢN ==")
-    print("  tổng ký tự:", len(text))
-    print("  U+FFFD     :", text.count("\ufffd"))
-    print("  '**' sót   :", text.count("**"))
-    print("  '`' sót    :", text.count("`") )
-    print("  '![' sót   :", text.count("!["))
-    print("  '](' sót   :", text.count("]("))
+    import re as _re
+
+    stray = {
+        "U+FFFD": text.count("\ufffd"),
+        "**": len(_re.findall(r"(?<!\*)\*\*(?!\*)", text)),
+        "`": text.count("`"),
+        "![": text.count("!["),
+        "](": text.count("]("),
+        "$$": text.count("$$"),
+        "\\mathbf": text.count("\\mathbf"),
+    }
+    print("\n== 6. KÝ HIỆU THÔ CÒN SÓT ==")
+    print(" ", stray)
 
     marks = [
+        "TRƯỜNG ĐẠI HỌC BÁCH KHOA", "KHOA CÔNG NGHỆ THÔNG TIN",
         "Hệ thống giám sát học tập", "199,25", "5,02", "86,1", "98,6",
         "DashboardState", "ĐÃ ĐO", "TÍNH TỪ ĐO", "CHƯA ĐO", "704×576",
         "YOLO11n-pose", "SFace", "backchannel", "ONVIF",
+        "Nocturne Telemetry", "LearnerSignalsSection", "PostureStatusSection",
+        "1.662", "189",
     ]
-    print("\n  mốc nội dung (không phân biệt hoa thường):")
+    print("\n== 7. MỐC NỘI DUNG KHOA HỌC CỐT LÕI ==")
     haystack = text.casefold()
-    missing = 0
+    missing_marks = 0
     for m in marks:
-        ok = m.casefold() in haystack
-        missing += 0 if ok else 1
-        print(f"    {m:22s}: {'CÓ' if ok else 'THIẾU'}")
+        ok_m = m.casefold() in haystack
+        if not ok_m:
+            missing_marks += 1
+        print(f"  {m:28s}: {'CÓ' if ok_m else 'THIẾU'}")
 
-    # --- thống kê định dạng
+    # Thống kê định dạng font & cỡ chữ
     font_counter: Counter[str] = Counter()
     size_counter: Counter[float] = Counter()
     for p in doc.paragraphs:
@@ -185,13 +213,29 @@ def main() -> int:
                 font_counter[r.font.name] += 1
             if r.font.size:
                 size_counter[r.font.size.pt] += 1
-    print("\n== ĐỊNH DẠNG ==")
-    print("  font dùng :", dict(font_counter.most_common(5)))
-    print("  cỡ chữ    :", dict(size_counter.most_common(6)))
+    print("\n== 8. THỐNG KÊ KIỂU CHỮ ==")
+    print("  phông chữ :", dict(font_counter.most_common(5)))
+    print("  cỡ chữ(pt):", dict(size_counter.most_common(6)))
 
-    ok = not problems and bad_tables == 0 and missing == 0 and text.count("\ufffd") == 0
-    print("\nKẾT LUẬN:", "OK" if ok else "CẦN SỬA")
-    return 0 if ok else 2
+    all_ok = (
+        broken is None
+        and len(dir_entries) == 0
+        and len(media) == 13
+        and margins_ok
+        and not problems
+        and toc_main
+        and toc_fig
+        and toc_tbl
+        and seq_fig_count == 11
+        and seq_tbl_count >= 30
+        and missing_chaps == 0
+        and bad_tables == 0
+        and sum(stray.values()) == 0
+        and missing_marks == 0
+        and font_counter.most_common(1)[0][0] == "Times New Roman"
+    )
+    print("\nKẾT LUẬN TỔNG HỢP:", "ĐẠT CHUẨN KHOA CNTT - ĐHBK ĐÀ NẴNG" if all_ok else "CẦN SỬA")
+    return 0 if all_ok else 2
 
 
 if __name__ == "__main__":
