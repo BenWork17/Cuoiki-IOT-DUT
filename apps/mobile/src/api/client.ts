@@ -56,11 +56,17 @@ export const API_PATH = {
   mute: '/api/mute',
   ptz: '/api/ptz',
   frame: '/api/frame',
-  /** Luồng MJPEG trực tiếp cho `WebView` ở màn Camera. */
+  /** Luồng MJPEG trực tiếp cho `WebView` ở màn Camera & hộp quét khuôn mặt. */
   stream: '/stream',
   voice: '/api/voice',
   /** Lịch sử **vi phạm** (rời bàn / dùng điện thoại / sai người) từ bảng `events`. */
   violations: '/api/violations',
+  /** Danh sách người học (`GET`), thêm người mới mở phiên quét (`POST`), xoá (`DELETE /api/people/<id>`). */
+  people: '/api/people',
+  /** Chọn hoặc bỏ chọn người đang học (`POST /api/select`). */
+  select: '/api/select',
+  /** Tiền tố tiến độ & huỷ phiên đăng ký khuôn mặt (`/api/enroll/<id>`). */
+  enroll: '/api/enroll',
 } as const;
 
 /**
@@ -182,7 +188,7 @@ function failure(error: unknown): { ok: false; error: ApiError; status: number |
  */
 export async function requestJson<T>(
   baseUrl: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   body?: unknown,
   options: RequestOptions = {},
@@ -357,6 +363,17 @@ export type SessionPayload = Record<string, unknown>;
 export type VoicePayload = Record<string, unknown>;
 /** Payload thô của `/api/violations`; chuẩn hoá ở `normalizeViolations`. */
 export type ViolationsPayload = Record<string, unknown>;
+/** Payload thô của `/api/people` & `/api/enroll*`; chuẩn hoá ở `payload.ts`. */
+export type PeoplePayload = Record<string, unknown>;
+export type SelectPersonPayload = {
+  ok?: boolean;
+  selected?: string | null;
+  message?: string;
+};
+export type DeletePersonPayload = { ok?: boolean; message?: string };
+export type EnrollStartPayload = Record<string, unknown>;
+export type EnrollStatusPayload = Record<string, unknown>;
+export type EnrollCancelPayload = { ok?: boolean; message?: string };
 
 /** Một lớp mỏng gắn địa chỉ gốc, để màn hình không phải truyền `baseUrl` mỗi lần. */
 export type ApiClient = {
@@ -379,35 +396,44 @@ export type ApiClient = {
     options?: RequestOptions,
   ) => Promise<ApiResult<{ message?: string; duration?: number }>>;
   getFrame: (options?: RequestOptions) => Promise<ApiResult<FramePayload>>;
-  /**
-   * `GET /api/violations?limit=<n>` — lịch sử vi phạm, mới nhất trước.
-   *
-   * Không phân trang: `limit` do app chặn trên ở `VIOLATIONS_LIMIT`, và màn
-   * hình không cần cuộn vô hạn cho một danh sách người dùng xem để biết "hôm
-   * nay mình bị nhắc mấy lần". Muốn xem xa hơn thì tăng `limit` có chủ đích.
-   */
   getViolations: (
     limit?: number,
     options?: RequestOptions,
   ) => Promise<ApiResult<ViolationsPayload>>;
   /** `GET /api/voice` — giọng đang dùng + tình trạng từng giọng. */
   getVoice: (options?: RequestOptions) => Promise<ApiResult<VoicePayload>>;
-  /**
-   * `POST /api/voice` — đổi giọng đọc.
-   *
-   * Server trả **400** khi giọng lạ (câu lỗi có kèm danh sách giọng hợp lệ),
-   * **503** khi phiên chạy không nối loa. App hiện đúng `message` server.
-   */
+  /** `POST /api/voice` — đổi giọng đọc. */
   setVoice: (
     voice: string,
     options?: RequestOptions,
   ) => Promise<ApiResult<VoicePayload>>;
-  /**
-   * Kiểm tra kết nối: 200 **và** thân đọc được như `/api/status`.
-   *
-   * Chỉ 200 là chưa đủ: trang đăng nhập của router wifi cũng trả 200, và báo
-   * "kết nối tốt" lúc đó là nói dối người dùng.
-   */
+  /** `GET /api/people` — danh sách người học đã đăng ký và người đang chọn. */
+  getPeople: (options?: RequestOptions) => Promise<ApiResult<PeoplePayload>>;
+  /** `POST /api/select` — chọn hoặc bỏ chọn (`null`) người đang học. */
+  selectPerson: (
+    personId: string | null,
+    options?: RequestOptions,
+  ) => Promise<ApiResult<SelectPersonPayload>>;
+  /** `DELETE /api/people/<person_id>` — xoá hồ sơ khuôn mặt của một người học. */
+  deletePerson: (
+    personId: string,
+    options?: RequestOptions,
+  ) => Promise<ApiResult<DeletePersonPayload>>;
+  /** `POST /api/people` — mở một phiên quét khuôn mặt 5 bước cho người học mới. */
+  startEnroll: (
+    name: string,
+    options?: RequestOptions,
+  ) => Promise<ApiResult<EnrollStartPayload>>;
+  /** `GET /api/enroll/<enroll_id>` — đọc tiến độ bước & số mẫu hợp lệ của phiên quét. */
+  getEnrollStatus: (
+    enrollId: string,
+    options?: RequestOptions,
+  ) => Promise<ApiResult<EnrollStatusPayload>>;
+  /** `POST /api/enroll/<enroll_id>/cancel` — huỷ phiên quét đang chạy ở máy chủ. */
+  cancelEnroll: (
+    enrollId: string,
+    options?: RequestOptions,
+  ) => Promise<ApiResult<EnrollCancelPayload>>;
   checkConnection: (
     options?: RequestOptions,
   ) => Promise<ApiResult<{ status: StatusPayload }>>;
@@ -463,6 +489,48 @@ export function createApiClient(baseUrl: string): ApiClient {
       requestJson<VoicePayload>(root, 'GET', API_PATH.voice, undefined, options),
     setVoice: (voice, options) =>
       requestJson<VoicePayload>(root, 'POST', API_PATH.voice, { voice }, options),
+    getPeople: (options) =>
+      requestJson<PeoplePayload>(root, 'GET', API_PATH.people, undefined, options),
+    selectPerson: (personId, options) =>
+      requestJson<SelectPersonPayload>(
+        root,
+        'POST',
+        API_PATH.select,
+        { person_id: personId },
+        options,
+      ),
+    deletePerson: (personId, options) =>
+      requestJson<DeletePersonPayload>(
+        root,
+        'DELETE',
+        `${API_PATH.people}/${encodeURIComponent(personId)}`,
+        undefined,
+        options,
+      ),
+    startEnroll: (name, options) =>
+      requestJson<EnrollStartPayload>(
+        root,
+        'POST',
+        API_PATH.people,
+        { name },
+        options,
+      ),
+    getEnrollStatus: (enrollId, options) =>
+      requestJson<EnrollStatusPayload>(
+        root,
+        'GET',
+        `${API_PATH.enroll}/${encodeURIComponent(enrollId)}`,
+        undefined,
+        options,
+      ),
+    cancelEnroll: (enrollId, options) =>
+      requestJson<EnrollCancelPayload>(
+        root,
+        'POST',
+        `${API_PATH.enroll}/${encodeURIComponent(enrollId)}/cancel`,
+        {},
+        options,
+      ),
     getViolations: (limit, options) => {
       // Kẹp `limit` ở client: số âm hay `NaN` sẽ thành query rác, và một giá
       // trị khổng lồ sẽ kéo cả bảng `events` về máy. Server vẫn phải tự kẹp

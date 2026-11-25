@@ -448,6 +448,9 @@ test('API_PATH: chỉ chứa route nằm trong hợp đồng §4.2', () => {
       stream: '/stream',
       voice: '/api/voice',
       violations: '/api/violations',
+      people: '/api/people',
+      select: '/api/select',
+      enroll: '/api/enroll',
     },
   );
   // Không có route "POST /api/session" trong bảng: tài liệu yêu cầu đã đo 405.

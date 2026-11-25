@@ -1,12 +1,6 @@
 /**
- * Màn chính gộp — Camera, 3 Tín hiệu người học & Trạng thái tư thế
- * (theo thiết kế Nocturne Telemetry của Google Stitch).
- *
- * Kết hợp trực tiếp trên một màn hình duy nhất:
- * 1. Khung hình Camera 4:3 (MJPEG qua WebView hoặc Ảnh tĩnh dự phòng qua `/api/frame`).
- * 2. Cụm 3 Tín hiệu người học đặt ngay dưới khung Camera (`Có mặt`, `Điện thoại`,
- *    `Người đang học / Danh tính` từ `/api/signals`) để quan sát cùng lúc không cần cuộn.
- * 3. Banner Trạng thái tư thế & lưới thông số Bento 2×2 tự làm mới mỗi 2 giây từ `/api/status`.
+ * Màn chính gộp — Camera, 3 Tín hiệu người học & Trạng thái tư thế,
+ * hỗ trợ cả hai chế độ Sáng & Tối và lối tắt chuyển nhanh sang quản lý Người học.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -41,10 +35,10 @@ import {
   Screen,
   UnconfiguredNotice,
 } from '../components/ui';
-import { useApp } from '../context/AppContext';
+import { useApp, useTheme } from '../context/AppContext';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { toPollFetcher, usePoll } from '../hooks/usePoll';
-import { colors, monoFamily, radius, spacing, type as typo } from '../theme';
+import { monoFamily, radius, spacing } from '../theme';
 
 const FRAME_REFRESH_MS = 300;
 
@@ -68,8 +62,16 @@ const INITIAL: FrameState = {
   noFrameYet: false,
 };
 
-export function CameraScreen({ focused }: { focused: boolean }): React.ReactElement {
+export function CameraScreen({
+  focused,
+  onOpenPeople,
+}: {
+  focused: boolean;
+  /** Khi đặt trong `TabNavigator`, bấm vào ô Danh tính mở thẳng tab Người học. */
+  onOpenPeople?: () => void;
+}): React.ReactElement {
   const { api, baseUrl, loading: configLoading } = useApp();
+  const { palette, typo } = useTheme();
   const [state, setState] = useState<FrameState>(INITIAL);
   const [mode, setMode] = useState<ViewMode>('live');
   const [liveFailed, setLiveFailed] = useState(false);
@@ -77,7 +79,6 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
   const [muteBusy, setMuteBusy] = useState(false);
   const muteAction = useAsyncAction();
 
-  // Poll `/api/status` mỗi 2 s khi màn đang hiện; tự động abort() ngay khi rời màn.
   const statusFetcher = useMemo(
     () => toPollFetcher((signal) => api.getStatus({ signal }), normalizeStatus),
     [api],
@@ -92,8 +93,6 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
     enabled: focused && !configLoading && !!baseUrl,
   });
 
-  // Poll `/api/signals` mỗi 2 s để hiển thị trực tiếp 3 thông số:
-  // Có mặt trong khung hình, Sử dụng điện thoại, Người đang học là ai.
   const [signalsRouteMissing, setSignalsRouteMissing] = useState(false);
   useEffect(() => {
     setSignalsRouteMissing(false);
@@ -120,14 +119,12 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
 
   const streamEnabled = statusView ? statusView.streamEnabled : null;
 
-  // Khi máy chủ báo `stream_enabled = false`, tự động lùi sang chế độ Ảnh tĩnh.
   useEffect(() => {
     if (streamEnabled === false) {
       setMode('still');
     }
   }, [streamEnabled]);
 
-  // Đồng bộ lại `mutedOverride` mỗi khi nhịp poll mới từ máy chủ trả về.
   useEffect(() => {
     if (statusUpdatedAt !== null) {
       setMutedOverride(null);
@@ -247,13 +244,18 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
     mode === 'still' && state.data ? state.data.receivedAt : statusUpdatedAt;
 
   const liveBadge = baseUrl ? (
-    <View style={styles.livePill}>
+    <View
+      style={[
+        styles.livePill,
+        { backgroundColor: palette.surfaceElevated, borderColor: palette.border },
+      ]}
+    >
       <View
         style={[
           styles.liveDot,
           {
             backgroundColor:
-              statusView?.stale || state.error ? colors.warn : colors.good,
+              statusView?.stale || state.error ? palette.warn : palette.good,
           },
         ]}
       />
@@ -261,7 +263,7 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
         style={[
           styles.livePillTag,
           {
-            color: statusView?.stale || state.error ? colors.warn : colors.good,
+            color: statusView?.stale || state.error ? palette.warn : palette.good,
           },
         ]}
       >
@@ -269,8 +271,10 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
       </Text>
       {badgeClockTs ? (
         <>
-          <Text style={styles.livePillSep}>·</Text>
-          <Text style={styles.livePillClock}>{formatClock(badgeClockTs)}</Text>
+          <Text style={[styles.livePillSep, { color: palette.textFaint }]}>·</Text>
+          <Text style={[styles.livePillClock, { color: palette.textMuted }]}>
+            {formatClock(badgeClockTs)}
+          </Text>
         </>
       ) : null}
     </View>
@@ -339,15 +343,22 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
       ) : null}
 
       {state.data && state.error ? (
-        <Text style={[typo.caption, styles.staleNote]}>
+        <Text style={[typo.caption, { color: palette.warn }]}>
           Ảnh cuối lúc {formatClock(state.data.receivedAt)} — chưa tải được khung mới.
         </Text>
       ) : null}
 
       {/* 1. Camera Viewport Card (Hero) */}
-      <View style={styles.cameraCard}>
+      <View
+        style={[
+          styles.cameraCard,
+          { backgroundColor: palette.surface, borderColor: palette.border },
+        ]}
+      >
         <View style={styles.cameraToolbar}>
-          <View style={styles.segmentedTrack}>
+          <View
+            style={[styles.segmentedTrack, { backgroundColor: palette.surfaceRaised }]}
+          >
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Trực tiếp"
@@ -357,12 +368,13 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
               }}
               style={[
                 styles.segmentBtn,
-                mode === 'live' ? styles.segmentBtnActive : null,
+                mode === 'live' ? { backgroundColor: palette.accent } : null,
               ]}
             >
               <Text
                 style={[
                   styles.segmentText,
+                  { color: mode === 'live' ? palette.onAccent : palette.textMuted },
                   mode === 'live' ? styles.segmentTextActive : null,
                 ]}
               >
@@ -375,12 +387,13 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
               onPress={() => setMode('still')}
               style={[
                 styles.segmentBtn,
-                mode === 'still' ? styles.segmentBtnActive : null,
+                mode === 'still' ? { backgroundColor: palette.accent } : null,
               ]}
             >
               <Text
                 style={[
                   styles.segmentText,
+                  { color: mode === 'still' ? palette.onAccent : palette.textMuted },
                   mode === 'still' ? styles.segmentTextActive : null,
                 ]}
               >
@@ -399,16 +412,23 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
                 pressed ? { opacity: 0.7 } : null,
               ]}
             >
-              <Text style={styles.browserLinkText}>Mở trong trình duyệt ↗</Text>
+              <Text style={[styles.browserLinkText, { color: palette.accent }]}>
+                Mở trong trình duyệt ↗
+              </Text>
             </Pressable>
           ) : mode === 'still' && state.data ? (
-            <Text style={styles.kbCaption}>
+            <Text style={[styles.kbCaption, { color: palette.textMuted }]}>
               {(state.data.byteLength / 1024).toFixed(0)} KB
             </Text>
           ) : null}
         </View>
 
-        <View style={styles.frameBox}>
+        <View
+          style={[
+            styles.frameBox,
+            { backgroundColor: palette.surfaceLowest, borderColor: palette.border },
+          ]}
+        >
           {mode === 'live' && baseUrl ? (
             <WebView
               source={{ uri: streamUrl }}
@@ -424,7 +444,7 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
             />
           ) : mode === 'live' ? (
             <View style={styles.framePlaceholder}>
-              <Text style={[typo.caption, styles.muted]}>
+              <Text style={[typo.caption, { color: palette.hudText, opacity: 0.75 }]}>
                 Chưa cấu hình máy chủ — mở tab Kết nối trước.
               </Text>
             </View>
@@ -439,11 +459,13 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
             <View style={styles.framePlaceholder}>
               {state.loading ? (
                 <>
-                  <ActivityIndicator color={colors.accent} />
-                  <Text style={[typo.caption, styles.muted]}>Đang tải khung đầu tiên…</Text>
+                  <ActivityIndicator color={palette.accent} />
+                  <Text style={[typo.caption, { color: palette.hudText, opacity: 0.75 }]}>
+                    Đang tải khung đầu tiên…
+                  </Text>
                 </>
               ) : (
-                <Text style={[typo.caption, styles.muted]}>
+                <Text style={[typo.caption, { color: palette.hudText, opacity: 0.75 }]}>
                   {state.routeMissing
                     ? 'Máy chủ chưa có route ảnh.'
                     : state.streamDisabled
@@ -454,26 +476,36 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
             </View>
           )}
 
-          {/* HUD Overlay góc trên khung hình giống thiết kế Stitch */}
+          {/* HUD Overlay góc trên khung hình */}
           {baseUrl ? (
             <View pointerEvents="none" style={styles.hudOverlay}>
-              <View style={styles.hudBadge}>
-                <Text style={styles.hudBadgeText}>
+              <View
+                style={[
+                  styles.hudBadge,
+                  { backgroundColor: palette.hudBg, borderColor: palette.hudBorder },
+                ]}
+              >
+                <Text style={[styles.hudBadgeText, { color: palette.hudText }]}>
                   {mode === 'live' ? '▣ MJPEG STREAM' : '▣ JPEG SNAPSHOT'}
                 </Text>
               </View>
               {statusView && statusView.dataAgeS !== null ? (
-                <View style={styles.hudBadge}>
+                <View
+                  style={[
+                    styles.hudBadge,
+                    { backgroundColor: palette.hudBg, borderColor: palette.hudBorder },
+                  ]}
+                >
                   <View
                     style={[
                       styles.hudDot,
-                      { backgroundColor: statusView.stale ? colors.warn : colors.good },
+                      { backgroundColor: statusView.stale ? '#FBBF24' : '#34D399' },
                     ]}
                   />
                   <Text
                     style={[
                       styles.hudBadgeText,
-                      { color: statusView.stale ? colors.warn : colors.good },
+                      { color: statusView.stale ? '#FBBF24' : '#34D399' },
                     ]}
                   >
                     {formatDecimal(statusView.dataAgeS, 1)} s
@@ -505,11 +537,12 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
         ) : null}
       </View>
 
-      {/* 2. Cụm 3 Tín hiệu người học đặt ngay dưới khung Camera (Có mặt, Điện thoại, Người đang học) */}
+      {/* 2. Cụm 3 Tín hiệu người học đặt ngay dưới khung Camera */}
       {baseUrl ? (
         signalsRows || signalsError?.status === 503 || (signalsLoading && !signalsError) ? (
           <LearnerSignalsSection
             rows={signalsRows}
+            onOpenPeople={onOpenPeople}
             peopleDisabledMessage={
               signalsError?.status === 503
                 ? (signalsError.message ||
@@ -549,7 +582,7 @@ export function CameraScreen({ focused }: { focused: boolean }): React.ReactElem
         ) : null
       ) : null}
 
-      <Text style={[typo.caption, styles.footnote]}>
+      <Text style={[typo.caption, { color: palette.textFaint }]}>
         Ảnh chỉ đi qua bộ nhớ của máy chủ và tới điện thoại trong LAN; dashboard không lưu ảnh.
       </Text>
     </Screen>
@@ -564,9 +597,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: radius.pill,
-    backgroundColor: colors.surfaceElevated,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
   },
   liveDot: {
     width: 7,
@@ -580,19 +611,15 @@ const styles = StyleSheet.create({
   },
   livePillSep: {
     fontSize: 11,
-    color: colors.textFaint,
   },
   livePillClock: {
     fontFamily: monoFamily,
     fontSize: 11,
-    color: colors.textMuted,
     fontVariant: ['tabular-nums'],
   },
   cameraCard: {
-    backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.sm,
     gap: spacing.sm,
   },
@@ -605,7 +632,6 @@ const styles = StyleSheet.create({
   },
   segmentedTrack: {
     flexDirection: 'row',
-    backgroundColor: colors.surfaceRaised,
     borderRadius: radius.sm,
     padding: 3,
     gap: 2,
@@ -615,16 +641,11 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 6,
   },
-  segmentBtnActive: {
-    backgroundColor: colors.accent,
-  },
   segmentText: {
     fontSize: 12,
     fontWeight: '600',
-    color: colors.textMuted,
   },
   segmentTextActive: {
-    color: colors.onAccent,
     fontWeight: '700',
   },
   browserLink: {
@@ -634,21 +655,17 @@ const styles = StyleSheet.create({
   browserLinkText: {
     fontSize: 12,
     fontWeight: '600',
-    color: colors.accent,
   },
   kbCaption: {
     fontFamily: monoFamily,
     fontSize: 11,
-    color: colors.textMuted,
   },
   frameBox: {
     position: 'relative',
     aspectRatio: 4 / 3,
-    backgroundColor: colors.surfaceLowest,
     borderRadius: radius.md,
     overflow: 'hidden',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
   },
   frame: {
     width: '100%',
@@ -677,9 +694,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
-    backgroundColor: 'rgba(10, 15, 20, 0.78)',
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
   },
   hudDot: {
     width: 6,
@@ -690,16 +705,6 @@ const styles = StyleSheet.create({
     fontFamily: monoFamily,
     fontSize: 10,
     fontWeight: '600',
-    color: colors.text,
     fontVariant: ['tabular-nums'],
-  },
-  muted: {
-    color: colors.textMuted,
-  },
-  staleNote: {
-    color: colors.warn,
-  },
-  footnote: {
-    color: colors.textFaint,
   },
 });

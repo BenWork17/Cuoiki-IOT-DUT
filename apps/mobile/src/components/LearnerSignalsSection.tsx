@@ -1,21 +1,13 @@
 /**
  * Cụm "Tín hiệu người học trực tiếp" (3 thông số: Có mặt trong khung hình,
- * Sử dụng điện thoại, Người đang học là ai) theo thiết kế Nocturne Telemetry
- * của Google Stitch.
- *
- * Đặt ngay bên dưới khung hình Camera trong `CameraScreen` (bố cục Bento 2+1)
- * để người dùng vừa xem trực tiếp luồng hình vừa theo dõi tức thì cả 3 thông số
- * mà không cần cuộn trang hay chuyển tab.
- *
- * Bảo toàn tuyệt đối quy tắc của `normalizeSignals`: khi `fresh === false`,
- * `row.text` là `"Chưa có dữ liệu mới"` và `row.ageText` là `"–"` — không bao
- * giờ lặp lại kết luận cũ như thể vừa đo.
+ * Sử dụng điện thoại, Người đang học là ai), hỗ trợ cả hai chế độ Sáng & Tối.
  */
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { SignalRow } from '../api/payload';
-import { colors, monoFamily, radius, spacing, type as typo } from '../theme';
+import { useTheme } from '../context/AppContext';
+import { monoFamily, radius, spacing, type ThemePalette } from '../theme';
 import { Label, toneBorder, toneColor, toneSurface } from './ui';
 
 function initialOfName(name?: string): string | null {
@@ -30,22 +22,34 @@ function initialOfName(name?: string): string | null {
 export function LearnerSignalsSection({
   rows,
   peopleDisabledMessage,
+  onOpenPeople,
 }: {
   rows: SignalRow[] | null;
   /** Thông điệp từ máy chủ khi dịch vụ nhận diện người học tắt (HTTP 503). */
   peopleDisabledMessage?: string | null;
+  /** Mở nhanh màn Người học (chọn người học / thêm người mới). */
+  onOpenPeople?: () => void;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
+
   if (peopleDisabledMessage) {
     return (
-      <View style={[styles.container, styles.disabledContainer]}>
+      <View
+        style={[
+          styles.container,
+          { backgroundColor: palette.surfaceElevated, borderColor: palette.warnBorder },
+        ]}
+      >
         <View style={styles.headerRow}>
           <View style={styles.headerLeft}>
-            <View style={[styles.headerDot, { backgroundColor: colors.warn }]} />
+            <View style={[styles.headerDot, { backgroundColor: palette.warn }]} />
             <Label>Tín hiệu người học</Label>
           </View>
-          <Text style={[styles.headerMeta, { color: colors.warn }]}>Đang tắt</Text>
+          <Text style={[styles.headerMeta, { color: palette.warn }]}>Đang tắt</Text>
         </View>
-        <Text style={[typo.caption, styles.disabledBody]}>{peopleDisabledMessage}</Text>
+        <Text style={[typo.caption, { color: palette.textMuted }]}>
+          {peopleDisabledMessage}
+        </Text>
       </View>
     );
   }
@@ -57,8 +61,12 @@ export function LearnerSignalsSection({
   const allFresh = Boolean(rows && rows.length === 3 && rows.every((r) => r.fresh));
 
   return (
-    <View style={styles.container}>
-      {/* Thanh tiêu đề nhỏ gọn */}
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: palette.surfaceElevated, borderColor: palette.border },
+      ]}
+    >
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
           <View
@@ -66,16 +74,16 @@ export function LearnerSignalsSection({
               styles.headerDot,
               {
                 backgroundColor: allFresh
-                  ? colors.good
+                  ? palette.good
                   : anyFresh
-                    ? colors.warn
-                    : colors.textFaint,
+                    ? palette.warn
+                    : palette.textFaint,
               },
             ]}
           />
           <Label>Tín hiệu người học</Label>
         </View>
-        <Text style={styles.headerMeta}>
+        <Text style={[styles.headerMeta, { color: palette.textFaint }]}>
           {rows === null
             ? 'Đang đồng bộ…'
             : allFresh
@@ -92,16 +100,22 @@ export function LearnerSignalsSection({
           title="Có mặt"
           fallbackLabel="Trong khung hình"
           row={presence}
+          palette={palette}
         />
         <CompactSignalTile
           title="Điện thoại"
           fallbackLabel="Sử dụng ĐT"
           row={phone}
+          palette={palette}
         />
       </View>
 
       {/* Hàng 2: Ô rộng toàn chiều ngang — Người đang học là ai (Danh tính) */}
-      <IdentitySignalTile row={identity} />
+      <IdentitySignalTile
+        row={identity}
+        palette={palette}
+        onOpenPeople={onOpenPeople}
+      />
     </View>
   );
 }
@@ -110,36 +124,43 @@ function CompactSignalTile({
   title,
   fallbackLabel,
   row,
+  palette,
 }: {
   title: string;
   fallbackLabel: string;
   row: SignalRow | null;
+  palette: ThemePalette;
 }): React.ReactElement {
   const fresh = row?.fresh === true;
   const tone = fresh && row ? row.tone : 'idle';
-  const accent = fresh && row ? toneColor(row.tone) : colors.textMuted;
+  const accent = fresh && row ? toneColor(row.tone, palette) : palette.textMuted;
   const borderHex =
     fresh && row && (row.tone === 'bad' || row.tone === 'warn')
-      ? toneBorder(row.tone)
-      : colors.border;
+      ? toneBorder(row.tone, palette)
+      : palette.border;
 
   return (
-    <View style={[styles.compactTile, { borderColor: borderHex }]}>
+    <View
+      style={[
+        styles.compactTile,
+        { backgroundColor: palette.surface, borderColor: borderHex },
+      ]}
+    >
       <View style={styles.tileHead}>
         <Label>{row?.label ?? title}</Label>
         <View
           style={[
             styles.freshPill,
             {
-              backgroundColor: toneSurface(fresh ? 'good' : 'idle'),
-              borderColor: fresh ? toneBorder('good') : colors.border,
+              backgroundColor: toneSurface(fresh ? 'good' : 'idle', palette),
+              borderColor: fresh ? toneBorder('good', palette) : palette.border,
             },
           ]}
         >
           <Text
             style={[
               styles.freshPillText,
-              { color: fresh ? colors.good : colors.textFaint },
+              { color: fresh ? palette.good : palette.textFaint },
             ]}
           >
             {row === null ? '…' : fresh ? 'Mới' : 'Cũ'}
@@ -151,41 +172,52 @@ function CompactSignalTile({
         <View
           style={[
             styles.signalDot,
-            { backgroundColor: fresh && tone !== 'idle' ? accent : colors.textFaint },
+            { backgroundColor: fresh && tone !== 'idle' ? accent : palette.textFaint },
           ]}
         />
-        <Text
-          style={[styles.compactValue, { color: accent }]}
-          numberOfLines={2}
-        >
+        <Text style={[styles.compactValue, { color: accent }]} numberOfLines={2}>
           {row ? row.text : `Đang đọc ${fallbackLabel.toLowerCase()}…`}
         </Text>
       </View>
 
-      <Text style={styles.ageCaption} numberOfLines={1}>
+      <Text style={[styles.ageCaption, { color: palette.textFaint }]} numberOfLines={1}>
         {row ? row.ageText : '–'}
       </Text>
     </View>
   );
 }
 
-function IdentitySignalTile({ row }: { row: SignalRow | null }): React.ReactElement {
+function IdentitySignalTile({
+  row,
+  palette,
+  onOpenPeople,
+}: {
+  row: SignalRow | null;
+  palette: ThemePalette;
+  onOpenPeople?: () => void;
+}): React.ReactElement {
+  const { typo } = useTheme();
   const fresh = row?.fresh === true;
   const tone = fresh && row ? row.tone : 'idle';
-  const accent = fresh && row ? toneColor(row.tone) : colors.textMuted;
+  const accent = fresh && row ? toneColor(row.tone, palette) : palette.textMuted;
   const initial = fresh ? initialOfName(row?.personName) : null;
   const borderHex =
     fresh && row && (row.tone === 'bad' || row.tone === 'warn')
-      ? toneBorder(row.tone)
-      : colors.border;
+      ? toneBorder(row.tone, palette)
+      : palette.border;
 
   return (
-    <View style={[styles.identityTile, { borderColor: borderHex }]}>
-      <View style={[styles.avatarBadge, { backgroundColor: toneSurface(tone) }]}>
+    <View
+      style={[
+        styles.identityTile,
+        { backgroundColor: palette.surface, borderColor: borderHex },
+      ]}
+    >
+      <View style={[styles.avatarBadge, { backgroundColor: toneSurface(tone, palette) }]}>
         <Text
           style={[
             styles.avatarGlyph,
-            { color: fresh && tone !== 'idle' ? accent : colors.textMuted },
+            { color: fresh && tone !== 'idle' ? accent : palette.textMuted },
           ]}
         >
           {initial ?? row?.glyph ?? '•'}
@@ -196,22 +228,22 @@ function IdentitySignalTile({ row }: { row: SignalRow | null }): React.ReactElem
         <View style={styles.identityHeadRow}>
           <Label>Người đang học · {row?.label ?? 'Danh tính'}</Label>
           <View style={styles.identityMetaRight}>
-            <Text style={styles.ageCaption} numberOfLines={1}>
+            <Text style={[styles.ageCaption, { color: palette.textFaint }]} numberOfLines={1}>
               {row ? row.ageText : '–'}
             </Text>
             <View
               style={[
                 styles.freshPill,
                 {
-                  backgroundColor: toneSurface(fresh ? 'good' : 'idle'),
-                  borderColor: fresh ? toneBorder('good') : colors.border,
+                  backgroundColor: toneSurface(fresh ? 'good' : 'idle', palette),
+                  borderColor: fresh ? toneBorder('good', palette) : palette.border,
                 },
               ]}
             >
               <Text
                 style={[
                   styles.freshPillText,
-                  { color: fresh ? colors.good : colors.textFaint },
+                  { color: fresh ? palette.good : palette.textFaint },
                 ]}
               >
                 {row === null ? '…' : fresh ? 'Mới' : 'Cũ'}
@@ -220,12 +252,33 @@ function IdentitySignalTile({ row }: { row: SignalRow | null }): React.ReactElem
           </View>
         </View>
 
-        <Text style={[styles.identityValue, { color: accent }]} numberOfLines={2}>
-          {row ? row.text : 'Đang xác thực người học…'}
-        </Text>
+        <View style={styles.identityValueRow}>
+          <Text style={[styles.identityValue, { color: accent }]} numberOfLines={2}>
+            {row ? row.text : 'Đang xác thực người học…'}
+          </Text>
+          {onOpenPeople ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Mở quản lý người học"
+              onPress={onOpenPeople}
+              style={({ pressed }) => [
+                styles.managePill,
+                {
+                  backgroundColor: palette.accentWash,
+                  borderColor: palette.accentBorder,
+                },
+                pressed ? { opacity: 0.75 } : null,
+              ]}
+            >
+              <Text style={[styles.managePillText, { color: palette.accent }]}>
+                Đổi / Thêm ›
+              </Text>
+            </Pressable>
+          ) : null}
+        </View>
 
         {row?.reason ? (
-          <Text style={styles.reasonCaption} numberOfLines={2}>
+          <Text style={[typo.caption, { color: palette.textMuted }]} numberOfLines={2}>
             Lý do: {row.reason}
           </Text>
         ) : null}
@@ -236,18 +289,10 @@ function IdentitySignalTile({ row }: { row: SignalRow | null }): React.ReactElem
 
 const styles = StyleSheet.create({
   container: {
-    backgroundColor: colors.surfaceElevated,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.md,
     gap: spacing.sm,
-  },
-  disabledContainer: {
-    borderColor: 'rgba(251,191,36,0.40)',
-  },
-  disabledBody: {
-    color: colors.textMuted,
   },
   headerRow: {
     flexDirection: 'row',
@@ -269,7 +314,6 @@ const styles = StyleSheet.create({
   headerMeta: {
     fontFamily: monoFamily,
     fontSize: 11,
-    color: colors.textFaint,
     fontVariant: ['tabular-nums'],
   },
   topRow: {
@@ -278,10 +322,8 @@ const styles = StyleSheet.create({
   },
   compactTile: {
     flex: 1,
-    backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.md,
     justifyContent: 'space-between',
     gap: 6,
@@ -313,10 +355,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: colors.surface,
     borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.md,
   },
   avatarBadge: {
@@ -347,20 +387,33 @@ const styles = StyleSheet.create({
     gap: 6,
     flexShrink: 0,
   },
+  identityValueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
   identityValue: {
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '700',
+    flex: 1,
   },
-  reasonCaption: {
-    ...typo.caption,
-    color: colors.textMuted,
+  managePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexShrink: 0,
+  },
+  managePillText: {
+    fontSize: 11,
+    fontWeight: '700',
   },
   ageCaption: {
     fontFamily: monoFamily,
     fontSize: 11,
     lineHeight: 14,
-    color: colors.textFaint,
     fontVariant: ['tabular-nums'],
   },
   freshPill: {

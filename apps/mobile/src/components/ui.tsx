@@ -1,6 +1,5 @@
 /**
- * Các khối giao diện dùng chung. Tách khỏi màn hình để bố cục và màu chỉ có
- * một nguồn — và để `Screen` lo phần an toàn (SafeArea) một lần cho cả app.
+ * Các khối giao diện dùng chung, tự động thích ứng với cả hai chế độ Sáng & Tối.
  */
 import React from 'react';
 import {
@@ -15,10 +14,40 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors, radius, spacing, type as typo } from '../theme';
 import type { Tone } from '../api/payload';
+import { useTheme } from '../context/AppContext';
+import { darkColors, radius, spacing, type ThemePalette } from '../theme';
 
-/** Một màn hình: tiêu đề, mô tả ngắn, vùng cuộn có chừa chỗ cho thanh tab. */
+/** Nút gạt nhanh chế độ Sáng / Tối ngay góc trên màn hình. */
+export function ThemeTogglePill(): React.ReactElement {
+  const { isDark, palette, toggleThemeMode } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={
+        isDark ? 'Chuyển sang giao diện sáng' : 'Chuyển sang giao diện tối'
+      }
+      onPress={() => void toggleThemeMode()}
+      style={({ pressed }) => [
+        styles.themePill,
+        {
+          backgroundColor: palette.surfaceElevated,
+          borderColor: palette.border,
+        },
+        pressed ? styles.buttonPressed : null,
+      ]}
+    >
+      <Text style={[styles.themePillGlyph, { color: isDark ? palette.warn : palette.accent }]}>
+        {isDark ? '☀' : '☾'}
+      </Text>
+      <Text style={[styles.themePillText, { color: palette.textMuted }]}>
+        {isDark ? 'Sáng' : 'Tối'}
+      </Text>
+    </Pressable>
+  );
+}
+
+/** Một màn hình: tiêu đề, mô tả ngắn, công tắc Sáng/Tối, vùng cuộn có chừa chỗ cho thanh tab. */
 export function Screen({
   title,
   subtitle,
@@ -33,21 +62,32 @@ export function Screen({
   scroll?: boolean;
 }): React.ReactElement {
   const insets = useSafeAreaInsets();
+  const { palette, typo } = useTheme();
   const body = (
     <View style={styles.screenBody}>
       <View style={styles.screenHead}>
         <View style={styles.screenHeadText}>
           <Text style={typo.title}>{title}</Text>
-          {subtitle ? <Text style={[typo.caption, styles.subtitle]}>{subtitle}</Text> : null}
+          {subtitle ? (
+            <Text style={[typo.caption, { color: palette.textMuted }]}>{subtitle}</Text>
+          ) : null}
         </View>
-        {right}
+        <View style={styles.screenHeadRight}>
+          {right}
+          <ThemeTogglePill />
+        </View>
       </View>
       {children}
     </View>
   );
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top + spacing.md }]}>
+    <View
+      style={[
+        styles.screen,
+        { backgroundColor: palette.background, paddingTop: insets.top + spacing.md },
+      ]}
+    >
       {scroll ? (
         <ScrollView
           contentContainerStyle={{ paddingBottom: insets.bottom + 96 }}
@@ -70,11 +110,23 @@ export function Card({
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
 }): React.ReactElement {
-  return <View style={[styles.card, style]}>{children}</View>;
+  const { palette } = useTheme();
+  return (
+    <View
+      style={[
+        styles.card,
+        { backgroundColor: palette.surface, borderColor: palette.border },
+        style,
+      ]}
+    >
+      {children}
+    </View>
+  );
 }
 
 /** Nhãn in hoa nhỏ phía trên một giá trị. */
 export function Label({ children }: { children: React.ReactNode }): React.ReactElement {
+  const { typo } = useTheme();
   return <Text style={typo.label}>{children}</Text>;
 }
 
@@ -90,42 +142,59 @@ export function Stat({
   hint?: string;
   tone?: Tone;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
     <View style={styles.stat}>
       <Label>{label}</Label>
-      <Text style={[typo.number, { color: toneColor(tone) }]} numberOfLines={2}>
+      <Text style={[typo.number, { color: toneColor(tone, palette) }]} numberOfLines={2}>
         {value}
       </Text>
-      {hint ? <Text style={[typo.caption, styles.statHint]}>{hint}</Text> : null}
+      {hint ? (
+        <Text style={[typo.caption, { color: palette.textFaint }]}>{hint}</Text>
+      ) : null}
     </View>
   );
 }
 
 /** Màu chữ tương ứng tông trạng thái. */
-export function toneColor(tone: Tone): string {
+export function toneColor(tone: Tone, palette: ThemePalette = darkColors): string {
   switch (tone) {
     case 'good':
-      return colors.good;
+      return palette.good;
     case 'warn':
-      return colors.warn;
+      return palette.warn;
     case 'bad':
-      return colors.bad;
+      return palette.bad;
     default:
-      return colors.text;
+      return palette.text;
   }
 }
 
 /** Màu nền nhạt của tông, dùng cho chip và dải cảnh báo. */
-export function toneSurface(tone: Tone): string {
+export function toneSurface(tone: Tone, palette: ThemePalette = darkColors): string {
   switch (tone) {
     case 'good':
-      return 'rgba(52,211,153,0.14)';
+      return palette.goodWash;
     case 'warn':
-      return 'rgba(251,191,36,0.14)';
+      return palette.warnWash;
     case 'bad':
-      return 'rgba(248,113,113,0.14)';
+      return palette.badWash;
     default:
-      return colors.surfaceRaised;
+      return palette.surfaceRaised;
+  }
+}
+
+/** Viền chip rõ hơn nền một chút, để chip không "dính" vào thẻ. */
+export function toneBorder(tone: Tone, palette: ThemePalette = darkColors): string {
+  switch (tone) {
+    case 'good':
+      return palette.goodBorder;
+    case 'warn':
+      return palette.warnBorder;
+    case 'bad':
+      return palette.badBorder;
+    default:
+      return palette.border;
   }
 }
 
@@ -137,38 +206,23 @@ export function Chip({
   text: string;
   tone?: Tone;
 }): React.ReactElement {
+  const { palette } = useTheme();
   return (
     <View
       style={[
         styles.chip,
-        { backgroundColor: toneSurface(tone), borderColor: toneBorder(tone) },
+        {
+          backgroundColor: toneSurface(tone, palette),
+          borderColor: toneBorder(tone, palette),
+        },
       ]}
     >
-      <Text style={[styles.chipText, { color: toneColor(tone) }]}>{text}</Text>
+      <Text style={[styles.chipText, { color: toneColor(tone, palette) }]}>{text}</Text>
     </View>
   );
 }
 
-/** Viền chip rõ hơn nền một chút, để chip không "dính" vào thẻ. */
-export function toneBorder(tone: Tone): string {
-  switch (tone) {
-    case 'good':
-      return 'rgba(52,211,153,0.36)';
-    case 'warn':
-      return 'rgba(251,191,36,0.38)';
-    case 'bad':
-      return 'rgba(248,113,113,0.38)';
-    default:
-      return colors.border;
-  }
-}
-
-/**
- * Nút bấm với 3 mức nhấn mạnh.
- *
- * `disabled` phải chặn cả `onPress` **và** đổi màu: nút trông bấm được mà
- * không có tác dụng là lỗi tệ hơn nút xám.
- */
+/** Nút bấm với 4 mức nhấn mạnh. */
 export function Button({
   label,
   onPress,
@@ -183,40 +237,40 @@ export function Button({
   variant?: 'primary' | 'secondary' | 'quiet' | 'danger';
   disabled?: boolean;
   busy?: boolean;
-  /**
-   * Nhãn cho trình đọc màn hình khi `label` một mình không đủ nghĩa.
-   *
-   * Ví dụ: danh sách giọng đọc có nhiều nút cùng chữ "Chọn" — trình đọc màn
-   * hình đọc ba lần "Chọn" liền nhau và người dùng khiếm thị không biết nút
-   * nào đổi sang giọng nào. Truyền "Chọn giọng nữ" vào đây.
-   */
   accessibilityLabel?: string;
   style?: StyleProp<ViewStyle>;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   const inactive = disabled || busy;
   return (
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={accessibilityLabel ?? label}
-      // `accessibilityState` một mình không đủ: react-native-web không dịch
-      // nó thành `aria-disabled`/`disabled` trên phần tử DOM, nên trình đọc
-      // màn hình và các bài kiểm tự động vẫn thấy nút "bấm được". Đặt thêm
-      // `accessibilityState` (cho iOS/Android thật) và `disabled` của
-      // Pressable (cho web + để chặn tương tác ở tầng nền tảng).
       accessibilityState={{ disabled: inactive, busy }}
       disabled={inactive}
       onPress={inactive ? undefined : onPress}
       style={({ pressed }) => [
         styles.button,
-        buttonVariantStyle(variant, inactive),
+        buttonVariantStyle(variant, inactive, palette),
         pressed && !inactive ? styles.buttonPressed : null,
         style,
       ]}
     >
       {busy ? (
-        <ActivityIndicator size="small" color={variant === 'primary' ? colors.onAccent : colors.text} />
+        <ActivityIndicator
+          size="small"
+          color={
+            variant === 'primary'
+              ? palette.onAccent
+              : variant === 'danger'
+                ? palette.onBad
+                : palette.text
+          }
+        />
       ) : (
-        <Text style={[typo.button, { color: buttonTextColor(variant, inactive) }]}>{label}</Text>
+        <Text style={[typo.button, { color: buttonTextColor(variant, inactive, palette) }]}>
+          {label}
+        </Text>
       )}
     </Pressable>
   );
@@ -225,43 +279,39 @@ export function Button({
 function buttonVariantStyle(
   variant: 'primary' | 'secondary' | 'quiet' | 'danger',
   inactive: boolean,
+  palette: ThemePalette,
 ): ViewStyle {
   if (inactive) {
     return {
-      backgroundColor: colors.surfaceRaised,
-      borderColor: colors.border,
+      backgroundColor: palette.surfaceRaised,
+      borderColor: palette.border,
       opacity: 0.55,
     };
   }
   switch (variant) {
     case 'primary':
-      return { backgroundColor: colors.accent, borderColor: colors.accent };
+      return { backgroundColor: palette.accent, borderColor: palette.accent };
     case 'danger':
-      return { backgroundColor: colors.bad, borderColor: colors.bad };
+      return { backgroundColor: palette.bad, borderColor: palette.bad };
     case 'quiet':
-      return { backgroundColor: 'transparent', borderColor: colors.border };
+      return { backgroundColor: 'transparent', borderColor: palette.border };
     default:
-      return { backgroundColor: colors.surfaceRaised, borderColor: colors.borderStrong };
+      return { backgroundColor: palette.surfaceRaised, borderColor: palette.borderStrong };
   }
 }
 
 function buttonTextColor(
   variant: 'primary' | 'secondary' | 'quiet' | 'danger',
   inactive: boolean,
+  palette: ThemePalette,
 ): string {
-  if (inactive) return colors.textMuted;
-  if (variant === 'primary') return colors.onAccent;
-  if (variant === 'danger') return colors.onAccent;
-  return colors.text;
+  if (inactive) return palette.textMuted;
+  if (variant === 'primary') return palette.onAccent;
+  if (variant === 'danger') return palette.onBad;
+  return palette.text;
 }
 
-/**
- * Dải báo lỗi kèm nút **Thử lại**.
- *
- * Yêu cầu §5.2: không nuốt lỗi, mỗi lỗi phải có lý do + nút thử lại. Nên
- * `onRetry` là tham số **bắt buộc** — không có đường nào tạo ra một dải lỗi
- * mà người dùng không thoát ra được.
- */
+/** Dải báo lỗi kèm nút **Thử lại**. */
 export function ErrorBanner({
   title = 'Không lấy được dữ liệu',
   message,
@@ -270,26 +320,27 @@ export function ErrorBanner({
   retryLabel = 'Thử lại',
   hint,
 }: {
-  /**
-   * Tiêu đề của dải lỗi. Mặc định nói về việc **đọc** dữ liệu; màn nào lỗi do
-   * gửi lệnh (mute, PTZ, bắt đầu phiên) phải truyền tiêu đề riêng — nếu để
-   * "Không lấy được dữ liệu" cho một lệnh gửi hỏng thì người dùng hiểu sai là
-   * hệ thống không đọc được trạng thái, trong khi lệnh của họ mới là thứ hỏng.
-   */
   title?: string;
   message: string;
   onRetry: () => void;
   retrying?: boolean;
-  /** Nhãn nút. Lỗi khi gửi lệnh thì "Thử lại" nên nói rõ là gửi lại lệnh. */
   retryLabel?: string;
   hint?: string;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
-    <View style={styles.errorBanner}>
+    <View
+      style={[
+        styles.errorBanner,
+        { backgroundColor: palette.badWash, borderColor: palette.badBorder },
+      ]}
+    >
       <View style={styles.errorTextBlock}>
-        <Text style={[typo.heading, { color: colors.bad }]}>{title}</Text>
-        <Text style={[typo.body, styles.errorMessage]}>{message}</Text>
-        {hint ? <Text style={[typo.caption, styles.errorHint]}>{hint}</Text> : null}
+        <Text style={[typo.heading, { color: palette.bad }]}>{title}</Text>
+        <Text style={[typo.body, { color: palette.text }]}>{message}</Text>
+        {hint ? (
+          <Text style={[typo.caption, { color: palette.textMuted }]}>{hint}</Text>
+        ) : null}
       </View>
       <Button label={retryLabel} onPress={onRetry} variant="quiet" busy={retrying} />
     </View>
@@ -306,15 +357,19 @@ export function Notice({
   body: string;
   tone?: Tone;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
     <View
       style={[
         styles.notice,
-        { backgroundColor: toneSurface(tone), borderColor: toneBorder(tone) },
+        {
+          backgroundColor: toneSurface(tone, palette),
+          borderColor: toneBorder(tone, palette),
+        },
       ]}
     >
-      <Text style={[typo.heading, { color: toneColor(tone) }]}>{title}</Text>
-      <Text style={[typo.body, styles.noticeBody]}>{body}</Text>
+      <Text style={[typo.heading, { color: toneColor(tone, palette) }]}>{title}</Text>
+      <Text style={[typo.body, { color: palette.text }]}>{body}</Text>
     </View>
   );
 }
@@ -331,10 +386,11 @@ export function EmptyState({
   actionLabel?: string;
   onAction?: () => void;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
     <Card style={styles.empty}>
       <Text style={typo.heading}>{title}</Text>
-      <Text style={[typo.body, styles.emptyBody]}>{body}</Text>
+      <Text style={[typo.body, { color: palette.textMuted }]}>{body}</Text>
       {actionLabel && onAction ? (
         <Button label={actionLabel} onPress={onAction} variant="primary" />
       ) : null}
@@ -352,17 +408,19 @@ export function KeyValue({
   value: string;
   tone?: Tone;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
     <View style={styles.keyValue}>
       <Text style={[typo.caption, styles.keyValueLabel]}>{label}</Text>
-      <Text style={[typo.body, { color: toneColor(tone) }]}>{value}</Text>
+      <Text style={[typo.body, { color: toneColor(tone, palette) }]}>{value}</Text>
     </View>
   );
 }
 
 /** Vạch ngăn mảnh. */
 export function Divider(): React.ReactElement {
-  return <View style={styles.divider} />;
+  const { palette } = useTheme();
+  return <View style={[styles.divider, { backgroundColor: palette.border }]} />;
 }
 
 /** Hướng dẫn dùng chung khi chưa lưu địa chỉ máy chủ. */
@@ -380,19 +438,26 @@ export function LoadingCard({
 }: {
   label?: string;
 } = {}): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
     <Card style={styles.loadingCard}>
-      <ActivityIndicator color={colors.accent} />
-      <Text style={[typo.caption, styles.loadingLabel]}>{label}</Text>
+      <ActivityIndicator color={palette.accent} />
+      <Text style={[typo.caption, { color: palette.textMuted }]}>{label}</Text>
     </Card>
   );
 }
 
-/** Dải xác nhận thao tác thành công (tắt tiếng, PTZ, phiên học, giọng đọc). */
+/** Dải xác nhận thao tác thành công. */
 export function SuccessBanner({ message }: { message: string }): React.ReactElement {
+  const { palette, typo } = useTheme();
   return (
-    <View style={styles.successBanner}>
-      <Text style={[typo.body, { color: colors.good }]}>{message}</Text>
+    <View
+      style={[
+        styles.successBanner,
+        { backgroundColor: palette.goodWash, borderColor: palette.goodBorder },
+      ]}
+    >
+      <Text style={[typo.body, { color: palette.good }]}>{message}</Text>
     </View>
   );
 }
@@ -400,7 +465,6 @@ export function SuccessBanner({ message }: { message: string }): React.ReactElem
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
-    backgroundColor: colors.background,
   },
   screenBody: {
     paddingHorizontal: spacing.lg,
@@ -410,29 +474,46 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
-    gap: spacing.md,
+    gap: spacing.sm,
     marginBottom: spacing.xs,
   },
   screenHeadText: {
     flex: 1,
     gap: 2,
   },
-  subtitle: {
-    color: colors.textMuted,
+  screenHeadRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    flexShrink: 0,
+  },
+  themePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: radius.pill,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  themePillGlyph: {
+    fontSize: 12,
+    lineHeight: 15,
+    fontWeight: '700',
+  },
+  themePillText: {
+    fontSize: 11,
+    lineHeight: 14,
+    fontWeight: '700',
   },
   card: {
-    backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.lg,
     gap: spacing.md,
   },
   stat: {
     gap: 2,
-  },
-  statHint: {
-    color: colors.textFaint,
   },
   chip: {
     paddingHorizontal: spacing.md,
@@ -458,21 +539,13 @@ const styles = StyleSheet.create({
     opacity: 0.75,
   },
   errorBanner: {
-    backgroundColor: 'rgba(248,113,113,0.10)',
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(248,113,113,0.40)',
     padding: spacing.lg,
     gap: spacing.md,
   },
   errorTextBlock: {
     gap: 4,
-  },
-  errorMessage: {
-    color: colors.text,
-  },
-  errorHint: {
-    color: colors.textMuted,
   },
   notice: {
     borderRadius: radius.lg,
@@ -480,15 +553,9 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     gap: 6,
   },
-  noticeBody: {
-    color: colors.text,
-  },
   empty: {
     alignItems: 'flex-start',
     gap: spacing.md,
-  },
-  emptyBody: {
-    color: colors.textMuted,
   },
   keyValue: {
     flexDirection: 'row',
@@ -502,21 +569,15 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.border,
     marginVertical: spacing.xs,
   },
   loadingCard: {
     alignItems: 'center',
     gap: spacing.sm,
   },
-  loadingLabel: {
-    color: colors.textMuted,
-  },
   successBanner: {
-    backgroundColor: 'rgba(52,211,153,0.10)',
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(52,211,153,0.35)',
     padding: spacing.lg,
   },
 });

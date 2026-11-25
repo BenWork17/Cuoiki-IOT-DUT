@@ -105,16 +105,9 @@ tác dụng khi prebuild / dev build. Vì vậy:
 Ba quyết định có chủ đích (bảng màu và kiểu chữ nằm ở
 [src/theme.ts](src/theme.ts)):
 
-1. **Nền Nocturne Telemetry (`#0F141A`) thiết kế cùng Google Stitch.** App dùng lúc
-   học buổi tối và khung ảnh camera là vùng sáng duy nhất cần mắt; nền than chì sâu
-   giúp mắt dịu và làm khung camera nổi bật.
-2. **Ba màu trạng thái đồng bộ ngữ nghĩa với dashboard web** — ngọc lục bảo (`#34D399`) =
-   đang ổn, hổ phách (`#FBBF24`) = cần chú ý, san hô (`#F87171`) = sai/vắng — để người
-   dùng không phải học lại quy ước màu khi chuyển từ web sang điện thoại. Mỗi màu luôn
-   đi kèm nhãn chữ, không bao giờ chỉ dùng màu làm kênh duy nhất.
-3. **Số liệu dùng font mono + `tabular-nums` cỡ lớn trong lưới Bento 2×2.** Điện thoại
-   đặt trên bàn nên phải đọc được từ xa, và chữ số không được nhảy bề rộng mỗi lần làm
-   mới 2 giây.
+1. **Hệ thống giao diện kép Sáng & Tối (`dark` / `light`).** Chế độ Tối (*Nocturne Telemetry*, `#0F141A`) dịu mắt cho bàn học buổi tối; chế độ Sáng (*Daylight Studio*, `#F0F2F5` + thẻ trắng `#FFFFFF` + xanh `#1877F2`) đồng bộ trực tiếp với bảng điều khiển Web Dashboard, dễ nhìn ban ngày. Chuyển đổi tức thì từ nút gạt nhanh góc trên mọi màn hình hoặc ở tab **Kết nối**, lưu bền vững qua `AsyncStorage`.
+2. **Ba màu trạng thái đồng bộ ngữ nghĩa với dashboard web** — xanh lục = đang ổn, hổ phách = cần chú ý, đỏ san hô = sai/vắng — với độ tương phản đạt chuẩn đọc rõ trên cả nền tối lẫn nền sáng. Mỗi màu luôn đi kèm nhãn chữ, không bao giờ chỉ dùng màu làm kênh duy nhất.
+3. **Số liệu dùng font mono + `tabular-nums` cỡ lớn trong lưới Bento 2×2.** Điện thoại đặt trên bàn nên phải đọc được từ xa, và chữ số không được nhảy bề rộng mỗi lần làm mới 2 giây.
 
 Điều hướng là **thanh tab tự viết** ([src/navigation/TabNavigator.tsx](src/navigation/TabNavigator.tsx)),
 không dùng `@react-navigation/bottom-tabs`. Lý do: app chỉ có **6 tab cố định**
@@ -133,12 +126,12 @@ Hợp đồng API đầy đủ: [docs/REQUIREMENTS_MOBILE_AND_PRESENCE_FIX.md](.
 
 | Tab | Route dùng | Ghi chú |
 |---|---|---|
-| **Camera** *(gộp 3 Tín hiệu & Trạng thái)* | `GET /stream`, `GET /api/frame`, `GET /api/signals`, `GET /api/status`, `POST /api/mute` | Màn chính gộp: (1) Khung Camera 4:3 (MJPEG trực tiếp + tự lùi sang `GET /api/frame` mỗi **300 ms** khi `stream_enabled = false` hoặc WebView lỗi), (2) Cụm **3 Tín hiệu người học** đặt ngay dưới khung Camera (`Có mặt`, `Điện thoại`, `Người đang học / Danh tính`; `fresh: false` ⇒ "Chưa có dữ liệu mới"), (3) **Trạng thái tư thế & lưới Bento 2×2** (điểm **thang 100**, đã ngồi, khoảng cách, công tắc bật/tắt tiếng nhanh) |
+| **Camera** *(gộp 3 Tín hiệu & Trạng thái)* | `GET /stream`, `GET /api/frame`, `GET /api/signals`, `GET /api/status`, `POST /api/mute` | Màn chính gộp: (1) Khung Camera 4:3 (MJPEG trực tiếp + tự lùi sang `GET /api/frame` mỗi **300 ms** khi `stream_enabled = false` hoặc WebView lỗi), (2) Cụm **3 Tín hiệu người học** đặt ngay dưới khung Camera (`Có mặt`, `Điện thoại`, `Người đang học / Danh tính` kèm lối tắt **Đổi / Thêm ›**), (3) **Trạng thái tư thế & lưới Bento 2×2** (điểm **thang 100**, đã ngồi, khoảng cách, công tắc bật/tắt tiếng nhanh) |
+| **Người học** | `GET/POST /api/people`, `DELETE /api/people/<id>`, `POST /api/select`, `GET /api/enroll/<id>`, `POST /api/enroll/<id>/cancel` | Chọn / bỏ chọn người đang học, xoá hồ sơ xác nhận 2 bước, và thêm người mới bằng **quét khuôn mặt 5 bước kiểu Face ID** (có luồng camera trực tiếp + vòng tròn căn mặt + tiến độ mẫu; bấm **Quét lại** mở phiên mới; rời tab khi đang quét tự gửi `/cancel`) |
 | **Phiên học** | `GET /api/session`, `POST /api/session/start\|stop` | 503 ⇒ hiện câu server, **khoá nút**, không crash. 400 ⇒ hiện đúng `message` của server |
-| **Điều khiển** | `GET /api/status`, `POST /api/mute`, `POST /api/ptz` | PTZ gửi `{"direction","duration":0.5}`, khoá cả 4 nút khi đang xoay. Đồng bộ lại trạng thái tắt tiếng mỗi nhịp poll để thay đổi từ web không bị che khuất. Lỗi ⇒ banner "Không gửi được lệnh" + **Gửi lại** đúng lệnh vừa hỏng |
-| **Giọng đọc** | `GET /api/voice`, `POST /api/voice` | `available: false` ⇒ hiện `message` server, **không** hiện nút chọn. Giọng lạ ⇒ 400, hiện câu server (đã kèm danh sách hợp lệ). Tình trạng thiếu bản thu đọc theo **từng giọng**; lý do mượn giọng hiện **nguyên văn câu server** (xem ghi chú dưới bảng) |
+| **Điều khiển** *(Âm thanh, PTZ & Giọng đọc)* | `GET /api/status`, `POST /api/mute`, `POST /api/ptz`, `GET/POST /api/voice` | Tắt/bật tiếng cảnh báo, 4 nút xoay PTZ (`{"direction","duration":0.5}`, khoá đồng thời khi đang xoay) và chọn giọng đọc cảnh báo (`nam`/`nu`/`espeak`, đọc `missing`/`ready` từng giọng và hiện nguyên câu `fallbacks` của server) |
 | **Vi phạm** | `GET /api/violations?limit=200` | Lịch sử rời bàn, dùng điện thoại, sai người học từ bảng `events`. Chỉ tải khi mở tab hoặc bấm **Làm mới** (**không** poll định kỳ). Nhãn `kind_text` lấy thẳng từ server |
-| **Kết nối** | `GET /api/status` | Nhập/lưu địa chỉ, kiểm tra kết nối |
+| **Kết nối** | `GET /api/status` | Chọn chế độ **Giao diện Sáng / Tối**, nhập/lưu địa chỉ máy chủ LAN, kiểm tra kết nối |
 
 **Không có `POST /api/session`.** Gọi vào đó sẽ nhận **405** kèm thân **HTML**
 (đã đo bằng Flask `test_client`). App dùng đúng `GET` + `/start` + `/stop`.

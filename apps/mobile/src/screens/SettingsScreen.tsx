@@ -1,17 +1,8 @@
 /**
- * Màn 8 — Kết nối (bắt buộc theo tài liệu yêu cầu §5.1 hàng 7).
- *
- * Địa chỉ máy chủ **nhập trong app** và **lưu lại**; không có IP/cổng nào
- * hardcode trong mã nguồn.
- *
- * Kiểm tra kết nối gọi `GET /api/status` và chỉ báo thành công khi phản hồi
- * **đọc được như trạng thái** (`state` là chuỗi, `muted` là bool). Chỉ nhìn
- * mã 200 là chưa đủ: trang đăng nhập của router wifi, hay một index HTML của
- * Flask, cũng trả 200 — báo "kết nối tốt" lúc đó là nói dối người dùng và
- * khiến họ đi tìm lỗi ở chỗ khác.
+ * Màn Kết nối & Giao diện (địa chỉ máy chủ LAN + chọn chế độ Sáng / Tối).
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { createApiClient } from '../api/client';
 import { normalizeStatus, type StatusView } from '../api/payload';
@@ -25,9 +16,10 @@ import {
   Notice,
   Screen,
 } from '../components/ui';
-import { useApp } from '../context/AppContext';
+import { useApp, useTheme } from '../context/AppContext';
 import { useAsyncAction } from '../hooks/useAsyncAction';
-import { colors, monoFamily, radius, spacing, type as typo } from '../theme';
+import type { ThemeMode } from '../storage/theme';
+import { monoFamily, radius, spacing } from '../theme';
 
 type CheckResult =
   | { kind: 'idle' }
@@ -37,12 +29,12 @@ type CheckResult =
 
 export function SettingsScreen(): React.ReactElement {
   const { baseUrl, setBaseUrl, clear, loading } = useApp();
+  const { mode: themeMode, setThemeMode, palette, typo } = useTheme();
   const { run: runCheck, isMounted, abort: abortCheck } = useAsyncAction();
   const [text, setText] = useState(baseUrl);
   const [result, setResult] = useState<CheckResult>({ kind: 'idle' });
   const [saveNote, setSaveNote] = useState('');
 
-  // Địa chỉ đọc từ bộ nhớ xong thì đổ vào ô nhập.
   useEffect(() => {
     setText(baseUrl);
   }, [baseUrl]);
@@ -83,8 +75,6 @@ export function SettingsScreen(): React.ReactElement {
     }
     await runCheck(async ({ signal, isActive }) => {
       setResult({ kind: 'running' });
-      // Kiểm tra trên địa chỉ **đang gõ**, chưa cần lưu: người dùng phải sửa
-      // được IP sai mà không bị app ghi đè cấu hình cũ trước khi họ chắc chắn.
       const client = createApiClient(parsed.baseUrl);
       const response = await client.checkConnection({ signal });
       if (!isActive()) return;
@@ -109,8 +99,77 @@ export function SettingsScreen(): React.ReactElement {
     setSaveNote(cleared ? 'Đã xoá địa chỉ đã lưu.' : 'Không xoá được địa chỉ đã lưu.');
   }, [abortCheck, clear, isMounted]);
 
+  const chooseTheme = useCallback(
+    (next: ThemeMode) => {
+      void setThemeMode(next);
+    },
+    [setThemeMode],
+  );
+
   return (
-    <Screen title="Kết nối" subtitle="Địa chỉ máy chạy dashboard trong cùng mạng LAN">
+    <Screen title="Kết nối" subtitle="Địa chỉ máy chủ LAN và chế độ hiển thị">
+      {/* Thẻ chọn giao diện Sáng / Tối */}
+      <Card>
+        <Label>Giao diện hiển thị</Label>
+        <View style={[styles.themeSegmentTrack, { backgroundColor: palette.surfaceRaised }]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Giao diện sáng"
+            accessibilityState={{ selected: themeMode === 'light' }}
+            onPress={() => chooseTheme('light')}
+            style={[
+              styles.themeSegmentBtn,
+              themeMode === 'light'
+                ? { backgroundColor: palette.accent }
+                : null,
+            ]}
+          >
+            <Text
+              style={[
+                styles.themeSegmentText,
+                {
+                  color:
+                    themeMode === 'light' ? palette.onAccent : palette.textMuted,
+                  fontWeight: themeMode === 'light' ? '700' : '600',
+                },
+              ]}
+            >
+              ☀ Giao diện sáng
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Giao diện tối"
+            accessibilityState={{ selected: themeMode === 'dark' }}
+            onPress={() => chooseTheme('dark')}
+            style={[
+              styles.themeSegmentBtn,
+              themeMode === 'dark'
+                ? { backgroundColor: palette.accent }
+                : null,
+            ]}
+          >
+            <Text
+              style={[
+                styles.themeSegmentText,
+                {
+                  color:
+                    themeMode === 'dark' ? palette.onAccent : palette.textMuted,
+                  fontWeight: themeMode === 'dark' ? '700' : '600',
+                },
+              ]}
+            >
+              ☾ Giao diện tối
+            </Text>
+          </Pressable>
+        </View>
+        <Text style={[typo.caption, { color: palette.textMuted }]}>
+          {themeMode === 'light'
+            ? 'Đang dùng chế độ Sáng (đồng bộ tông sáng với Web Dashboard, dễ nhìn ban ngày).'
+            : 'Đang dùng chế độ Tối (Nocturne Telemetry, dịu mắt khi học buổi tối).'}
+        </Text>
+      </Card>
+
       <Card>
         <Label>Địa chỉ máy chạy dashboard</Label>
         <TextInput
@@ -120,22 +179,31 @@ export function SettingsScreen(): React.ReactElement {
             setSaveNote('');
           }}
           placeholder="http://192.168.x.x:8000"
-          placeholderTextColor={colors.textFaint}
+          placeholderTextColor={palette.textFaint}
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="url"
           returnKeyType="done"
-          style={styles.input}
+          style={[
+            styles.input,
+            {
+              backgroundColor: palette.background,
+              borderColor: palette.borderStrong,
+              color: palette.text,
+            },
+          ]}
           accessibilityLabel="Địa chỉ máy chạy dashboard"
           editable={!loading}
         />
-        <Text style={[typo.caption, styles.muted]}>
-          Đây <Text style={styles.strong}>KHÔNG phải IP của camera</Text> — camera chỉ là
-          nguồn ảnh của dashboard, không liên quan. Nhập IP LAN của{' '}
-          <Text style={styles.strong}>máy đang chạy lệnh</Text>{' '}
-          <Text style={styles.code}>python -m posture_monitor run</Text> (laptop hay Pi đều
-          được), kèm cổng 8000. Lấy IP bằng <Text style={styles.code}>ipconfig</Text> trên
-          Windows.
+        <Text style={[typo.caption, { color: palette.textMuted }]}>
+          Đây <Text style={[styles.strong, { color: palette.text }]}>KHÔNG phải IP của camera</Text>{' '}
+          — camera chỉ là nguồn ảnh của dashboard, không liên quan. Nhập IP LAN của{' '}
+          <Text style={[styles.strong, { color: palette.text }]}>máy đang chạy lệnh</Text>{' '}
+          <Text style={[styles.code, { color: palette.accent }]}>
+            python -m posture_monitor run
+          </Text>{' '}
+          (laptop hay Pi đều được), kèm cổng 8000. Lấy IP bằng{' '}
+          <Text style={[styles.code, { color: palette.accent }]}>ipconfig</Text> trên Windows.
         </Text>
 
         <View style={styles.actions}>
@@ -154,13 +222,20 @@ export function SettingsScreen(): React.ReactElement {
           />
         </View>
 
-        {saveNote ? <Text style={[typo.caption, styles.okText]}>{saveNote}</Text> : null}
+        {saveNote ? (
+          <Text style={[typo.caption, { color: palette.good }]}>{saveNote}</Text>
+        ) : null}
         {baseUrl ? (
-          <Text style={[typo.caption, styles.muted]}>
-            Đang lưu: <Text style={styles.code}>{displayHost(baseUrl)}</Text>
+          <Text style={[typo.caption, { color: palette.textMuted }]}>
+            Đang lưu:{' '}
+            <Text style={[styles.code, { color: palette.accent }]}>
+              {displayHost(baseUrl)}
+            </Text>
           </Text>
         ) : (
-          <Text style={[typo.caption, styles.muted]}>Chưa lưu địa chỉ nào.</Text>
+          <Text style={[typo.caption, { color: palette.textMuted }]}>
+            Chưa lưu địa chỉ nào.
+          </Text>
         )}
         {baseUrl ? (
           <Button label="Xoá địa chỉ đã lưu" onPress={() => void forget()} variant="quiet" />
@@ -177,13 +252,14 @@ export function SettingsScreen(): React.ReactElement {
 
       <Card>
         <Label>Vì sao phải nhập IP LAN</Label>
-        <Text style={[typo.body, styles.body]}>
+        <Text style={[typo.body, { color: palette.text }]}>
           Dashboard chỉ phục vụ trong LAN. Trên iPhone, “localhost” trỏ vào chính chiếc
           điện thoại chứ không phải máy chạy dashboard, nên mọi request sẽ hỏng ngay. Lấy
-          IP bằng <Text style={styles.code}>ipconfig</Text> trên Windows hoặc{' '}
-          <Text style={styles.code}>hostname -I</Text> trên Pi.
+          IP bằng <Text style={[styles.code, { color: palette.accent }]}>ipconfig</Text> trên
+          Windows hoặc{' '}
+          <Text style={[styles.code, { color: palette.accent }]}>hostname -I</Text> trên Pi.
         </Text>
-        <Text style={[typo.body, styles.body]}>
+        <Text style={[typo.body, { color: palette.text }]}>
           Điện thoại và máy chủ phải cùng một mạng Wi-Fi. Nếu mở được dashboard bằng
           Safari trên chính máy điện thoại mà app không gọi được, thì vấn đề nằm ở địa
           chỉ/ATS chứ không phải mạng.
@@ -194,18 +270,23 @@ export function SettingsScreen(): React.ReactElement {
 }
 
 function CheckPanel({ result }: { result: CheckResult }): React.ReactElement {
+  const { palette, typo } = useTheme();
+
   if (result.kind === 'running') {
     return <LoadingCard label="Đang gọi /api/status…" />;
   }
 
   if (result.kind === 'ok') {
     return (
-      <Card style={styles.checkOk}>
-        <Text style={[typo.heading, { color: colors.good }]}>Kết nối tốt</Text>
-        <Text style={[typo.body, styles.body]}>
-          Máy chủ trả trạng thái: <Text style={styles.code}>{result.view.stateText}</Text>
+      <Card style={{ borderColor: palette.goodBorder, gap: spacing.sm }}>
+        <Text style={[typo.heading, { color: palette.good }]}>Kết nối tốt</Text>
+        <Text style={[typo.body, { color: palette.text }]}>
+          Máy chủ trả trạng thái:{' '}
+          <Text style={[styles.code, { color: palette.accent }]}>
+            {result.view.stateText}
+          </Text>
         </Text>
-        <Text style={[typo.caption, styles.muted]}>
+        <Text style={[typo.caption, { color: palette.textMuted }]}>
           Xem trực tiếp đang {result.view.streamEnabled ? 'bật' : 'tắt'}. Tiếng cảnh báo
           đang {result.view.muted ? 'tắt' : 'bật'}.
         </Text>
@@ -215,10 +296,10 @@ function CheckPanel({ result }: { result: CheckResult }): React.ReactElement {
 
   if (result.kind === 'error') {
     return (
-      <Card style={styles.checkError}>
-        <Text style={[typo.heading, { color: colors.bad }]}>Chưa kết nối được</Text>
-        <Text style={[typo.body, styles.body]}>{result.message}</Text>
-        <Text style={[typo.caption, styles.muted]}>
+      <Card style={{ borderColor: palette.badBorder, gap: spacing.sm }}>
+        <Text style={[typo.heading, { color: palette.bad }]}>Chưa kết nối được</Text>
+        <Text style={[typo.body, { color: palette.text }]}>{result.message}</Text>
+        <Text style={[typo.caption, { color: palette.textMuted }]}>
           Kiểm tra lần lượt: điện thoại cùng Wi-Fi với máy chủ · IP đúng · dashboard đang
           chạy · không có tường lửa chặn cổng.
         </Text>
@@ -228,7 +309,7 @@ function CheckPanel({ result }: { result: CheckResult }): React.ReactElement {
 
   return (
     <Card>
-      <Text style={[typo.caption, styles.muted]}>
+      <Text style={[typo.caption, { color: palette.textMuted }]}>
         Bấm “Kiểm tra kết nối” để thử gọi GET /api/status bằng địa chỉ đang gõ.
       </Text>
     </Card>
@@ -236,14 +317,28 @@ function CheckPanel({ result }: { result: CheckResult }): React.ReactElement {
 }
 
 const styles = StyleSheet.create({
+  themeSegmentTrack: {
+    flexDirection: 'row',
+    borderRadius: radius.md,
+    padding: 3,
+    gap: 4,
+  },
+  themeSegmentBtn: {
+    flex: 1,
+    minHeight: 40,
+    borderRadius: radius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm,
+  },
+  themeSegmentText: {
+    fontSize: 13,
+  },
   input: {
-    backgroundColor: colors.background,
     borderRadius: radius.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.borderStrong,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
-    color: colors.text,
     fontSize: 16,
   },
   actions: {
@@ -253,29 +348,10 @@ const styles = StyleSheet.create({
   action: {
     flex: 1,
   },
-  body: {
-    color: colors.text,
-  },
-  muted: {
-    color: colors.textMuted,
-  },
-  okText: {
-    color: colors.good,
-  },
   code: {
-    color: colors.accent,
     fontFamily: monoFamily,
   },
   strong: {
-    color: colors.text,
     fontWeight: '600',
-  },
-  checkOk: {
-    borderColor: 'rgba(95,224,176,0.35)',
-    gap: spacing.sm,
-  },
-  checkError: {
-    borderColor: 'rgba(255,107,94,0.40)',
-    gap: spacing.sm,
   },
 });

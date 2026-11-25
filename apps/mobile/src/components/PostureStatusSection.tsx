@@ -1,16 +1,14 @@
 /**
- * Cụm "Integrated Posture Status Banner + 2×2 Bento Telemetry Grid" theo thiết kế
- * Nocturne Telemetry của Google Stitch.
- *
- * Dùng chung cho màn hình chính `CameraScreen` (hiển thị ngay dưới khung camera)
- * và `StatusScreen` để không lặp JSX hay quy tắc hiển thị `stale` / `PAUSED`.
+ * Cụm "Integrated Posture Status Banner + 2×2 Bento Telemetry Grid",
+ * tự động thích ứng với cả hai chế độ Sáng & Tối.
  */
 import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { formatClock } from '../api/format';
 import type { StatusView, Tone } from '../api/payload';
-import { colors, radius, spacing, type as typo } from '../theme';
+import { useTheme } from '../context/AppContext';
+import { radius, spacing, type ThemePalette } from '../theme';
 import { Chip, Label, toneColor, toneSurface } from './ui';
 
 const REFERENCE_LABELS = ['Cúi đầu', 'Ngồi quá gần', 'Nghiêng vai'] as const;
@@ -47,11 +45,11 @@ function parsePercent(scoreText: string): number {
   return Math.max(0, Math.min(100, num));
 }
 
-function barColor(tone: Tone): string {
-  if (tone === 'good') return colors.good;
-  if (tone === 'warn') return colors.warn;
-  if (tone === 'bad') return colors.bad;
-  return colors.accent;
+function barColor(tone: Tone, palette: ThemePalette): string {
+  if (tone === 'good') return palette.good;
+  if (tone === 'warn') return palette.warn;
+  if (tone === 'bad') return palette.bad;
+  return palette.accent;
 }
 
 export function PostureStatusSection({
@@ -67,16 +65,25 @@ export function PostureStatusSection({
   muteBusy?: boolean;
   onToggleMute?: () => void;
 }): React.ReactElement {
+  const { palette, typo } = useTheme();
   const effectiveTone: Tone = view.stale ? 'warn' : view.tone;
-  const accentHex = toneColor(effectiveTone);
-  const haloBg = toneSurface(effectiveTone);
+  const accentHex = toneColor(effectiveTone, palette);
+  const haloBg = toneSurface(effectiveTone, palette);
   const scorePct = parsePercent(view.scoreText);
   const effectiveMuted = mutedOverride ?? view.muted;
 
   return (
     <View style={styles.section}>
       {/* 1. Integrated Posture Status Hero Banner */}
-      <View style={[styles.heroBanner, { borderColor: view.tone === 'bad' ? 'rgba(248,113,113,0.4)' : colors.border }]}>
+      <View
+        style={[
+          styles.heroBanner,
+          {
+            backgroundColor: palette.surfaceElevated,
+            borderColor: view.tone === 'bad' ? palette.badBorder : palette.border,
+          },
+        ]}
+      >
         <View style={styles.heroRow}>
           <View style={[styles.nodeHalo, { backgroundColor: haloBg }]}>
             <View
@@ -84,7 +91,7 @@ export function PostureStatusSection({
                 styles.nodeCore,
                 {
                   backgroundColor:
-                    effectiveTone === 'idle' ? colors.surfaceRaised : accentHex,
+                    effectiveTone === 'idle' ? palette.surfaceRaised : accentHex,
                 },
               ]}
             >
@@ -93,7 +100,7 @@ export function PostureStatusSection({
                   styles.nodeGlyph,
                   {
                     color:
-                      effectiveTone === 'idle' ? colors.text : colors.onGood,
+                      effectiveTone === 'idle' ? palette.text : palette.onGood,
                   },
                 ]}
               >
@@ -113,16 +120,23 @@ export function PostureStatusSection({
               {view.stale ? (
                 <Chip text="Dữ liệu cũ" tone="warn" />
               ) : (
-                <Text style={[typo.caption, styles.ageMono]} numberOfLines={1}>
+                <Text
+                  style={[
+                    typo.caption,
+                    styles.ageMono,
+                    { color: palette.textMuted },
+                  ]}
+                  numberOfLines={1}
+                >
                   {view.ageText}
                 </Text>
               )}
             </View>
-            <Text style={[typo.caption, styles.heroSub]} numberOfLines={2}>
+            <Text style={[typo.caption, { color: palette.textMuted }]} numberOfLines={2}>
               {statusSubtitle(view)}
             </Text>
             {updatedAt ? (
-              <Text style={[typo.caption, styles.faint]}>
+              <Text style={[typo.caption, styles.faint, { color: palette.textFaint }]}>
                 Lần tải này: {formatClock(updatedAt)}
               </Text>
             ) : null}
@@ -149,8 +163,13 @@ export function PostureStatusSection({
             <>
               <Chip text="✓ Đúng tư thế" tone="good" />
               {REFERENCE_LABELS.map((refLabel) => (
-                <View key={refLabel} style={styles.inactiveChip}>
-                  <Text style={styles.inactiveChipText}>{refLabel}</Text>
+                <View
+                  key={refLabel}
+                  style={[styles.inactiveChip, { backgroundColor: palette.surfaceRaised }]}
+                >
+                  <Text style={[styles.inactiveChipText, { color: palette.textFaint }]}>
+                    {refLabel}
+                  </Text>
                 </View>
               ))}
             </>
@@ -164,30 +183,40 @@ export function PostureStatusSection({
       <View style={styles.bentoGrid}>
         <View style={styles.bentoRow}>
           {/* Ô 1: Điểm tư thế */}
-          <View style={styles.bentoTile}>
+          <View
+            style={[
+              styles.bentoTile,
+              { backgroundColor: palette.surface, borderColor: palette.border },
+            ]}
+          >
             <View style={styles.tileHead}>
               <Label>Điểm tư thế</Label>
-              <Text style={[styles.tileIcon, { color: colors.good }]}>✦</Text>
+              <Text style={[styles.tileIcon, { color: palette.good }]}>✦</Text>
             </View>
             <View style={styles.tileBody}>
               <Text
                 style={[
                   typo.telemetry,
-                  { color: view.state === 'PAUSED' ? colors.textMuted : barColor(view.tone) },
+                  {
+                    color:
+                      view.state === 'PAUSED'
+                        ? palette.textMuted
+                        : barColor(view.tone, palette),
+                  },
                 ]}
                 numberOfLines={1}
               >
                 {view.scoreText}
               </Text>
-              <Text style={styles.tileHint}>thang 100</Text>
+              <Text style={[styles.tileHint, { color: palette.textFaint }]}>thang 100</Text>
             </View>
-            <View style={styles.progressTrack}>
+            <View style={[styles.progressTrack, { backgroundColor: palette.surfaceRaised }]}>
               <View
                 style={[
                   styles.progressFill,
                   {
                     width: `${view.state === 'PAUSED' ? 0 : scorePct}%`,
-                    backgroundColor: barColor(view.tone),
+                    backgroundColor: barColor(view.tone, palette),
                   },
                 ]}
               />
@@ -195,24 +224,29 @@ export function PostureStatusSection({
           </View>
 
           {/* Ô 2: Đã ngồi */}
-          <View style={styles.bentoTile}>
+          <View
+            style={[
+              styles.bentoTile,
+              { backgroundColor: palette.surface, borderColor: palette.border },
+            ]}
+          >
             <View style={styles.tileHead}>
               <Label>Đã ngồi</Label>
-              <Text style={[styles.tileIcon, { color: colors.textMuted }]}>◷</Text>
+              <Text style={[styles.tileIcon, { color: palette.textMuted }]}>◷</Text>
             </View>
             <View style={styles.tileBody}>
               <Text style={typo.telemetry} numberOfLines={1} adjustsFontSizeToFit>
                 {view.sittingText ?? '–'}
               </Text>
-              <Text style={styles.tileHint}>phiên hiện tại</Text>
+              <Text style={[styles.tileHint, { color: palette.textFaint }]}>phiên hiện tại</Text>
             </View>
-            <View style={styles.progressTrack}>
+            <View style={[styles.progressTrack, { backgroundColor: palette.surfaceRaised }]}>
               <View
                 style={[
                   styles.progressFill,
                   {
                     width: view.sittingText && view.state !== 'PAUSED' ? '55%' : '0%',
-                    backgroundColor: colors.accent,
+                    backgroundColor: palette.accent,
                   },
                 ]}
               />
@@ -222,33 +256,38 @@ export function PostureStatusSection({
 
         <View style={styles.bentoRow}>
           {/* Ô 3: Khoảng cách */}
-          <View style={styles.bentoTile}>
+          <View
+            style={[
+              styles.bentoTile,
+              { backgroundColor: palette.surface, borderColor: palette.border },
+            ]}
+          >
             <View style={styles.tileHead}>
               <Label>Khoảng cách</Label>
-              <Text style={[styles.tileIcon, { color: colors.accent }]}>↔</Text>
+              <Text style={[styles.tileIcon, { color: palette.accent }]}>↔</Text>
             </View>
             <View style={styles.tileBody}>
               <Text
                 style={[
                   typo.telemetry,
-                  { color: view.distanceText ? colors.accent : colors.textMuted },
+                  { color: view.distanceText ? palette.accent : palette.textMuted },
                 ]}
                 numberOfLines={1}
                 adjustsFontSizeToFit
               >
                 {view.distanceText ?? '–'}
               </Text>
-              <Text style={styles.tileHint}>
+              <Text style={[styles.tileHint, { color: palette.textFaint }]}>
                 {view.distanceText ? 'tới cảm biến' : 'chưa đo được'}
               </Text>
             </View>
-            <View style={styles.progressTrack}>
+            <View style={[styles.progressTrack, { backgroundColor: palette.surfaceRaised }]}>
               <View
                 style={[
                   styles.progressFill,
                   {
                     width: view.distanceText ? '75%' : '0%',
-                    backgroundColor: colors.accent,
+                    backgroundColor: palette.accent,
                   },
                 ]}
               />
@@ -256,13 +295,18 @@ export function PostureStatusSection({
           </View>
 
           {/* Ô 4: Tiếng cảnh báo */}
-          <View style={styles.bentoTile}>
+          <View
+            style={[
+              styles.bentoTile,
+              { backgroundColor: palette.surface, borderColor: palette.border },
+            ]}
+          >
             <View style={styles.tileHead}>
               <Label>Tiếng cảnh báo</Label>
               <Text
                 style={[
                   styles.tileIcon,
-                  { color: effectiveMuted ? colors.warn : colors.good },
+                  { color: effectiveMuted ? palette.warn : palette.good },
                 ]}
               >
                 {effectiveMuted ? '✕' : '♪'}
@@ -279,14 +323,20 @@ export function PostureStatusSection({
                   onPress={onToggleMute}
                   style={({ pressed }) => [
                     styles.soundPill,
-                    effectiveMuted ? styles.soundPillMuted : styles.soundPillActive,
+                    effectiveMuted
+                      ? {
+                          backgroundColor: palette.warnWash,
+                          borderWidth: StyleSheet.hairlineWidth,
+                          borderColor: palette.warnBorder,
+                        }
+                      : { backgroundColor: palette.good },
                     pressed ? { opacity: 0.8 } : null,
                   ]}
                 >
                   <Text
                     style={[
                       styles.soundPillText,
-                      { color: effectiveMuted ? colors.warn : colors.onGood },
+                      { color: effectiveMuted ? palette.warn : palette.onGood },
                     ]}
                   >
                     {effectiveMuted ? 'Đang tắt' : 'Đang bật'}
@@ -296,30 +346,36 @@ export function PostureStatusSection({
                 <View
                   style={[
                     styles.soundPill,
-                    effectiveMuted ? styles.soundPillMuted : styles.soundPillActive,
+                    effectiveMuted
+                      ? {
+                          backgroundColor: palette.warnWash,
+                          borderWidth: StyleSheet.hairlineWidth,
+                          borderColor: palette.warnBorder,
+                        }
+                      : { backgroundColor: palette.good },
                   ]}
                 >
                   <Text
                     style={[
                       styles.soundPillText,
-                      { color: effectiveMuted ? colors.warn : colors.onGood },
+                      { color: effectiveMuted ? palette.warn : palette.onGood },
                     ]}
                   >
                     {effectiveMuted ? 'Đang tắt' : 'Đang bật'}
                   </Text>
                 </View>
               )}
-              <Text style={styles.tileHint}>
+              <Text style={[styles.tileHint, { color: palette.textFaint }]}>
                 {onToggleMute ? 'Chạm để bật/tắt loa' : 'Chuông tự động'}
               </Text>
             </View>
-            <View style={styles.progressTrack}>
+            <View style={[styles.progressTrack, { backgroundColor: palette.surfaceRaised }]}>
               <View
                 style={[
                   styles.progressFill,
                   {
                     width: effectiveMuted ? '25%' : '100%',
-                    backgroundColor: effectiveMuted ? colors.warn : colors.good,
+                    backgroundColor: effectiveMuted ? palette.warn : palette.good,
                   },
                 ]}
               />
@@ -336,10 +392,8 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   heroBanner: {
-    backgroundColor: colors.surfaceElevated,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.lg,
     gap: spacing.md,
   },
@@ -378,13 +432,8 @@ const styles = StyleSheet.create({
   },
   ageMono: {
     fontVariant: ['tabular-nums'],
-    color: colors.textMuted,
-  },
-  heroSub: {
-    color: colors.textMuted,
   },
   faint: {
-    color: colors.textFaint,
     marginTop: 2,
   },
   chipsRow: {
@@ -397,13 +446,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 5,
     borderRadius: radius.pill,
-    backgroundColor: colors.surfaceRaised,
     opacity: 0.72,
   },
   inactiveChipText: {
     fontSize: 11,
     fontWeight: '600',
-    color: colors.textFaint,
   },
   bentoGrid: {
     gap: spacing.md,
@@ -414,10 +461,8 @@ const styles = StyleSheet.create({
   },
   bentoTile: {
     flex: 1,
-    backgroundColor: colors.surface,
     borderRadius: radius.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.border,
     padding: spacing.lg,
     justifyContent: 'space-between',
     gap: spacing.sm,
@@ -437,12 +482,10 @@ const styles = StyleSheet.create({
   tileHint: {
     fontSize: 11,
     lineHeight: 15,
-    color: colors.textFaint,
   },
   progressTrack: {
     height: 4,
     borderRadius: radius.pill,
-    backgroundColor: colors.surfaceRaised,
     overflow: 'hidden',
   },
   progressFill: {
@@ -455,14 +498,6 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: radius.pill,
     marginVertical: 2,
-  },
-  soundPillActive: {
-    backgroundColor: colors.good,
-  },
-  soundPillMuted: {
-    backgroundColor: 'rgba(251,191,36,0.16)',
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: 'rgba(251,191,36,0.45)',
   },
   soundPillText: {
     fontSize: 12,

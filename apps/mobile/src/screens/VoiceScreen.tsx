@@ -1,21 +1,5 @@
 /**
- * Màn 6 — Giọng đọc.
- *
- * `GET /api/voice` và `POST /api/voice` (`app.py:655-682`, `app.py:686-731`).
- *
- * Ba điểm bắt buộc, lấy từ yêu cầu §5.1 hàng 5:
- * 1. `available: false` ⇒ hiện `message` của server và **không** hiện nút bấm
- *    được. Server nói rõ "chưa nối dây loa"; mời người dùng bấm vào một việc
- *    chắc chắn hỏng là lỗi thiết kế.
- * 2. Đổi giọng thành công ⇒ hiện **phản hồi của server** làm nguồn sự thật,
- *    rồi đọc lại `GET /api/voice` để giá trị trên màn hình và giá trị trong
- *    máy chủ không bao giờ lệch nhau.
- * 3. Giọng lạ ⇒ server **400**, và câu lỗi của server **đã chứa danh sách
- *    giọng hợp lệ**. App hiện đúng câu đó, không tự viết lại danh sách —
- *    viết lại là nguồn sự thật thứ hai, sửa một bên là lệch.
- *
- * `fallbacks` khác rỗng nghĩa là người dùng đang nghe giọng khác giọng đã
- * chọn (vì thiếu bản thu) — phải nói ra, im lặng là để họ tưởng nhầm.
+ * Màn Giọng đọc (`GET /api/voice` và `POST /api/voice`), thích ứng Sáng & Tối.
  */
 import React, { useCallback, useMemo, useState } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
@@ -35,21 +19,19 @@ import {
   SuccessBanner,
   UnconfiguredNotice,
 } from '../components/ui';
-import { useApp } from '../context/AppContext';
+import { useApp, useTheme } from '../context/AppContext';
 import { useAsyncAction } from '../hooks/useAsyncAction';
 import { toPollFetcher, usePoll } from '../hooks/usePoll';
-import { colors, spacing, type as typo } from '../theme';
+import { spacing } from '../theme';
 
 export function VoiceScreen({ focused }: { focused: boolean }): React.ReactElement {
   const { api, baseUrl, loading: configLoading } = useApp();
+  const { palette, typo } = useTheme();
   const { run: runAction } = useAsyncAction();
 
   const [actionError, setActionError] = useState<ApiError | null>(null);
   const [actionMessage, setActionMessage] = useState('');
   const [changingTo, setChangingTo] = useState<string | null>(null);
-  /**
-   * Giọng vừa định đổi mà lệnh hỏng — để nút "Gửi lại" gửi lại **đúng** giọng đó.
-   */
   const [lastVoice, setLastVoice] = useState<string | null>(null);
 
   const fetcher = useMemo(
@@ -65,8 +47,6 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
     (voiceId: string): Promise<void> =>
       runAction(async ({ signal, isActive }) => {
         setChangingTo(voiceId);
-        // Nhớ giọng đang thử NGAY từ đầu, và **giữ** nó nếu lệnh hỏng: nút "Gửi
-        // lại" phải gửi lại đúng giọng này, không phải tải lại danh sách.
         setLastVoice(voiceId);
         setActionError(null);
         setActionMessage('');
@@ -127,9 +107,11 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
       {data ? (
         <Card>
           <Label>Đang dùng</Label>
-          <Text style={[typo.heading, { color: colors.good }]}>{data.currentLabel}</Text>
+          <Text style={[typo.heading, { color: palette.good }]}>{data.currentLabel}</Text>
           {data.currentVoice ? (
-            <Text style={[typo.caption, styles.muted]}>Mã giọng: {data.currentVoice}</Text>
+            <Text style={[typo.caption, { color: palette.textMuted }]}>
+              Mã giọng: {data.currentVoice}
+            </Text>
           ) : null}
         </Card>
       ) : null}
@@ -151,7 +133,7 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
           <Card>
             <Label>Chọn giọng</Label>
             {data.voices.length === 0 ? (
-              <Text style={[typo.caption, styles.muted]}>
+              <Text style={[typo.caption, { color: palette.textMuted }]}>
                 Máy chủ không báo giọng nào khả dụng.
               </Text>
             ) : (
@@ -163,9 +145,9 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
                       {voice.selected ? <Chip text="Đang dùng" tone="good" /> : null}
                       {voice.hasMissingClips ? <Chip text="Thiếu bản thu" tone="warn" /> : null}
                     </View>
-                    <Text style={[typo.caption, styles.faint]}>{voice.id}</Text>
+                    <Text style={[typo.caption, { color: palette.textFaint }]}>{voice.id}</Text>
                     {voice.hasMissingClips ? (
-                      <Text style={[typo.caption, styles.warnText]}>
+                      <Text style={[typo.caption, { color: palette.warn }]}>
                         {voice.missingKinds.length > 0
                           ? `Thiếu bản thu cho: ${voice.missingKinds.join(', ')}`
                           : 'Thiếu bản thu cho một số câu cảnh báo'}
@@ -189,7 +171,7 @@ export function VoiceScreen({ focused }: { focused: boolean }): React.ReactEleme
         </>
       ) : null}
 
-      <Text style={[typo.caption, styles.footnote]}>
+      <Text style={[typo.caption, { color: palette.textFaint }]}>
         Đổi giọng có hiệu lực từ lần cảnh báo kế tiếp và được ghi lại để lần chạy sau vẫn
         nhớ.
       </Text>
@@ -214,17 +196,5 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     flexWrap: 'wrap',
-  },
-  muted: {
-    color: colors.textMuted,
-  },
-  faint: {
-    color: colors.textFaint,
-  },
-  warnText: {
-    color: colors.warn,
-  },
-  footnote: {
-    color: colors.textFaint,
   },
 });

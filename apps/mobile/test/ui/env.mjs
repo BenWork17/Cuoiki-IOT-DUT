@@ -215,7 +215,7 @@ globalThis.fetch = async (url, init) => {
   const pathOnly = u.split('?')[0];
   const respond =
     typeof activeScenario === 'function'
-      ? activeScenario(pathOnly, u)
+      ? activeScenario(pathOnly, u, init)
       : (activeScenario[pathOnly] ?? activeScenario[u]);
   if (!respond) {
     const text = '{"ok":false,"message":"Không có API này."}';

@@ -788,3 +788,234 @@ export function normalizeViolations(payload: unknown): ViolationsView {
     countsNonZero: counts.filter((c) => c.count > 0),
   };
 }
+
+/* ----------------------------------------------------- people & enrollment */
+
+/** Năm bước hướng dẫn mặc định khi máy chủ không đính kèm `steps` (`enrollment.py:23-29`). */
+export const DEFAULT_ENROLL_STEPS = [
+  'Nhìn thẳng',
+  'Quay sang phải',
+  'Quay sang trái',
+  'Ngẩng lên',
+  'Cúi xuống',
+] as const;
+
+export type PersonEntry = {
+  id: string;
+  name: string;
+  /** Epoch mili giây khi có `created_ts` hợp lệ; `null` nếu thiếu. */
+  createdAtMs: number | null;
+  /** Chữ cái đại diện in hoa từ tên (từ cuối cùng theo cách gọi tên tiếng Việt). */
+  initial: string;
+};
+
+export type PeopleView = {
+  people: PersonEntry[];
+  selectedId: string | null;
+  selectedPerson: PersonEntry | null;
+  /** Nhãn người đang học, khớp quy tắc `setSelected()` trong `web/static/app.js`. */
+  selectedText: string;
+};
+
+function personInitial(name: string): string {
+  const clean = name.trim();
+  if (!clean) return '?';
+  const parts = clean.split(/\s+/);
+  const last = parts[parts.length - 1] ?? clean;
+  return last.charAt(0).toUpperCase();
+}
+
+/**
+ * Chuẩn hoá `GET /api/people` (`{"people": [{"id", "name", "created_ts"}], "selected": string | null}`).
+ *
+ * Bảo toàn quy tắc quyền riêng tư & ổn định:
+ * - Bỏ qua phần tử hỏng mà không làm vỡ cả danh sách.
+ * - `selected` khác `null` nhưng không nằm trong `people` phải báo rõ `"mã ... (không có trong danh sách)"`.
+ */
+export function normalizePeople(payload: unknown): PeopleView {
+  const data = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+
+  const rawPeople = Array.isArray(data.people) ? data.people : [];
+  const people: PersonEntry[] = [];
+  for (const item of rawPeople) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const id = trimmedString(rec.id) ?? trimmedString(rec.name);
+    if (!id) continue;
+    const name = trimmedString(rec.name) ?? id;
+    people.push({
+      id,
+      name,
+      createdAtMs: toEpochMs(rec.created_ts),
+      initial: personInitial(name),
+    });
+  }
+
+  const selectedId = trimmedString(data.selected);
+  const selectedPerson =
+    selectedId !== null ? (people.find((p) => p.id === selectedId) ?? null) : null;
+
+  let selectedText: string;
+  if (selectedId === null) {
+    selectedText = 'Chưa chọn người đang học';
+  } else if (selectedPerson) {
+    selectedText = selectedPerson.name;
+  } else {
+    selectedText = `mã ${selectedId} (không có trong danh sách)`;
+  }
+
+  return {
+    people,
+    selectedId,
+    selectedPerson,
+    selectedText,
+  };
+}
+
+export type EnrollStartView = {
+  enrollId: string | null;
+  name: string | null;
+  steps: string[];
+};
+
+/** Chuẩn hoá phản hồi `POST /api/people` (`201 Created`). */
+export function normalizeEnrollStart(payload: unknown): EnrollStartView {
+  const data = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+  const enrollId = trimmedString(data.enroll_id);
+  const name = trimmedString(data.name);
+  const rawSteps = Array.isArray(data.steps)
+    ? data.steps
+        .map((step) => trimmedString(step))
+        .filter((step): step is string => step !== null)
+    : [];
+  const steps = rawSteps.length > 0 ? rawSteps : [...DEFAULT_ENROLL_STEPS];
+  return { enrollId, name, steps };
+}
+
+export type EnrollStepDot = {
+  index: number;
+  label: string;
+  done: boolean;
+  current: boolean;
+};
+
+export type EnrollStatusView = {
+  state: 'running' | 'done' | 'failed' | 'cancelled' | 'unknown';
+  stepIndex: number;
+  stepName: string;
+  samples: number;
+  samplesNeeded: number;
+  progressRatio: number;
+  steps: EnrollStepDot[];
+  error: string | null;
+  headlineText: string;
+  samplesText: string;
+  hintText: string;
+};
+
+/**
+ * Chuẩn hoá `GET /api/enroll/<enroll_id>`.
+ *
+ * Hai quy tắc đồng bộ chặt với `web/static/app.js`:
+ * 1. Khi `state === 'done'`: mọi chấm bước đều `done = true, current = false`, `progressRatio = 1`.
+ * 2. Khi `state === 'failed'` hoặc `'cancelled'`: không còn chấm nào mang `current = true`
+ *    (máy chủ đã dừng quét; chỉ giữ `done = true` cho các bước đã đi qua).
+ */
+export function normalizeEnrollStatus(
+  payload: unknown,
+  stepLabels: readonly string[] = DEFAULT_ENROLL_STEPS,
+  personName?: string | null,
+): EnrollStatusView {
+  const data = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+
+  const rawState = (trimmedString(data.state) ?? '').toLowerCase();
+  const state: EnrollStatusView['state'] =
+    rawState === 'running' ||
+    rawState === 'done' ||
+    rawState === 'failed' ||
+    rawState === 'cancelled'
+      ? rawState
+      : 'unknown';
+
+  const labels = stepLabels.length > 0 ? stepLabels : DEFAULT_ENROLL_STEPS;
+  const rawStepIdx = finiteNumber(data.step_index);
+  const stepIndex = Math.max(
+    0,
+    Math.min(rawStepIdx === null ? 0 : Math.floor(rawStepIdx), labels.length - 1),
+  );
+  const stepName = trimmedString(data.step_name) ?? labels[stepIndex] ?? 'Nhìn thẳng';
+
+  const rawSamples = finiteNumber(data.samples);
+  const samples = Math.max(0, rawSamples === null ? 0 : Math.floor(rawSamples));
+  const rawNeeded = finiteNumber(data.samples_needed);
+  const samplesNeeded = Math.max(1, rawNeeded === null ? 3 : Math.floor(rawNeeded));
+
+  const progressRatio =
+    state === 'done' ? 1 : Math.max(0, Math.min(1, samples / samplesNeeded));
+
+  const steps: EnrollStepDot[] = labels.map((label, index) => ({
+    index,
+    label,
+    done: state === 'done' ? true : index < stepIndex,
+    current: state === 'running' && index === stepIndex,
+  }));
+
+  const error = trimmedString(data.error);
+  const cleanName = trimmedString(personName) ?? 'người học';
+
+  let headlineText: string;
+  let samplesText: string;
+  let hintText: string;
+
+  if (state === 'done') {
+    headlineText = 'Đã đăng ký';
+    samplesText = `Khuôn mặt của ${cleanName} đã được lưu.`;
+    hintText =
+      `Từ lần này hệ thống nhận ra ${cleanName} khi bạn chọn làm người đang học. ` +
+      'Chỉ lưu đặc trưng khuôn mặt, không lưu ảnh.';
+  } else if (state === 'failed') {
+    headlineText = 'Chưa đạt';
+    samplesText = `Mẫu hợp lệ: ${samples} / ${samplesNeeded}`;
+    hintText =
+      error ??
+      'Không thu đủ mẫu khuôn mặt. Giữ mặt trong vòng tròn, đủ sáng rồi bấm Quét lại.';
+  } else if (state === 'cancelled') {
+    headlineText = 'Đã huỷ';
+    samplesText = 'Phiên đăng ký đã dừng.';
+    hintText = error ?? 'Đã huỷ phiên đăng ký khuôn mặt.';
+  } else if (state === 'running') {
+    headlineText = labels[stepIndex] ?? stepName;
+    samplesText = `Mẫu hợp lệ: ${samples} / ${samplesNeeded}`;
+    hintText =
+      samples === 0
+        ? 'Chưa nhận được khuôn mặt. Bỏ kính râm, đủ sáng và nhìn thẳng vào camera.'
+        : 'Giữ mặt trong vòng tròn và xoay đầu nhẹ theo từng bước hướng dẫn.';
+  } else {
+    headlineText = unknownText(data.state);
+    samplesText = `Mẫu hợp lệ: ${samples} / ${samplesNeeded}`;
+    hintText = error ?? 'Trạng thái phiên đăng ký không xác định.';
+  }
+
+  return {
+    state,
+    stepIndex,
+    stepName,
+    samples,
+    samplesNeeded,
+    progressRatio,
+    steps,
+    error,
+    headlineText,
+    samplesText,
+    hintText,
+  };
+}

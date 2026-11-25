@@ -1,6 +1,5 @@
 /**
- * Màn Trạng thái độc lập (giữ tương thích cho kiểm thử đơn vị; trên thanh tab
- * chính, cụm này đã được tích hợp trực tiếp vào `CameraScreen`).
+ * Màn Trạng thái độc lập, thích ứng Sáng & Tối.
  */
 import React, { useMemo } from 'react';
 import { Text } from 'react-native';
@@ -15,12 +14,12 @@ import {
   Screen,
   UnconfiguredNotice,
 } from '../components/ui';
-import { useApp } from '../context/AppContext';
+import { useApp, useTheme } from '../context/AppContext';
 import { toPollFetcher, usePoll } from '../hooks/usePoll';
-import { type as typo } from '../theme';
 
 export function StatusScreen({ focused }: { focused: boolean }): React.ReactElement {
   const { api, baseUrl, loading: configLoading } = useApp();
+  const { typo } = useTheme();
 
   const fetcher = useMemo(
     () => toPollFetcher((signal) => api.getStatus({ signal }), normalizeStatus),

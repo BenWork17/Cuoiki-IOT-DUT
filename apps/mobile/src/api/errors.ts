@@ -137,6 +137,21 @@ const ROUTE_HINTS: Record<string, Partial<Record<number, string>>> = {
     404: 'Máy chủ chưa có API lịch sử vi phạm (/api/violations). Cập nhật dashboard lên bản mới rồi thử lại.',
     503: 'Chưa bật lưu trữ nên chưa có lịch sử vi phạm.',
   },
+  '/api/people': {
+    400: 'Tên người học gửi lên không hợp lệ.',
+    404: 'Không tìm thấy hồ sơ người học hoặc máy chủ chưa có API /api/people.',
+    503: 'Tính năng người học chưa được bật trong phiên chạy này.',
+  },
+  '/api/select': {
+    400: 'Lựa chọn người học gửi lên không hợp lệ.',
+    404: 'Không tìm thấy người học vừa chọn.',
+    503: 'Tính năng người học chưa được bật trong phiên chạy này.',
+  },
+  '/api/enroll': {
+    400: 'Phiên đăng ký khuôn mặt không hợp lệ hoặc đã kết thúc.',
+    404: 'Không tìm thấy phiên đăng ký khuôn mặt đang chạy.',
+    503: 'Tính năng người học chưa được bật trong phiên chạy này.',
+  },
 };
 
 /** Câu cho một mã lỗi, ưu tiên `message` của server, rồi gợi ý theo route. */
@@ -147,15 +162,19 @@ export function messageForStatus(
 ): string {
   const fromServer = typeof serverMessage === 'string' ? serverMessage.trim() : '';
   if (fromServer) return fromServer;
-  const hint = path ? ROUTE_HINTS[path]?.[status] : undefined;
+  const normalizedPath = path ? routeKey(path) : undefined;
+  const hint = normalizedPath ? ROUTE_HINTS[normalizedPath]?.[status] : undefined;
   if (hint) return hint;
   return httpStatusMessage(status);
 }
 
-/** Tên route chuẩn hoá: bỏ query và `?`, để tra `ROUTE_HINTS`. */
+/** Tên route chuẩn hoá: bỏ query và tham số động (`/api/people/<id>`, `/api/enroll/<id>`). */
 export function routeKey(path: string): string {
   const withoutQuery = String(path ?? '').split('?')[0] ?? '';
-  return withoutQuery || '/';
+  if (!withoutQuery) return '/';
+  if (withoutQuery.startsWith('/api/people/')) return '/api/people';
+  if (withoutQuery.startsWith('/api/enroll/')) return '/api/enroll';
+  return withoutQuery;
 }
 
 /**
