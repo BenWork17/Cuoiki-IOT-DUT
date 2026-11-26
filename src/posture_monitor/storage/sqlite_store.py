@@ -575,6 +575,9 @@ class Storage:
         if not allowed:
             return []
 
+        if self._pending_events:
+            self.flush()
+
         placeholders = ", ".join("?" for _ in allowed)
         sql = (
             "SELECT ts, type, duration_s FROM events "

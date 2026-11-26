@@ -448,6 +448,7 @@ test('API_PATH: chỉ chứa route nằm trong hợp đồng §4.2', () => {
       stream: '/stream',
       voice: '/api/voice',
       violations: '/api/violations',
+      logs: '/api/logs',
       people: '/api/people',
       select: '/api/select',
       enroll: '/api/enroll',

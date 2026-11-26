@@ -94,7 +94,7 @@ def main() -> int:
         doc_xml = zf.read("word/document.xml").decode("utf-8")
         print("  zip hỏng        :", broken or "không")
         print("  mục thư mục rỗng:", len(dir_entries))
-        print("  số tệp media    :", len(media), "(kỳ vọng 13 = 2 logo bìa + 11 hình nội dung)")
+        print("  số tệp media    :", len(media), "(kỳ vọng 7 = 2 logo bìa + 5 hình nội dung)")
 
     doc = Document(str(target))
     sec = doc.sections[0]
@@ -148,9 +148,9 @@ def main() -> int:
                 level = 0
             heads.append((level, p.text.strip()))
 
-    print(f"\n== 5. CẤU TRÚC 12 CHƯƠNG (tổng tiêu đề: {len(heads)}) ==")
+    print(f"\n== 5. CẤU TRÚC 7 CHƯƠNG CÔ ĐỌNG (tổng tiêu đề: {len(heads)}) ==")
     missing_chaps = 0
-    for ch_idx in range(1, 13):
+    for ch_idx in range(1, 8):
         want = f"CHƯƠNG {ch_idx}."
         found = next((t for lv, t in heads if lv == 1 and t.startswith(want)), None)
         if not found:
@@ -192,8 +192,8 @@ def main() -> int:
         "Hệ thống giám sát học tập", "199,25", "5,02", "86,1", "98,6",
         "DashboardState", "ĐÃ ĐO", "TÍNH TỪ ĐO", "CHƯA ĐO", "704×576",
         "YOLO11n-pose", "SFace", "backchannel", "ONVIF",
-        "Nocturne Telemetry", "LearnerSignalsSection", "PostureStatusSection",
-        "1.662", "189",
+        "RTSP_RECONNECT_ATTEMPTS", "phone_like_filter", "ViolationsScreen",
+        "1.662", "201",
     ]
     print("\n== 7. MỐC NỘI DUNG KHOA HỌC CỐT LÕI ==")
     haystack = text.casefold()
@@ -204,15 +204,25 @@ def main() -> int:
             missing_marks += 1
         print(f"  {m:28s}: {'CÓ' if ok_m else 'THIẾU'}")
 
-    # Thống kê định dạng font & cỡ chữ
+    # Thống kê định dạng font & cỡ chữ (kể cả kế thừa từ style đoạn / Normal sau khi Word cập nhật TOC)
+    default_font = doc.styles["Normal"].font.name or ""
+    default_size = doc.styles["Normal"].font.size.pt if doc.styles["Normal"].font.size else None
     font_counter: Counter[str] = Counter()
     size_counter: Counter[float] = Counter()
     for p in doc.paragraphs:
+        st_font = (p.style.font.name if p.style and p.style.font else None) or default_font
+        st_size = (
+            p.style.font.size.pt
+            if p.style and p.style.font and p.style.font.size
+            else default_size
+        )
         for r in p.runs:
-            if r.font.name:
-                font_counter[r.font.name] += 1
-            if r.font.size:
-                size_counter[r.font.size.pt] += 1
+            eff_font = r.font.name or st_font
+            eff_size = r.font.size.pt if r.font.size else st_size
+            if eff_font:
+                font_counter[eff_font] += 1
+            if eff_size:
+                size_counter[eff_size] += 1
     print("\n== 8. THỐNG KÊ KIỂU CHỮ ==")
     print("  phông chữ :", dict(font_counter.most_common(5)))
     print("  cỡ chữ(pt):", dict(size_counter.most_common(6)))
@@ -220,14 +230,14 @@ def main() -> int:
     all_ok = (
         broken is None
         and len(dir_entries) == 0
-        and len(media) == 13
+        and len(media) == 7
         and margins_ok
         and not problems
         and toc_main
         and toc_fig
         and toc_tbl
-        and seq_fig_count == 11
-        and seq_tbl_count >= 30
+        and seq_fig_count == 5
+        and seq_tbl_count >= 9
         and missing_chaps == 0
         and bad_tables == 0
         and sum(stray.values()) == 0

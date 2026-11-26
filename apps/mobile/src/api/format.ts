@@ -62,6 +62,25 @@ export function formatClock(epochMs: number): string {
   return `${hh}:${mm}:${ss}`;
 }
 
+/** Ngày/tháng/năm (`DD/MM/YYYY`) theo múi giờ máy. */
+export function formatDate(epochMs: number): string {
+  if (!Number.isFinite(epochMs)) return '--/--/----';
+  const d = new Date(epochMs);
+  if (Number.isNaN(d.getTime())) return '--/--/----';
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = String(d.getFullYear());
+  return `${day}/${month}/${year}`;
+}
+
+/** Giờ và ngày đầy đủ (`HH:MM:SS · DD/MM/YYYY`) theo múi giờ máy. */
+export function formatDateTime(epochMs: number): string {
+  if (!Number.isFinite(epochMs)) return '--:--:--';
+  const d = new Date(epochMs);
+  if (Number.isNaN(d.getTime())) return '--:--:--';
+  return `${formatClock(epochMs)} · ${formatDate(epochMs)}`;
+}
+
 /**
  * Chữ cho một giá trị trạng thái mà app không có nhãn.
  *

@@ -596,8 +596,8 @@ def fig_modules() -> None:
             0.51, 0.03, C_GREY, C_GREY_L,
             "4. LẮP RÁP CLI, MOBILE & KIỂM THỬ",
             "• cli/: parser, monitor_runner, cmd_*,\n  benchmark/ (3 hồ sơ đo hiệu năng)\n"
-            "• apps/mobile/: Expo SDK 58 (6 tab)\n"
-            "• tests/: 10 thư mục, 60 tệp (1.662 bài)\n  + Mobile test/ (189 bài Node & UI)",
+            "• apps/mobile/: Expo SDK 58 (7 tab, Sáng/Tối)\n"
+            "• tests/: 10 thư mục, 60 tệp (1.662 bài)\n  + Mobile test/ (201 bài Node & UI)",
         ),
     ]
 
@@ -614,92 +614,90 @@ def fig_modules() -> None:
 
 # ============================================================ 11. Bố cục & Kiến trúc App di động
 def fig_mobile_stitch() -> None:
-    fig, ax = _blank((8.2, 8.6))
+    fig, ax = _blank((7.6, 7.6))
 
-    # Cột trái: Màn hình điện thoại Nocturne Telemetry (rộng 47%)
-    px, py, pw, ph = 0.015, 0.02, 0.475, 0.96
+    # Cột trái: Màn hình điện thoại Sáng/Tối (rộng 48%)
+    px, py, pw, ph = 0.015, 0.02, 0.48, 0.96
     _box(ax, px, py, pw, ph, "", fc="#0f141a", ec="#334155", lw=2.2)
 
-    ax.text(px + 0.025, py + ph - 0.045, "Camera & Trạng thái",
-            ha="left", va="center", fontsize=12.2, fontweight="bold", color="#f8fafc", zorder=4)
-    _box(ax, px + pw - 0.145, py + ph - 0.068, 0.125, 0.045, "● LIVE",
+    ax.text(px + 0.022, py + ph - 0.045, "Camera & Trạng thái",
+            ha="left", va="center", fontsize=12.0, fontweight="bold", color="#f8fafc", zorder=4)
+    _box(ax, px + pw - 0.165, py + ph - 0.068, 0.148, 0.045, "Sáng/Tối · LIVE",
          fc="#1b222b", ec="#34d399", fs=10.5, weight="bold", color="#34d399", zorder=4)
 
     # Khối 1: Khung Camera 4:3
     cy = py + ph - 0.285
     _box(
         ax, px + 0.02, cy, pw - 0.04, 0.195,
-        "Khung Camera 4:3\n[Trực tiếp: /stream] | [Tĩnh: /api/frame]\n■ Luồng MJPEG trực tiếp · 0,2 s",
-        fc="#171c22", ec="#60a5fa", fs=10.6, weight="bold", color="#e2e8f0", zorder=4,
+        "Khung Camera 4:3\n[Trực tiếp: /stream] | [Tĩnh: /api/frame]\n■ Luồng MJPEG · Tự lùi khi nghẽn",
+        fc="#171c22", ec="#60a5fa", fs=11.0, weight="bold", color="#e2e8f0", zorder=4,
     )
 
     # Khối 2: Cụm 3 Tín hiệu người học Bento 2+1
     sy = cy - 0.285
     _box(ax, px + 0.02, sy, pw - 0.04, 0.265, "", fc="#1b222b", ec="#34d399", lw=1.8, zorder=4)
-    ax.text(px + 0.032, sy + 0.235, "● 3 TÍN HIỆU NGƯỜI HỌC (DƯỚI CAMERA)",
-            ha="left", va="center", fontsize=10.2, fontweight="bold", color="#34d399", zorder=5)
+    ax.text(px + 0.030, sy + 0.235, "● 3 TÍN HIỆU NGƯỜI HỌC (BENTO 2+1)",
+            ha="left", va="center", fontsize=10.8, fontweight="bold", color="#34d399", zorder=5)
 
     hw = (pw - 0.07) / 2
     _box(ax, px + 0.03, sy + 0.112, hw, 0.095, "CÓ MẶT\n● Trong khung",
-         fc="#171c22", ec="#334155", fs=10.4, weight="bold", color="#34d399", zorder=5)
+         fc="#171c22", ec="#334155", fs=11.0, weight="bold", color="#34d399", zorder=5)
     _box(ax, px + 0.04 + hw, sy + 0.112, hw, 0.095, "ĐIỆN THOẠI\n○ Không dùng",
-         fc="#171c22", ec="#334155", fs=10.4, weight="bold", color="#34d399", zorder=5)
+         fc="#171c22", ec="#334155", fs=11.0, weight="bold", color="#34d399", zorder=5)
     _box(ax, px + 0.03, sy + 0.015, pw - 0.06, 0.082,
-         "NGƯỜI HỌC: Đúng người (Bảo) [Mới]",
-         fc="#171c22", ec="#334155", fs=10.5, weight="bold", color="#34d399", zorder=5)
+         "NGƯỜI HỌC: Đúng người (Bảo) [Đổi]",
+         fc="#171c22", ec="#334155", fs=11.0, weight="bold", color="#34d399", zorder=5)
 
     # Khối 3: Trạng thái tư thế Bento 2x2
     by = sy - 0.285
     _box(ax, px + 0.02, by, pw - 0.04, 0.265, "", fc="#1b222b", ec="#475569", lw=1.4, zorder=4)
-    ax.text(px + 0.032, by + 0.235, "● TRẠNG THÁI: Tư thế tốt (Đúng tư thế)",
-            ha="left", va="center", fontsize=10.2, fontweight="bold", color="#34d399", zorder=5)
+    ax.text(px + 0.030, by + 0.235, "● TRẠNG THÁI: Tư thế tốt (91,5 / 100)",
+            ha="left", va="center", fontsize=10.8, fontweight="bold", color="#34d399", zorder=5)
     _box(ax, px + 0.03, by + 0.115, hw, 0.092, "ĐIỂM TƯ THẾ\n91,5 / 100",
-         fc="#171c22", ec="#334155", fs=10.2, weight="bold", color="#f8fafc", zorder=5)
+         fc="#171c22", ec="#334155", fs=10.8, weight="bold", color="#f8fafc", zorder=5)
     _box(ax, px + 0.04 + hw, by + 0.115, hw, 0.092, "ĐÃ NGỒI\n42 phút",
-         fc="#171c22", ec="#334155", fs=10.2, weight="bold", color="#f8fafc", zorder=5)
+         fc="#171c22", ec="#334155", fs=10.8, weight="bold", color="#f8fafc", zorder=5)
     _box(ax, px + 0.03, by + 0.014, hw, 0.088, "KHOẢNG CÁCH\n54 cm",
-         fc="#171c22", ec="#334155", fs=10.2, weight="bold", color="#60a5fa", zorder=5)
+         fc="#171c22", ec="#334155", fs=10.8, weight="bold", color="#60a5fa", zorder=5)
     _box(ax, px + 0.04 + hw, by + 0.014, hw, 0.088, "LOA CẢNH BÁO\n● Đang bật",
-         fc="#171c22", ec="#34d399", fs=10.2, weight="bold", color="#34d399", zorder=5)
+         fc="#171c22", ec="#34d399", fs=10.8, weight="bold", color="#34d399", zorder=5)
 
-    # Thanh 6 tab dưới đáy
+    # Thanh 7 tab dưới đáy
     _box(
         ax, px + 0.018, py + 0.015, pw - 0.036, 0.085,
-        "Thanh 6 Tab điều hướng:\n[Camera*] · Phiên · Đ.Khiển · Giọng · Vi phạm · Kết nối",
-        fc="#0b0f14", ec="#60a5fa", fs=9.8, weight="bold", color="#60a5fa", zorder=5,
+        "Thanh 7 Tab điều hướng:\nCamera* · Người · Phiên · PTZ · Giọng · Log · IP",
+        fc="#0b0f14", ec="#60a5fa", fs=10.8, weight="bold", color="#60a5fa", zorder=5,
     )
 
-    # Cột phải: 4 khối kiến trúc lớn (rộng 45.5%)
-    rx, rw = 0.53, 0.455
+    # Cột phải: 4 khối kiến trúc & cải tiến (rộng 45%)
+    rx, rw = 0.535, 0.45
     _box(
         ax, rx, 0.755, rw, 0.215,
-        "1. Quản lý vòng đời (src/hooks/)\n"
-        "• usePoll: hỏi mỗi 2 s, tự gọi\n  AbortController.abort() khi rời tab\n"
-        "• useAsyncAction: hủy lệnh chồng",
-        fc=C_BLUE_L, ec=C_BLUE, fs=10.8, weight="bold",
+        "1. Vòng đời & Sáng/Tối (hooks + context)\n"
+        "• usePoll 2 s, tự hủy AbortController\n"
+        "• Chuyển nhanh Giao diện Sáng / Tối",
+        fc=C_BLUE_L, ec=C_BLUE, fs=11.2, weight="bold",
     )
     _box(
         ax, rx, 0.505, rw, 0.215,
-        "2. Tầng API thuần (src/api/)\n"
-        "• Không phụ thuộc react-native\n"
-        "• fresh=false → 'Chưa có dữ liệu mới'\n"
-        "• Hạn chờ JSON 5 s, ảnh tĩnh 10 s",
-        fc=C_GREEN_L, ec=C_GREEN, fs=10.8, weight="bold",
+        "2. Quét khuôn mặt 5 bước trên App\n"
+        "• Chọn người học & Thêm người mới\n"
+        "• Quét 5 góc mặt trực tiếp qua /stream",
+        fc=C_GREEN_L, ec=C_GREEN, fs=11.2, weight="bold",
     )
     _box(
         ax, rx, 0.255, rw, 0.215,
-        "3. Máy chủ Pi 4 (Flask :8000)\n"
-        "• Dùng chung 10 route với Web\n"
-        "• Thêm /api/frame (JPEG tĩnh)\n  & /api/violations (lịch sử lỗi)",
-        fc=C_AMBER_L, ec=C_AMBER, fs=10.8, weight="bold",
+        "3. Nhật ký Vi phạm & Log hệ thống\n"
+        "• Tự cập nhật 4 s (/api/violations)\n"
+        "• Xem giờ, mã lỗi & /api/logs từ Pi",
+        fc=C_AMBER_L, ec=C_AMBER, fs=11.2, weight="bold",
     )
     _box(
         ax, rx, 0.02, rw, 0.20,
-        "4. Kiểm thử 2 tầng (189 bài PASS)\n"
-        "• 160 bài logic thuần (Node ≥ 22.18)\n"
-        "• 29 bài giao diện thật (jsdom)\n"
+        "4. Kiểm thử tự động (201 bài PASS)\n"
+        "• Logic thuần Node + Giao diện jsdom\n"
         "• tsc --noEmit: 0 lỗi kiểu tĩnh",
-        fc=C_GREY_L, ec=C_GREY, fs=10.8, weight="bold",
+        fc=C_GREY_L, ec=C_GREY, fs=11.2, weight="bold",
     )
 
     _arrow(ax, (px + pw + 0.004, 0.86), (rx - 0.004, 0.86), color=C_BLUE, lw=2.2)

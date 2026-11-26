@@ -81,6 +81,12 @@ RTSP_PREFETCH_NEW_FRAME_S = 1.0
 #: Khoảng nghỉ giữa hai vòng của bộ đọc nền khi camera liên tục trả lỗi (giây).
 RTSP_PREFETCH_ERROR_BACKOFF_S = 0.2
 
+#: Ngân sách tự kết nối lại luồng RTSP khi mất mạng tạm thời (ví dụ Wi-Fi/Hotspot chập chờn).
+RTSP_RECONNECT_ATTEMPTS = 60
+
+#: Thời gian nghỉ giữa hai lần thử mở lại RTSP ở luồng nền (giây).
+RTSP_RECONNECT_BACKOFF_S = 2.0
+
 #: Tên driver các node codec/ISP của SoC Raspberry Pi — tuyệt đối không phải
 #: camera, phải loại khỏi danh sách thiết bị.
 EXCLUDED_DRIVERS = ("bcm2835-codec", "bcm2835-isp", "rpi-hevc-dec")
@@ -169,9 +175,18 @@ class _ReconnectableSource(FrameSource):
     - Sau ``close()``, ``_closed = True`` chặn vĩnh viễn mọi lần mở lại.
     """
 
-    def __init__(self, max_attempts: int = OPEN_ATTEMPTS) -> None:
+    def __init__(
+        self,
+        max_attempts: int = OPEN_ATTEMPTS,
+        reconnect_attempts: int | None = None,
+    ) -> None:
         self._max_attempts = max(1, int(max_attempts))
-        self._reconnect_budget = self._max_attempts
+        self._reconnect_max = (
+            self._max_attempts
+            if reconnect_attempts is None
+            else max(1, int(reconnect_attempts))
+        )
+        self._reconnect_budget = self._reconnect_max
         self._gave_up = False
         self._closed = False
 
@@ -233,7 +248,7 @@ class _ReconnectableSource(FrameSource):
             logger.error(
                 "%s đã hết %d lần kết nối lại; dừng đọc khung.",
                 self._source_label(),
-                self._max_attempts,
+                self._reconnect_max,
             )
             return False
 
@@ -246,12 +261,12 @@ class _ReconnectableSource(FrameSource):
         )
         opened = self._open(attempts=1)
         if opened:
-            self._reconnect_budget = self._max_attempts
+            self._reconnect_budget = self._reconnect_max
         return opened
 
     def _mark_frame_ok(self) -> None:
         """Khôi phục ngân sách kết nối lại sau khi đọc được khung hợp lệ."""
-        self._reconnect_budget = self._max_attempts
+        self._reconnect_budget = self._reconnect_max
 
 
 # --------------------------------------------------------------------------
@@ -392,8 +407,12 @@ class RTSPSource(_ReconnectableSource):
         drain_time_limit_s: float = RTSP_DRAIN_TIME_LIMIT_S,
         prefetch: bool = False,
         prefetch_wait_s: float = RTSP_PREFETCH_FIRST_FRAME_S,
+        reconnect_attempts: int | None = None,
     ) -> None:
-        super().__init__(max_attempts=max_attempts)
+        super().__init__(
+            max_attempts=max_attempts,
+            reconnect_attempts=reconnect_attempts,
+        )
         self._url = str(url)
         self._drain_step_limit_s = float(drain_step_limit_s)
         self._max_drain_frames = max(1, int(max_drain_frames))
@@ -524,11 +543,22 @@ class RTSPSource(_ReconnectableSource):
 
     def _prefetch_loop(self) -> None:
         """Vòng đọc của luồng nền: đọc → ghi đè khung mới nhất → lặp."""
+        backoff_s = (
+            RTSP_RECONNECT_BACKOFF_S
+            if self._reconnect_max > OPEN_ATTEMPTS
+            else RTSP_PREFETCH_ERROR_BACKOFF_S
+        )
         while not self._prefetch_stop.is_set():
             try:
                 if self._cap is None and not self._reconnect():
                     self._prefetch_error = "không mở lại được luồng RTSP"
-                    self._prefetch_stop.wait(RTSP_PREFETCH_ERROR_BACKOFF_S)
+                    if self._gave_up:
+                        with self._cond:
+                            self._latest = None
+                            self._cond.notify_all()
+                    self._prefetch_stop.wait(
+                        RTSP_PREFETCH_ERROR_BACKOFF_S if self._gave_up else backoff_s
+                    )
                     continue
 
                 assert self._cap is not None
@@ -537,7 +567,13 @@ class RTSPSource(_ReconnectableSource):
                     if self._reconnect() and self._cap is not None:
                         continue
                     self._prefetch_error = "luồng RTSP trả khung rỗng"
-                    self._prefetch_stop.wait(RTSP_PREFETCH_ERROR_BACKOFF_S)
+                    if self._gave_up:
+                        with self._cond:
+                            self._latest = None
+                            self._cond.notify_all()
+                    self._prefetch_stop.wait(
+                        RTSP_PREFETCH_ERROR_BACKOFF_S if self._gave_up else backoff_s
+                    )
                     continue
 
                 self._mark_frame_ok()
@@ -554,15 +590,18 @@ class RTSPSource(_ReconnectableSource):
     def _read_prefetched(self) -> np.ndarray | None:
         """Trả khung **mới nhất chưa xử lý** từ bộ đọc nền."""
         with self._cond:
-            if self._latest is None:
+            if self._gave_up or self._latest is None:
                 return None
             target = self._consumer_seq + 1
             if self._latest_seq < target:
                 self._cond.wait_for(
                     lambda: self._latest_seq >= target
+                    or self._gave_up
                     or self._prefetch_stop.is_set(),
                     timeout=RTSP_PREFETCH_NEW_FRAME_S,
                 )
+                if self._gave_up:
+                    return None
             frame = self._latest
             self._consumer_seq = self._latest_seq
             return frame
@@ -1064,7 +1103,11 @@ def capture_from_config(config) -> FrameSource | None:
     if kind == "rtsp":
         url = str(value)
         try:
-            return RTSPSource(url, prefetch=True)
+            return RTSPSource(
+                url,
+                prefetch=True,
+                reconnect_attempts=RTSP_RECONNECT_ATTEMPTS,
+            )
         except CameraError as exc:
             logger.warning(
                 "Không mở được camera IP %s (%s). Kiểm tra camera đã bật "

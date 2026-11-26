@@ -24,6 +24,8 @@ import {
   formatAge,
   formatClock,
   formatCountdown,
+  formatDate,
+  formatDateTime,
   formatDecimal,
   formatDuration,
   unknownText,
@@ -33,6 +35,8 @@ export {
   formatAge,
   formatClock,
   formatCountdown,
+  formatDate,
+  formatDateTime,
   formatDecimal,
   formatDuration,
   unknownText,
@@ -1017,5 +1021,85 @@ export function normalizeEnrollStatus(
     headlineText,
     samplesText,
     hintText,
+  };
+}
+
+/* ------------------------------------------------------------- system logs */
+
+export type SystemLogSeverity = 'ERROR' | 'WARNING' | 'INFO' | 'DEBUG';
+
+export type SystemLogEntry = {
+  /** Mốc thời gian epoch mili giây. */
+  ts: number;
+  /** Mức độ chuẩn hoá (`ERROR`, `WARNING`, `INFO`, `DEBUG`). */
+  level: SystemLogSeverity;
+  /** Tên module ghi log (ví dụ `posture_monitor.camera.capture`). */
+  logger: string;
+  /** Nội dung thông báo / chi tiết lỗi tiếng Việt từ máy chủ. */
+  message: string;
+};
+
+export type SystemLogsView = {
+  /** Danh sách bản ghi **mới nhất trước**. */
+  logs: SystemLogEntry[];
+  total: number;
+  errorCount: number;
+  warningCount: number;
+};
+
+function normalizeLogSeverity(raw: unknown): SystemLogSeverity {
+  const upper = (trimmedString(raw) ?? 'INFO').toUpperCase();
+  if (upper === 'CRITICAL' || upper === 'ERROR') return 'ERROR';
+  if (upper === 'WARNING' || upper === 'WARN') return 'WARNING';
+  if (upper === 'DEBUG') return 'DEBUG';
+  return 'INFO';
+}
+
+/**
+ * Chuẩn hoá `GET /api/logs`, sắp bản ghi **mới nhất lên đầu** để người dùng
+ * thấy ngay lỗi hoặc cảnh báo vừa xảy ra cùng mốc giờ & ngày chính xác.
+ */
+export function normalizeSystemLogs(payload: unknown): SystemLogsView {
+  const data = (payload && typeof payload === 'object' ? payload : {}) as Record<
+    string,
+    unknown
+  >;
+  const rawList = Array.isArray(data.logs) ? data.logs : [];
+  const indexed: Array<{ entry: SystemLogEntry; idx: number }> = [];
+
+  for (let i = 0; i < rawList.length; i += 1) {
+    const item = rawList[i];
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    const ts = toEpochMs(row.ts);
+    const message = trimmedString(row.message);
+    if (ts === null || message === null) continue;
+    indexed.push({
+      idx: i,
+      entry: {
+        ts,
+        level: normalizeLogSeverity(row.level),
+        logger: trimmedString(row.logger) ?? 'posture_monitor',
+        message,
+      },
+    });
+  }
+
+  // Mới nhất đứng đầu; cùng mốc giây thì bản ghi ghi sau đứng trước.
+  indexed.sort((a, b) => (b.entry.ts !== a.entry.ts ? b.entry.ts - a.entry.ts : b.idx - a.idx));
+  const logs = indexed.map((item) => item.entry);
+
+  let errorCount = 0;
+  let warningCount = 0;
+  for (const item of logs) {
+    if (item.level === 'ERROR') errorCount += 1;
+    else if (item.level === 'WARNING') warningCount += 1;
+  }
+
+  return {
+    logs,
+    total: logs.length,
+    errorCount,
+    warningCount,
   };
 }

@@ -137,6 +137,11 @@ const ROUTE_HINTS: Record<string, Partial<Record<number, string>>> = {
     404: 'Máy chủ chưa có API lịch sử vi phạm (/api/violations). Cập nhật dashboard lên bản mới rồi thử lại.',
     503: 'Chưa bật lưu trữ nên chưa có lịch sử vi phạm.',
   },
+  '/api/logs': {
+    400: 'Tham số lọc mức độ log không hợp lệ.',
+    404: 'Máy chủ chưa có API nhật ký hệ thống (/api/logs). Cập nhật dashboard lên bản mới rồi thử lại.',
+    503: 'Máy chủ chưa bật bộ đệm nhật ký trong phiên chạy này.',
+  },
   '/api/people': {
     400: 'Tên người học gửi lên không hợp lệ.',
     404: 'Không tìm thấy hồ sơ người học hoặc máy chủ chưa có API /api/people.',

@@ -64,7 +64,7 @@ export function Screen({
   const insets = useSafeAreaInsets();
   const { palette, typo } = useTheme();
   const body = (
-    <View style={styles.screenBody}>
+    <View style={[styles.screenBody, !scroll ? styles.screenBodyFill : null]}>
       <View style={styles.screenHead}>
         <View style={styles.screenHeadText}>
           <Text style={typo.title}>{title}</Text>
@@ -469,6 +469,9 @@ const styles = StyleSheet.create({
   screenBody: {
     paddingHorizontal: spacing.lg,
     gap: spacing.md,
+  },
+  screenBodyFill: {
+    flex: 1,
   },
   screenHead: {
     flexDirection: 'row',

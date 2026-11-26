@@ -1767,12 +1767,27 @@
   function formatViolationTime(ts) {
     /* `ts` là epoch giây (như mọi mốc thời gian khác trong repo). Sai kiểu thì
      * hiện "--:--:--" chứ không ném: một dòng hỏng không được làm mất cả danh
-     * sách. */
+     * sách. Hiện đủ cả Giờ:Phút:Giây · Ngày/Tháng/Năm để biết chính xác lúc nào. */
     var value = Number(ts);
     if (!isFinite(value) || value <= 0) return "--:--:--";
     var date = new Date(value * 1000);
     if (isNaN(date.getTime())) return "--:--:--";
-    return date.toLocaleTimeString("vi-VN", { hour12: false });
+    var pad = function (n) {
+      return n < 10 ? "0" + n : String(n);
+    };
+    return (
+      pad(date.getHours()) +
+      ":" +
+      pad(date.getMinutes()) +
+      ":" +
+      pad(date.getSeconds()) +
+      " · " +
+      pad(date.getDate()) +
+      "/" +
+      pad(date.getMonth() + 1) +
+      "/" +
+      date.getFullYear()
+    );
   }
 
   function formatViolationDuration(seconds) {

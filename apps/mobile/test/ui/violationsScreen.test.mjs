@@ -128,20 +128,35 @@ test('Vi phạm: bấm "Làm mới" tạo request mới', async () => {
   });
 });
 
-test('Vi phạm: KHÔNG poll — sau 5 giây vẫn chỉ có request ban đầu', async () => {
+test('Vi phạm: tự động làm mới mỗi 4s khi đang mở và DỪNG hẳn sau khi rời màn', async () => {
   resetFetchLog();
-  setScenario({ '/api/violations': { status: 200, body: payload() } });
+  setScenario({
+    '/api/violations': { status: 200, body: payload() },
+    '/api/logs': {
+      status: 200,
+      body: {
+        logs: [{ ts: 1763000105, level: 'ERROR', logger: 'camera.capture', message: 'Mất kết nối RTSP' }],
+        total: 1,
+      },
+    },
+  });
   await withViolations(async (ui) => {
     const before = calls.filter((c) => c.includes('/api/violations')).length;
-    await ui.wait(5000);
+    await ui.wait(4300);
     const after = calls.filter((c) => c.includes('/api/violations')).length;
     assert.equal(
-      after,
-      before,
-      `màn này không được poll (trước ${before}, sau 5 s ${after})`,
+      after > before,
+      true,
+      `đang mở màn phải tự cập nhật sau 4 s (trước ${before}, sau ${after})`,
     );
-    void sleep;
+    // Chuyển sang Log hệ thống thấy chi tiết lỗi
+    assert.equal(await ui.click('Log hệ thống (1)'), true);
+    assert.match(ui.text(), /Mất kết nối RTSP/);
   });
+  const countAtUnmount = calls.filter((c) => c.includes('/api/violations')).length;
+  await sleep(4500);
+  const countAfterUnmount = calls.filter((c) => c.includes('/api/violations')).length;
+  assert.equal(countAfterUnmount, countAtUnmount, 'rời màn phải dừng hẳn timer nền');
 });
 
 test('Vi phạm: payload hỏng hoàn toàn ⇒ view rỗng, không crash', async () => {

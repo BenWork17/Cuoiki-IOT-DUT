@@ -61,6 +61,8 @@ export const API_PATH = {
   voice: '/api/voice',
   /** Lịch sử **vi phạm** (rời bàn / dùng điện thoại / sai người) từ bảng `events`. */
   violations: '/api/violations',
+  /** Nhật ký sự kiện & lỗi hệ thống trong bộ nhớ (`GET /api/logs`). */
+  logs: '/api/logs',
   /** Danh sách người học (`GET`), thêm người mới mở phiên quét (`POST`), xoá (`DELETE /api/people/<id>`). */
   people: '/api/people',
   /** Chọn hoặc bỏ chọn người đang học (`POST /api/select`). */
@@ -77,6 +79,12 @@ export const API_PATH = {
  * biến thành lời gọi kéo cả bảng `events` về điện thoại.
  */
 export const VIOLATIONS_LIMIT = 200;
+
+/** Số bản ghi nhật ký hệ thống tối đa xin mỗi lần. */
+export const LOGS_LIMIT = 150;
+
+/** Mức lọc nhật ký hệ thống hợp lệ trên `/api/logs`. */
+export type LogLevelFilter = 'INFO' | 'WARNING' | 'ERROR';
 
 /** Bốn hướng PTZ hợp lệ; server từ chối mọi giá trị khác bằng 400 (`app.py:711`). */
 export type PtzDirection = 'up' | 'down' | 'left' | 'right';
@@ -363,6 +371,8 @@ export type SessionPayload = Record<string, unknown>;
 export type VoicePayload = Record<string, unknown>;
 /** Payload thô của `/api/violations`; chuẩn hoá ở `normalizeViolations`. */
 export type ViolationsPayload = Record<string, unknown>;
+/** Payload thô của `/api/logs`; chuẩn hoá ở `normalizeSystemLogs`. */
+export type SystemLogsPayload = Record<string, unknown>;
 /** Payload thô của `/api/people` & `/api/enroll*`; chuẩn hoá ở `payload.ts`. */
 export type PeoplePayload = Record<string, unknown>;
 export type SelectPersonPayload = {
@@ -400,6 +410,12 @@ export type ApiClient = {
     limit?: number,
     options?: RequestOptions,
   ) => Promise<ApiResult<ViolationsPayload>>;
+  /** `GET /api/logs` — nhật ký sự kiện, cảnh báo và lỗi hệ thống theo thời gian. */
+  getLogs: (
+    level?: LogLevelFilter,
+    limit?: number,
+    options?: RequestOptions,
+  ) => Promise<ApiResult<SystemLogsPayload>>;
   /** `GET /api/voice` — giọng đang dùng + tình trạng từng giọng. */
   getVoice: (options?: RequestOptions) => Promise<ApiResult<VoicePayload>>;
   /** `POST /api/voice` — đổi giọng đọc. */
@@ -541,6 +557,19 @@ export function createApiClient(baseUrl: string): ApiClient {
         root,
         'GET',
         `${API_PATH.violations}?limit=${safeLimit}`,
+        undefined,
+        options,
+      );
+    },
+    getLogs: (level = 'INFO', limit, options) => {
+      const asked = Number.isFinite(limit) ? Math.floor(Number(limit)) : LOGS_LIMIT;
+      const safeLimit = Math.min(Math.max(asked, 1), LOGS_LIMIT);
+      const safeLevel: LogLevelFilter =
+        level === 'ERROR' || level === 'WARNING' ? level : 'INFO';
+      return requestJson<SystemLogsPayload>(
+        root,
+        'GET',
+        `${API_PATH.logs}?level=${safeLevel}&limit=${safeLimit}`,
         undefined,
         options,
       );
